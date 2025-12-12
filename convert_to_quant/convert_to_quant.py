@@ -1351,7 +1351,8 @@ def convert_to_fp8_scaled(
         if key not in new_tensors:
             new_tensors[key] = tensor
 
-    if comfy_quant and "scaled_fp8" not in new_tensors and not int8:
+    # Add scaled_fp8 marker only for legacy non-comfy_quant FP8 format
+    if not comfy_quant and not int8 and not custom_layers and "scaled_fp8" not in new_tensors:
         new_tensors["scaled_fp8"] = torch.empty((0), dtype=TARGET_FP8_DTYPE) if t5xxl else torch.empty((2), dtype=TARGET_FP8_DTYPE)
 
     print(f"Saving {len(new_tensors)} tensors to {output_file}")
