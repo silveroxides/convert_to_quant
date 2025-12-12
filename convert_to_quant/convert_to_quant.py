@@ -1297,27 +1297,35 @@ def convert_to_fp8_scaled(
         else:
             new_tensors[f"{base_name}.scale_weight"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
 
+        # Determine if this layer uses simple mode (skip bias correction to save memory)
+        layer_uses_simple = custom_simple if use_custom else (fallback_simple if use_fallback else no_learned_rounding)
+        
         if bias_key in tensors:
-            print(f"  - Adjusting corresponding bias: {bias_key}")
-            with torch.no_grad():
-                original_bias = tensors[bias_key]
-                in_features = original_tensor.shape[1]
-                if in_features not in calibration_data_cache:
-                    print(f"  - WARNING: No calibration data for bias correction.")
-                    new_tensors[bias_key] = original_bias
-                else:
-                    X_calib_dev = calibration_data_cache[in_features].to(device=device)
-                    W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
-                    W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
-                    b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
-                    weight_error = W_orig_dev - W_dequant_dev
-                    output_error = X_calib_dev @ weight_error.T
-                    bias_correction = output_error.mean(dim=0)
-                    b_new = b_orig_dev - bias_correction
-                    new_tensors[bias_key] = b_new.to(device='cpu', dtype=original_bias.dtype)
-                    print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
-                    del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new
-                    if device == 'cuda': torch.cuda.empty_cache()
+            if layer_uses_simple:
+                # Skip bias correction for simple mode (saves memory, avoids OOM on large layers)
+                print(f"  - Keeping original bias (simple mode): {bias_key}")
+                new_tensors[bias_key] = tensors[bias_key]
+            else:
+                print(f"  - Adjusting corresponding bias: {bias_key}")
+                with torch.no_grad():
+                    original_bias = tensors[bias_key]
+                    in_features = original_tensor.shape[1]
+                    if in_features not in calibration_data_cache:
+                        print(f"  - WARNING: No calibration data for bias correction.")
+                        new_tensors[bias_key] = original_bias
+                    else:
+                        X_calib_dev = calibration_data_cache[in_features].to(device=device)
+                        W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
+                        W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
+                        b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
+                        weight_error = W_orig_dev - W_dequant_dev
+                        output_error = X_calib_dev @ weight_error.T
+                        bias_correction = output_error.mean(dim=0)
+                        b_new = b_orig_dev - bias_correction
+                        new_tensors[bias_key] = b_new.to(device='cpu', dtype=original_bias.dtype)
+                        print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
+                        del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new
+                        if device == 'cuda': torch.cuda.empty_cache()
 
         # T5XXL always needs input_scale regardless of --include_input_scale flag
         if t5xxl and f"{base_name}.input_scale" not in new_tensors:
