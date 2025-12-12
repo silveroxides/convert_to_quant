@@ -53,6 +53,7 @@ RADIANCE_LAYER_KEYNAMES = ["img_in_patch", "nerf_final_layer_conv", "__x0__"]
 WAN_LAYER_KEYNAMES = ["text_embedding", "time_embedding", "audio_model.text_embedding", "audio_model.time_embedding", "time_projection", "video_model.time_projection", "head.head", "face_encoder.out_proj", "face_adapter"]
 QWEN_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "txt_in"]
 ZIMAGE_LAYER_KEYNAMES = ["x_embedder", "final_layer", "cap_embedder.1", "adaLN_modulation", "t_embedder"]
+ZIMAGE_REFINER_LAYER_KEYNAMES = ["context_refiner", "noise_refiner"]
 TARGET_FP8_DTYPE = torch.float8_e4m3fn
 TARGET_INT8_DTYPE = torch.int8
 COMPUTE_DTYPE = torch.float32
@@ -1015,7 +1016,7 @@ class LearnedRoundingConverter:
 def convert_to_fp8_scaled(
     input_file: str, output_file: str, comfy_quant: bool, t5xxl: bool, distillation_large: bool,
     distillation_small: bool, nerf_large: bool, nerf_small: bool,
-    radiance: bool, wan: bool, qwen: bool, hunyuan: bool, zimage_l: bool, zimage_s: bool, calib_samples: int, seed: int,
+    radiance: bool, wan: bool, qwen: bool, hunyuan: bool, zimage_l: bool, zimage_s: bool, zimage_refiner: bool, calib_samples: int, seed: int,
     int8: bool = False, nf4: bool = False, fp4: bool = False,
     fallback: Optional[str] = None, custom_layers: Optional[str] = None, custom_type: Optional[str] = None,
     custom_block_size: Optional[int] = None, custom_simple: bool = False, custom_heur: bool = False,
@@ -1203,6 +1204,8 @@ def convert_to_fp8_scaled(
                 exclusion_reason = "Qwen Image layer keep in high precision"
             elif zimage_l and any(n in key for n in ZIMAGE_LAYER_KEYNAMES):
                 exclusion_reason = "Z-Image layer keep in high precision"
+            elif zimage_refiner and any(n in key for n in ZIMAGE_REFINER_LAYER_KEYNAMES):
+                exclusion_reason = "Z-Image refiner layer keep in high precision"
 
         # Handle excluded layers: use fallback if available, otherwise skip
         if exclusion_reason and not use_custom:
@@ -1423,6 +1426,7 @@ def main():
     parser.add_argument("--hunyuan", action='store_true', help="Exclude known Hunyuan Video 1.5 layers.")
     parser.add_argument("--zimage_l", action='store_true', help="Exclude known Z-Image layers.")
     parser.add_argument("--zimage_s", action='store_true', help="Exclude known Z-Image layers.")
+    parser.add_argument("--zimage_refiner", action='store_true', help="Exclude known Z-Image refiner layers (context_refiner, noise_refiner).")
     parser.add_argument("--full_matrix", action='store_true', help="If should use torch.linalg.svd with full matices instead of the torch.svd_lowrank.")
     parser.add_argument("--scaling_mode", type=str, default="tensor", choices=["tensor", "block"], help="Quantization scaling mode.")
     parser.add_argument("--block_size", type=int, default=None, help="Block size for block-wise quantization (REQUIRED for INT8, NF4, FP4). Common values: 64, 128.")
@@ -1514,7 +1518,7 @@ def main():
 
     # Separate converter kwargs from function kwargs
     excluded_keys = ['input', 'output', 'comfy_quant', 't5xxl', 'distillation_large', 'distillation_small', 
-                     'nerf_large', 'nerf_small', 'radiance', 'wan', 'qwen', 'hunyuan', 'zimage_l', 'zimage_s', 
+                     'nerf_large', 'nerf_small', 'radiance', 'wan', 'qwen', 'hunyuan', 'zimage_l', 'zimage_s', 'zimage_refiner',
                      'calib_samples', 'manual_seed', 'int8', 'nf4', 'fp4', 'fallback', 'custom_layers', 'custom_type',
                      'custom_block_size', 'custom_simple', 'custom_heur', 'fallback_block_size', 'fallback_simple',
                      'full_precision_matrix_mult', 'heur', 'input_scale', 'simple']
@@ -1523,7 +1527,7 @@ def main():
     convert_to_fp8_scaled(
         args.input, output_file, args.comfy_quant, args.t5xxl, args.distillation_large,
         args.distillation_small, args.nerf_large, args.nerf_small,
-        args.radiance, args.wan, args.qwen, args.hunyuan, args.zimage_l, args.zimage_s, args.calib_samples, seed,
+        args.radiance, args.wan, args.qwen, args.hunyuan, args.zimage_l, args.zimage_s, args.zimage_refiner, args.calib_samples, seed,
         int8=args.int8, nf4=args.nf4, fp4=args.fp4,
         fallback=args.fallback, custom_layers=args.custom_layers, custom_type=args.custom_type,
         custom_block_size=args.custom_block_size, custom_simple=args.custom_simple, custom_heur=args.custom_heur,
