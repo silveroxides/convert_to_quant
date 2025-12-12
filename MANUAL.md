@@ -144,8 +144,8 @@ These flags keep certain layers in high precision (not quantized):
 | Argument | Description |
 |----------|-------------|
 | `--qwen` | Qwen Image model layers |
-| `--zimage_l` | Z-Image model (large variant) |
-| `--zimage_s` | Z-Image model (small variant) |
+| `--zimage` | Z-Image model layers |
+| `--zimage_refiner` | Z-Image refiner layers (context_refiner, noise_refiner) |
 | `--radiance` | Radiance field layers |
 
 ### Optimization Options
@@ -159,6 +159,57 @@ These flags keep certain layers in high precision (not quantized):
 | `--min_k` | `1` | Minimum number of SVD components |
 | `--max_k` | `16` | Maximum number of SVD components |
 | `--full_matrix` | False | Use full SVD instead of low-rank approximation |
+
+### Learning Rate Schedule Options
+
+These options control the learning rate schedule for the `--optimizer original` algorithm:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--lr_schedule` | `adaptive` | Schedule type: `adaptive`, `exponential`, or `plateau` |
+| `--lr_gamma` | `0.99` | [exponential] Multiplicative decay factor per step |
+| `--lr_patience` | `50` | [plateau] Steps without improvement before LR reduction |
+| `--lr_factor` | `0.5` | [plateau] Factor to multiply LR by when reducing |
+| `--lr_min` | `1e-8` | [plateau] Lower bound on learning rate |
+| `--lr_cooldown` | `0` | [plateau] Steps to wait after LR reduction before resuming monitoring |
+| `--lr_threshold` | `0.0` | [plateau] Minimum improvement to count as "significant" |
+| `--lr_adaptive_mode` | `simple-reset` | [adaptive] Counter reset behavior: `simple-reset` or `no-reset` |
+
+#### Schedule Descriptions
+
+**ExponentialLR** (`--lr_schedule exponential`)
+
+Decays learning rate by a constant factor every step:
+```
+lr_{t+1} = lr_t × gamma
+```
+- Suitable for smooth, predictable decay
+- Lower `gamma` (e.g., 0.95) = faster decay
+- Higher `gamma` (e.g., 0.999) = slower decay
+
+**ReduceLROnPlateau** (`--lr_schedule plateau`)
+
+Reduces learning rate when loss stops improving:
+```
+if no improvement for `patience` steps:
+    lr = lr × factor
+    wait for `cooldown` steps before monitoring again
+```
+- Adapts to training progress automatically
+- `threshold` sets minimum improvement to reset patience counter
+- `min_lr` prevents LR from dropping too low
+
+**Adaptive** (`--lr_schedule adaptive`)
+
+Tier-based schedule with boost/decay behavior:
+- LR **increases** (boost) when loss improves after stalling
+- LR **decreases** (decay) progressively during stall periods
+- Boost multipliers range from 1.25× to 3× depending on stall duration
+- Decay multipliers range from 0.95× to 0.995×
+
+**Adaptive Mode** (`--lr_adaptive_mode`):
+- `simple-reset` (default): Counter resets to 0 on every improvement. Boosts use tier 0 (1.25× multiplier).
+- `no-reset`: Counter preserves stall history. Boosts use the tier matching how long optimization was stuck.
 
 ### Other Options
 

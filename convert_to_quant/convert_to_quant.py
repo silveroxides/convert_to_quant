@@ -162,7 +162,7 @@ class LearnedRoundingConverter:
     Provides a highly effective optimization strategy.
     Supports both FP8 and INT8 quantization formats.
     """
-    def __init__(self, optimizer="original", num_iter=500, top_p=0.01, min_k=1, max_k=16, scaling_mode='tensor', block_size=64, full_matrix=False, target_format='fp8', no_learned_rounding=False, kernel_backend='triton', lr_schedule='adaptive', lr_gamma=0.99, lr_patience=50, lr_factor=0.5, **kwargs):
+    def __init__(self, optimizer="original", num_iter=500, top_p=0.01, min_k=1, max_k=16, scaling_mode='tensor', block_size=64, full_matrix=False, target_format='fp8', no_learned_rounding=False, kernel_backend='triton', lr_schedule='adaptive', lr_gamma=0.99, lr_patience=50, lr_factor=0.5, lr_min=1e-8, lr_cooldown=0, lr_threshold=0.0, lr_adaptive_mode='simple-reset', **kwargs):
         self.num_iter = num_iter
         self.top_p = top_p
         self.min_k = min_k
@@ -181,6 +181,10 @@ class LearnedRoundingConverter:
         self.lr_gamma = lr_gamma
         self.lr_patience = lr_patience
         self.lr_factor = lr_factor
+        self.lr_min = lr_min
+        self.lr_cooldown = lr_cooldown
+        self.lr_threshold = lr_threshold
+        self.lr_adaptive_mode = lr_adaptive_mode
         
         # INT8 and 4-bit always use block-wise scaling
         if target_format in ('int8', 'nf4', 'fp4'):
@@ -329,6 +333,7 @@ class LearnedRoundingConverter:
         best_tensor = None
         worse_loss_counter = 0
         plateau_counter = 0  # For plateau schedule
+        cooldown_counter = 0  # For plateau cooldown
         curr_lr = self.optimizer_kwargs.get('lr', 0.5)
         if W_float32.shape[0] == W_float32.shape[1]:
             small_mult = 0.95
@@ -345,13 +350,20 @@ class LearnedRoundingConverter:
                 loss = torch.linalg.norm(projected_error)
 
             current_loss = loss.item()
-            improved = current_loss < best_loss
+            # Check if improvement exceeds threshold
+            improvement = best_loss - current_loss
+            improved = improvement > self.lr_threshold if self.lr_threshold > 0 else current_loss < best_loss
+            
+            # Store counter before potential reset (for no-reset adaptive mode)
+            prev_worse_counter = worse_loss_counter
 
             if improved:
                 best_loss = current_loss
                 best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
                 plateau_counter = 0
+                if self.lr_adaptive_mode == 'simple-reset':
+                    worse_loss_counter = 0
+                # no-reset mode: worse_loss_counter preserved for tier calculation
             else:
                 worse_loss_counter += 1
                 plateau_counter += 1
@@ -359,14 +371,23 @@ class LearnedRoundingConverter:
             # LR update based on schedule
             if schedule_name == 'exponential':
                 # ExponentialLR: lr = lr * gamma per step
-                curr_lr = max(curr_lr * self.lr_gamma, 1e-8)
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
             elif schedule_name == 'plateau':
-                # ReduceLROnPlateau: reduce by factor after patience steps with no improvement
-                if plateau_counter >= self.lr_patience:
-                    curr_lr = max(curr_lr * self.lr_factor, 1e-8)
+                # ReduceLROnPlateau with cooldown
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= self.lr_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        cooldown_counter = self.lr_cooldown
                     plateau_counter = 0
-            else:  # 'adaptive' - original tier-based schedule
-                curr_lr = self._lr_update_adaptive(curr_lr, improved, worse_loss_counter, small_mult)
+            else:  # 'adaptive' - tier-based schedule
+                # Use prev_worse_counter for no-reset mode boost calculation on improvement
+                counter_for_calc = prev_worse_counter if (improved and self.lr_adaptive_mode == 'no-reset') else worse_loss_counter
+                curr_lr = self._lr_update_adaptive(curr_lr, improved, counter_for_calc, small_mult)
+                # Reset counter after boost in no-reset mode
+                if improved and self.lr_adaptive_mode == 'no-reset':
+                    worse_loss_counter = 0
 
             pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
         
@@ -1436,8 +1457,13 @@ def main():
     parser.add_argument("--lr_schedule", type=str, default="adaptive", choices=["adaptive", "exponential", "plateau"],
                         help="LR schedule for 'original' optimizer: 'adaptive' (default custom), 'exponential' (gamma decay), 'plateau' (reduce on stall)")
     parser.add_argument("--lr_gamma", type=float, default=0.99, help="[exponential] Decay factor per step (default: 0.99)")
-    parser.add_argument("--lr_patience", type=int, default=50, help="[plateau] Steps without improvement before decay (default: 50)")
-    parser.add_argument("--lr_factor", type=float, default=0.5, help="[plateau] Factor to reduce LR by (default: 0.5)")
+    parser.add_argument("--lr_patience", type=int, default=50, help="[plateau] Steps before decay")
+    parser.add_argument("--lr_factor", type=float, default=0.5, help="[plateau] LR reduction factor")
+    parser.add_argument("--lr_min", type=float, default=1e-8, help="[plateau] Minimum LR bound")
+    parser.add_argument("--lr_cooldown", type=int, default=0, help="[plateau] Steps to wait after reduction")
+    parser.add_argument("--lr_threshold", type=float, default=0.0, help="[plateau] Min improvement to reset patience")
+    parser.add_argument("--lr_adaptive_mode", type=str, default="simple-reset", choices=["simple-reset", "no-reset"],
+                        help="[adaptive] Counter reset behavior (see MANUAL.md)")
     parser.add_argument("--top_p", type=float, default=0.01, help="Proportion of principal components (SVD) to use.")
     parser.add_argument("--min_k", type=int, default=1, help="Minimum number of principal components.")
     parser.add_argument("--max_k", type=int, default=16, help="Maximum number of principal components.")
