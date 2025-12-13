@@ -40,7 +40,12 @@ except ImportError:
 
 # --- Constants and Configuration ---
 torch.set_printoptions(precision=8)
-AVOID_KEY_NAMES = ["norm", "bias", "embed_tokens", "shared", "patch_embedding", "audio_model.patch_embedding", "ref_conv", "control_adapter", "motion_encoder.enc.net_app", "face_encoder.conv", "pose_patch_embedding", "motion_encoder.enc.fc", "img_emb.proj", "q_norm", "motion_encoder.dec", "head.modulation", "casual_audio_encoder", "cond_encoder", "frame_packer", "norm_k", "norm_q"]
+AVOID_KEY_NAMES = [
+    "norm", "bias", "embed_tokens", "shared", "patch_embedding", "audio_model.patch_embedding", "ref_conv", "control_adapter",
+    "motion_encoder.enc.net_app", "face_encoder.conv", "pose_patch_embedding", "motion_encoder.enc.fc", "img_emb.proj", "q_norm",
+    "motion_encoder.dec", "head.modulation", "casual_audio_encoder", "cond_encoder", "frame_packer", "norm_k", "norm_q",
+    "tekken_model", "multi_modal_projector", "patch_conv", "ln_pre", "input_layernorm", "attention_norm", "post_attention_layernorm"
+    ]
 T5XXL_REMOVE_KEY_NAMES = ["decoder", "lm_head"]
 QWEN_AVOID_KEY_NAMES = ["norm_added_k", "norm_added_q", "norm_k", "norm_q", "txt_norm"]
 HUNYUAN_AVOID_KEY_NAMES = ["layernorm", "img_attn_k_norm", "img_attn_q_norm", "txt_attn_k_norm", "txt_attn_q_norm", "norm1", "norm2", "vision_in.proj.0", "vision_in.proj.4", "img_in.proj", "cond_type_embedding"]
@@ -162,7 +167,7 @@ class LearnedRoundingConverter:
     Provides a highly effective optimization strategy.
     Supports both FP8 and INT8 quantization formats.
     """
-    def __init__(self, optimizer="original", num_iter=500, top_p=0.01, min_k=1, max_k=16, scaling_mode='tensor', block_size=64, full_matrix=False, target_format='fp8', no_learned_rounding=False, kernel_backend='triton', **kwargs):
+    def __init__(self, optimizer="original", num_iter=500, top_p=0.01, min_k=1, max_k=16, scaling_mode='tensor', block_size=64, full_matrix=False, target_format='fp8', no_learned_rounding=False, kernel_backend='triton', lr_schedule='adaptive', lr_gamma=0.99, lr_patience=50, lr_factor=0.5, lr_min=1e-8, lr_cooldown=0, lr_threshold=0.0, lr_adaptive_mode='simple-reset', **kwargs):
         self.num_iter = num_iter
         self.top_p = top_p
         self.min_k = min_k
@@ -175,6 +180,16 @@ class LearnedRoundingConverter:
         self.no_learned_rounding = no_learned_rounding
         self.kernel_backend = kernel_backend
         self.optimizer_kwargs = kwargs
+        
+        # LR schedule configuration (for 'original' optimizer)
+        self.lr_schedule = lr_schedule
+        self.lr_gamma = lr_gamma
+        self.lr_patience = lr_patience
+        self.lr_factor = lr_factor
+        self.lr_min = lr_min
+        self.lr_cooldown = lr_cooldown
+        self.lr_threshold = lr_threshold
+        self.lr_adaptive_mode = lr_adaptive_mode
         
         # INT8 and 4-bit always use block-wise scaling
         if target_format in ('int8', 'nf4', 'fp4'):
@@ -198,6 +213,8 @@ class LearnedRoundingConverter:
         print(f"LearnedRoundingConverter initialized on device: {self.device}")
         print(f"  - Target format: {self.target_format}")
         print(f"  - Using optimizer: '{self.optimizer_choice}'" + (" (disabled - simple quant)" if self.no_learned_rounding else ""))
+        if self.optimizer_choice == 'original':
+            print(f"  - LR schedule: {self.lr_schedule}")
         print(f"  - Scaling mode: {self.scaling_mode}")
         if self.scaling_mode == 'block':
             print(f"    - Block size: {self.block_size}")
@@ -320,13 +337,16 @@ class LearnedRoundingConverter:
         best_loss = float('inf')
         best_tensor = None
         worse_loss_counter = 0
+        plateau_counter = 0  # For plateau schedule
+        cooldown_counter = 0  # For plateau cooldown
         curr_lr = self.optimizer_kwargs.get('lr', 0.5)
         if W_float32.shape[0] == W_float32.shape[1]:
             small_mult = 0.95
         else:
             small_mult = 1.0
 
-        pbar = tqdm(range(self.num_iter), desc="    Optimizing (Original)", leave=False, dynamic_ncols=True)
+        schedule_name = self.lr_schedule
+        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (Original-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             with torch.no_grad():
                 current_dq = W_q_refined / scale
@@ -334,90 +354,94 @@ class LearnedRoundingConverter:
                 projected_error = U_k.T @ error @ Vh_k.T
                 loss = torch.linalg.norm(projected_error)
 
-            if loss.item() < best_loss and worse_loss_counter < 50:
-                best_loss = loss.item()
+            current_loss = loss.item()
+            # Check if improvement exceeds threshold
+            improvement = best_loss - current_loss
+            improved = improvement > self.lr_threshold if self.lr_threshold > 0 else current_loss < best_loss
+            
+            # Store counter before potential reset (for no-reset adaptive mode)
+            prev_worse_counter = worse_loss_counter
+
+            if improved:
+                best_loss = current_loss
                 best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (1.25 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 49 and worse_loss_counter < 75:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (1.375 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 74 and worse_loss_counter < 100:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (1.5 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 99 and worse_loss_counter < 125:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (1.75 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 124 and worse_loss_counter < 150:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (2.0 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 149 and worse_loss_counter < 200:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (2.25 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 199 and worse_loss_counter < 250:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (2.5 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 249 and worse_loss_counter < 300:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (2.75 * small_mult), 100.0)
-            elif loss.item() < best_loss and worse_loss_counter > 299:
-                best_loss = loss.item()
-                best_tensor = W_q_refined.clone()
-                worse_loss_counter = 0
-                curr_lr = min(curr_lr * (3.0 * small_mult), 100.0)
-            elif loss.item() > best_loss and worse_loss_counter < 26:
+                plateau_counter = 0
+                if self.lr_adaptive_mode == 'simple-reset':
+                    worse_loss_counter = 0
+                # no-reset mode: worse_loss_counter preserved for tier calculation
+            else:
                 worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.95 * small_mult), 9e-8)
-            elif worse_loss_counter > 25 and worse_loss_counter < 51:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.97 * small_mult), 8e-8)
-            elif worse_loss_counter > 50 and worse_loss_counter < 76:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.985 * small_mult), 7e-8)
-            elif worse_loss_counter > 75 and worse_loss_counter < 101:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.9875 * small_mult), 6e-8)
-            elif worse_loss_counter > 100 and worse_loss_counter < 151:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.98875 * small_mult), 5e-8)
-            elif worse_loss_counter > 150 and worse_loss_counter < 201:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.99 * small_mult), 4e-8)
-            elif worse_loss_counter > 200 and worse_loss_counter < 251:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.99125 * small_mult), 3e-8)
-            elif worse_loss_counter > 250 and worse_loss_counter < 301:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.9925 * small_mult), 2e-8)
-            elif worse_loss_counter > 300:
-                worse_loss_counter += 1
-                curr_lr = max(curr_lr * (0.995 * small_mult), 5e-9)
+                plateau_counter += 1
+
+            # LR update based on schedule
+            if schedule_name == 'exponential':
+                # ExponentialLR: lr = lr * gamma per step
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+            elif schedule_name == 'plateau':
+                # ReduceLROnPlateau with cooldown
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= self.lr_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        cooldown_counter = self.lr_cooldown
+                    plateau_counter = 0
+            else:  # 'adaptive' - tier-based schedule
+                # For no-reset mode, use counter value before reset for tier calculation
+                counter_for_tier = prev_worse_counter if (improved and self.lr_adaptive_mode == 'no-reset') else worse_loss_counter
+                
+                if improved and counter_for_tier < 50:
+                    curr_lr = min(curr_lr * (1.25 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 50 and counter_for_tier < 75:
+                    curr_lr = min(curr_lr * (1.375 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 75 and counter_for_tier < 100:
+                    curr_lr = min(curr_lr * (1.5 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 100 and counter_for_tier < 125:
+                    curr_lr = min(curr_lr * (1.75 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 125 and counter_for_tier < 150:
+                    curr_lr = min(curr_lr * (2.0 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 150 and counter_for_tier < 200:
+                    curr_lr = min(curr_lr * (2.25 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 200 and counter_for_tier < 250:
+                    curr_lr = min(curr_lr * (2.5 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 250 and counter_for_tier < 300:
+                    curr_lr = min(curr_lr * (2.75 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 300:
+                    curr_lr = min(curr_lr * (3.0 * small_mult), 100.0)
+                elif not improved and worse_loss_counter < 26:
+                    curr_lr = max(curr_lr * (0.95 * small_mult), 9e-8)
+                elif worse_loss_counter >= 26 and worse_loss_counter < 51:
+                    curr_lr = max(curr_lr * (0.97 * small_mult), 8e-8)
+                elif worse_loss_counter >= 51 and worse_loss_counter < 76:
+                    curr_lr = max(curr_lr * (0.985 * small_mult), 7e-8)
+                elif worse_loss_counter >= 76 and worse_loss_counter < 101:
+                    curr_lr = max(curr_lr * (0.9875 * small_mult), 6e-8)
+                elif worse_loss_counter >= 101 and worse_loss_counter < 151:
+                    curr_lr = max(curr_lr * (0.98875 * small_mult), 5e-8)
+                elif worse_loss_counter >= 151 and worse_loss_counter < 201:
+                    curr_lr = max(curr_lr * (0.99 * small_mult), 4e-8)
+                elif worse_loss_counter >= 201 and worse_loss_counter < 251:
+                    curr_lr = max(curr_lr * (0.99125 * small_mult), 3e-8)
+                elif worse_loss_counter >= 251 and worse_loss_counter < 301:
+                    curr_lr = max(curr_lr * (0.9925 * small_mult), 2e-8)
+                else:  # worse_loss_counter >= 301
+                    curr_lr = max(curr_lr * (0.995 * small_mult), 5e-9)
+                
+                # Reset counter after boost in no-reset mode
+                if improved and self.lr_adaptive_mode == 'no-reset':
+                    worse_loss_counter = 0
+
+            pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
         
-        
-            pbar.set_postfix({"loss": f"{loss.item():.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
-        
-            if loss.item() < 1e-8 or curr_lr < 1e-08 or worse_loss_counter > 500:
+            # Early stopping conditions
+            if current_loss < 1e-8 or curr_lr < 1e-08 or worse_loss_counter > 500:
                 if curr_lr < 1.75e-08 and worse_loss_counter > 450:
                     print("      - Loss has stalled and learning rate has bottomed out. Stopping.")
-                elif loss.item() < 1e-8 and curr_lr < 1.75e-8:
+                elif current_loss < 1e-8 and curr_lr < 1.75e-8:
                     print("      - Learning Rate has bottomed out and loss is negligible. Stopping.")
-                elif worse_loss_counter > 450 and loss.item() > 2e-8:
+                elif worse_loss_counter > 450 and current_loss > 2e-8:
                     print("      - Loss is negligible and loss has stalled. Stopping.")
-                elif loss.item() < 1e-8:
+                elif current_loss < 1e-8:
                     print("      - Loss is negligible. Stopping.")
                 elif curr_lr < 1e-08:
                     print("      - Learning Rate has bottomed out. Stopping.")
@@ -1014,7 +1038,7 @@ class LearnedRoundingConverter:
 # --- Main script execution functions ---
 
 def convert_to_fp8_scaled(
-    input_file: str, output_file: str, comfy_quant: bool, t5xxl: bool, distillation_large: bool,
+    input_file: str, output_file: str, comfy_quant: bool, t5xxl: bool, mistral: bool, distillation_large: bool,
     distillation_small: bool, nerf_large: bool, nerf_small: bool,
     radiance: bool, wan: bool, qwen: bool, hunyuan: bool, zimage: bool, zimage_refiner: bool, calib_samples: int, seed: int,
     int8: bool = False, nf4: bool = False, fp4: bool = False,
@@ -1176,8 +1200,8 @@ def convert_to_fp8_scaled(
 
         # Check exclusion filters (only matters if not custom matched)
         if not use_custom:
-            if t5xxl and any(n in key for n in AVOID_KEY_NAMES):
-                exclusion_reason = "T5XXL exclusion"
+            if (t5xxl or mistral) and any(n in key for n in AVOID_KEY_NAMES):
+                exclusion_reason = "T5XXL/Mistral exclusion"
             elif radiance and any(n in key for n in RADIANCE_LAYER_KEYNAMES):
                 exclusion_reason = "Radiance exclusion"
             elif wan and any(n in key for n in AVOID_KEY_NAMES):
@@ -1331,8 +1355,8 @@ def convert_to_fp8_scaled(
                         del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new
                         if device == 'cuda': torch.cuda.empty_cache()
 
-        # T5XXL always needs input_scale regardless of --include_input_scale flag
-        if t5xxl and f"{base_name}.input_scale" not in new_tensors:
+        # T5XXL/Mistral always needs input_scale regardless of --include_input_scale flag
+        if (t5xxl or mistral) and f"{base_name}.input_scale" not in new_tensors:
             new_tensors[f"{base_name}.input_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
 
         # Get scale key name based on comfy_quant mode
@@ -1351,8 +1375,9 @@ def convert_to_fp8_scaled(
         if key not in new_tensors:
             new_tensors[key] = tensor
 
-    if comfy_quant and "scaled_fp8" not in new_tensors and not int8:
-        new_tensors["scaled_fp8"] = torch.empty((0), dtype=TARGET_FP8_DTYPE) if t5xxl else torch.empty((2), dtype=TARGET_FP8_DTYPE)
+    # Add scaled_fp8 marker only for legacy non-comfy_quant FP8 format
+    if not comfy_quant and not int8 and not custom_layers and "scaled_fp8" not in new_tensors:
+        new_tensors["scaled_fp8"] = torch.empty((0), dtype=TARGET_FP8_DTYPE) if (t5xxl or mistral) else torch.empty((2), dtype=TARGET_FP8_DTYPE)
 
     print(f"Saving {len(new_tensors)} tensors to {output_file}")
     try:
@@ -1414,6 +1439,7 @@ def main():
     parser.add_argument("--heur", action='store_true', help="Skip layers with poor quantization characteristics (aspect ratio, size).")
     parser.add_argument("--input_scale", action='store_true', help="Include input_scale tensor for FP8 (uses weight_scale as default). Always enabled for T5XXL.")
     parser.add_argument("--t5xxl", action='store_true', help="Apply exclusions for T5XXL Text Encoder models.")
+    parser.add_argument("--mistral", action='store_true', help="Apply exclusions for Mistral Text Encoder models.")
     parser.add_argument("--distillation_large", action='store_true', help="Exclude known distillation layers and other sensitive.")
     parser.add_argument("--distillation_small", action='store_true', help="Exclude known distillation layers.")
     parser.add_argument("--nerf_large", action='store_true', help="Exclude known NeRF layers, distillation layers and txt_in.")
@@ -1427,14 +1453,24 @@ def main():
     parser.add_argument("--full_matrix", action='store_true', help="If should use torch.linalg.svd with full matices instead of the torch.svd_lowrank.")
     parser.add_argument("--scaling_mode", type=str, default="tensor", choices=["tensor", "block"], help="Quantization scaling mode.")
     parser.add_argument("--block_size", type=int, default=None, help="Block size for block-wise quantization (REQUIRED for INT8, NF4, FP4). Common values: 64, 128.")
-    parser.add_argument("--calib_samples", type=int, default=3072, help="Number of random samples for bias correction.")
+    parser.add_argument("--calib_samples", type=int, default=6144, help="Number of random samples for bias correction.")
     parser.add_argument("--manual_seed", type=int, default=-1, help="Set a manual seed for reproducibility. Use -1 for random.")
     parser.add_argument("--optimizer", type=str, default="original", choices=["original", "adamw", "ppsf", "radam"], help="Optimization algorithm.")
-    parser.add_argument("--num_iter", type=int, default=500, help="Total optimization iterations per tensor.")
-    parser.add_argument("--lr", type=float, default=1e-2, help="[AdamW/RAdam/Original] Initial learning rate.")
-    parser.add_argument("--top_p", type=float, default=0.01, help="Proportion of principal components (SVD) to use.")
-    parser.add_argument("--min_k", type=int, default=1, help="Minimum number of principal components.")
-    parser.add_argument("--max_k", type=int, default=16, help="Maximum number of principal components.")
+    parser.add_argument("--num_iter", type=int, default=1000, help="Total optimization iterations per tensor.")
+    parser.add_argument("--lr", type=float, default=8.077300000003e-3, help="[AdamW/RAdam/Original] Initial learning rate.")
+    parser.add_argument("--lr_schedule", type=str, default="adaptive", choices=["adaptive", "exponential", "plateau"],
+                        help="LR schedule for 'original' optimizer: 'adaptive' (default custom), 'exponential' (gamma decay), 'plateau' (reduce on stall)")
+    parser.add_argument("--lr_gamma", type=float, default=0.99, help="[exponential] Decay factor per step (default: 0.99)")
+    parser.add_argument("--lr_patience", type=int, default=10, help="[plateau] Steps before decay")
+    parser.add_argument("--lr_factor", type=float, default=0.8, help="[plateau] LR reduction factor")
+    parser.add_argument("--lr_min", type=float, default=1e-9, help="[plateau] Minimum LR bound")
+    parser.add_argument("--lr_cooldown", type=int, default=5, help="[plateau] Steps to wait after reduction")
+    parser.add_argument("--lr_threshold", type=float, default=0.0, help="[plateau] Min improvement to reset patience")
+    parser.add_argument("--lr_adaptive_mode", type=str, default="simple-reset", choices=["simple-reset", "no-reset"],
+                        help="[adaptive] Counter reset behavior (see MANUAL.md)")
+    parser.add_argument("--top_p", type=float, default=0.2, help="Proportion of principal components (SVD) to use.")
+    parser.add_argument("--min_k", type=int, default=64, help="Minimum number of principal components.")
+    parser.add_argument("--max_k", type=int, default=1024, help="Maximum number of principal components.")
 
     args = parser.parse_args()
 
@@ -1501,7 +1537,7 @@ def main():
         else:
             format_str = TARGET_FP8_DTYPE.__str__().split('.')[-1]
             scaling_str = f"_{args.scaling_mode}"
-        flags = "".join(["_t5" if args.t5xxl else "", "_nodist_l" if args.distillation_large else "", "_nodist_s" if args.distillation_small else "", "_nonerf_l" if args.nerf_large else "", "_nonerf_s" if args.nerf_small else "", "_norad" if args.radiance else ""])
+        flags = "".join(["_t5" if args.t5xxl else "", "_mistral" if args.mistral else "", "_nodist_l" if args.distillation_large else "", "_nodist_s" if args.distillation_small else "", "_nonerf_l" if args.nerf_large else "", "_nonerf_s" if args.nerf_small else "", "_norad" if args.radiance else ""])
         output_file = f"{base}_{format_str}{scaling_str}{flags}_k{args.min_k}-{args.max_k}_p{args.top_p}_lr{args.lr}.safetensors"
     else:
         output_file = args.output
@@ -1514,7 +1550,7 @@ def main():
     print(f"Using seed: {seed}")
 
     # Separate converter kwargs from function kwargs
-    excluded_keys = ['input', 'output', 'comfy_quant', 't5xxl', 'distillation_large', 'distillation_small', 
+    excluded_keys = ['input', 'output', 'comfy_quant', 't5xxl', 'mistral', 'distillation_large', 'distillation_small', 
                      'nerf_large', 'nerf_small', 'radiance', 'wan', 'qwen', 'hunyuan', 'zimage', 'zimage_refiner',
                      'calib_samples', 'manual_seed', 'int8', 'nf4', 'fp4', 'fallback', 'custom_layers', 'custom_type',
                      'custom_block_size', 'custom_simple', 'custom_heur', 'fallback_block_size', 'fallback_simple',
@@ -1522,7 +1558,7 @@ def main():
     converter_kwargs = {k: v for k, v in vars(args).items() if k not in excluded_keys}
 
     convert_to_fp8_scaled(
-        args.input, output_file, args.comfy_quant, args.t5xxl, args.distillation_large,
+        args.input, output_file, args.comfy_quant, args.t5xxl, args.mistral, args.distillation_large,
         args.distillation_small, args.nerf_large, args.nerf_small,
         args.radiance, args.wan, args.qwen, args.hunyuan, args.zimage, args.zimage_refiner, args.calib_samples, seed,
         int8=args.int8, nf4=args.nf4, fp4=args.fp4,
