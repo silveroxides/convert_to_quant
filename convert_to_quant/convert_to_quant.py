@@ -5,8 +5,9 @@ import sys
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 from tqdm import tqdm
+import fnmatch
 import gc
 import math
 import json
@@ -86,6 +87,189 @@ def tensor_to_dict(tensor_data):
     data_dict = json.loads(json_str)
     return data_dict
 
+
+# Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
+VALID_QUANT_FORMATS = {
+    "float8_e4m3fn", "float8_e4m3fn_rowwise", "float8_e4m3fn_blockwise",
+    "int8_blockwise", "int8_lodewise", "bnb_nf4", "bnb_fp4"
+}
+
+
+def pattern_specificity(pattern: str) -> tuple:
+    """
+    Calculate specificity score for a pattern.
+    Higher score = more specific pattern.
+    
+    Priority rules:
+    1. Tier 0 (highest): Pattern has numbers AND 8+ non-wildcard chars
+    2. Tier 1: Longer non-wildcard length, bonus for internal matches (*pattern*)
+    
+    Returns:
+        (tier, score) tuple for sorting - lower tier and higher score = more specific
+    """
+    if pattern.startswith('_'):
+        return (999, 0)  # Special keys like _default have lowest priority
+    
+    has_number = any(c.isdigit() for c in pattern)
+    non_wildcard_len = len(pattern.replace('*', ''))
+    is_internal = pattern.startswith('*')  # Internal match bonus
+    
+    # Tier 0: numbers + 8+ non-wildcard chars (very specific layers)
+    tier = 0 if (has_number and non_wildcard_len >= 8) else 1
+    
+    # Score: non-wildcard length + bonus for internal matches
+    internal_bonus = 10 if is_internal else 0
+    return (tier, non_wildcard_len + internal_bonus)
+
+
+def load_layer_config(config_path: str) -> Dict[str, Any]:
+    """
+    Load and validate layer configuration from JSON file.
+    
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        ValueError: If config has invalid format or unknown quant format
+    
+    Returns:
+        Validated config dict
+    """
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Layer config file not found: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    if not isinstance(config, dict):
+        raise ValueError(f"Layer config must be a JSON object, got {type(config).__name__}")
+    
+    # Validate each entry
+    for key, settings in config.items():
+        if key.startswith('_'):
+            continue  # Skip special keys like _default, _exclusions
+        
+        if not isinstance(settings, dict):
+            raise ValueError(f"Layer config entry '{key}' must be an object, got {type(settings).__name__}")
+        
+        if 'format' not in settings:
+            raise ValueError(f"Layer config entry '{key}' missing required 'format' field")
+        
+        fmt = settings['format']
+        if fmt not in VALID_QUANT_FORMATS:
+            raise ValueError(
+                f"Layer config entry '{key}' has invalid format '{fmt}'. "
+                f"Valid formats: {sorted(VALID_QUANT_FORMATS)}"
+            )
+    
+    print(f"Loaded layer config with {len([k for k in config if not k.startswith('_')])} layer patterns")
+    return config
+
+
+def get_layer_settings(layer_key: str, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Find the most specific matching config entry for a layer.
+    
+    Args:
+        layer_key: Full layer name (e.g., "double_blocks.0.img_attn.proj.weight")
+        config: Layer config dict
+    
+    Returns:
+        Settings dict for the layer, or None if no match and no _default
+    """
+    # Strip .weight suffix for matching
+    base_key = layer_key[:-7] if layer_key.endswith('.weight') else layer_key
+    
+    # Find all matching patterns
+    matches = []
+    for pattern, settings in config.items():
+        if pattern.startswith('_'):
+            continue
+        if fnmatch.fnmatch(base_key, pattern):
+            specificity = pattern_specificity(pattern)
+            matches.append((specificity, pattern, settings))
+    
+    if matches:
+        # Sort by (tier asc, score desc) - most specific first
+        matches.sort(key=lambda x: (x[0][0], -x[0][1]))
+        _, best_pattern, best_settings = matches[0]
+        return best_settings
+    
+    # Fall back to _default if present
+    return config.get('_default')
+
+
+def generate_config_template(input_file: str, output_path: str, block_size: int = 128):
+    """
+    Generate a JSON config template from model, with viable layers and empty format.
+    
+    Args:
+        input_file: Path to input safetensors file
+        output_path: Path to write the template JSON
+        block_size: Block size to check divisibility against (for block-based formats)
+    
+    Returns:
+        Tuple of (viable_count, skipped_count)
+    """
+    print(f"Generating layer config template from: {input_file}")
+    print("-" * 60)
+    
+    # Load tensor metadata (not full tensors)
+    try:
+        with safe_open(input_file, framework="pt", device='cpu') as f:
+            all_keys = f.keys()
+            weight_keys = [k for k in all_keys if k.endswith('.weight')]
+    except Exception as e:
+        raise RuntimeError(f"Error reading model file: {e}")
+    
+    print(f"Found {len(weight_keys)} weight tensors")
+    
+    config = {
+        "_default": {"format": ""},
+        "_exclusions": []
+    }
+    
+    viable_count = 0
+    skipped_count = 0
+    skipped_reasons = {}
+    
+    with safe_open(input_file, framework="pt", device='cpu') as f:
+        for key in tqdm(weight_keys, desc="Analyzing layers"):
+            tensor = f.get_tensor(key)
+            base_name = key[:-7]  # Remove .weight suffix
+            
+            # Check viability
+            skip_reason = None
+            if tensor.numel() == 0:
+                skip_reason = "empty tensor"
+            elif tensor.ndim != 2:
+                skip_reason = f"non-2D ({tensor.ndim}D)"
+            elif tensor.shape[0] < 16 or tensor.shape[1] < 16:
+                skip_reason = f"too small ({tensor.shape})"
+            
+            if skip_reason:
+                skipped_count += 1
+                skipped_reasons.setdefault(skip_reason, []).append(base_name)
+                continue
+            
+            # Add to template with shape info as comment
+            config[base_name] = {"format": "", "_shape": list(tensor.shape)}
+            viable_count += 1
+    
+    # Write template
+    with open(output_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    print("-" * 60)
+    print(f"Template Summary:")
+    print(f"  Viable layers:  {viable_count}")
+    print(f"  Skipped layers: {skipped_count}")
+    if skipped_reasons:
+        print("  Skip reasons:")
+        for reason, layers in skipped_reasons.items():
+            print(f"    {reason}: {len(layers)} layers")
+    print(f"\nTemplate written to: {output_path}")
+    print("Edit the template to set 'format' for each layer (float8_e4m3fn, int8_blockwise, etc.)")
+    
+    return viable_count, skipped_count
 
 def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None) -> torch.Tensor:
     """
@@ -1252,6 +1436,7 @@ def convert_to_fp8_scaled(
     fallback_block_size: Optional[int] = None, fallback_simple: bool = False,
     full_precision_matrix_mult: bool = False, skip_inefficient_layers: bool = False,
     include_input_scale: bool = False, no_learned_rounding: bool = False,
+    layer_config: Optional[Dict[str, Any]] = None,
     **converter_kwargs
 ):
     # Determine target format (priority: nf4 > fp4 > int8 > fp8)
@@ -1393,7 +1578,9 @@ def convert_to_fp8_scaled(
         exclusion_reason = ""
         use_custom = False
         use_fallback = False
+        use_layer_config = False
         layer_format = target_format  # default to primary
+        layer_settings = None  # Per-layer settings from config
 
         # T5XXL decoder tensors are always removed (not quantized, not kept)
         if t5xxl and any(n in key for n in T5XXL_REMOVE_KEY_NAMES):
@@ -1401,13 +1588,37 @@ def convert_to_fp8_scaled(
             skipped_count += 1
             continue
 
-        # Check for custom pattern match FIRST (highest priority)
-        if custom_pattern and custom_pattern.search(key):
+        # Check layer_config FIRST (highest priority)
+        if layer_config:
+            layer_settings = get_layer_settings(key, layer_config)
+            if layer_settings:
+                if layer_settings.get('skip', False):
+                    print(f"({i+1}/{total_weights}) Skipping (layer-config): {key}")
+                    original_tensor = tensors[key]
+                    new_tensors[key] = original_tensor.to(device='cpu', dtype=original_tensor.dtype)
+                    skipped_count += 1
+                    continue
+                use_layer_config = True
+                # Map format to layer_format type
+                fmt = layer_settings['format']
+                if fmt.startswith('float8'):
+                    layer_format = 'fp8'
+                elif fmt.startswith('int8'):
+                    layer_format = 'int8'
+                elif fmt == 'bnb_nf4':
+                    layer_format = 'nf4'
+                elif fmt == 'bnb_fp4':
+                    layer_format = 'fp4'
+                else:
+                    layer_format = 'fp8'  # fallback
+
+        # Check for custom pattern match (second priority, only if no layer_config match)
+        if not use_layer_config and custom_pattern and custom_pattern.search(key):
             use_custom = True
             layer_format = custom_type
 
-        # Check exclusion filters (only matters if not custom matched)
-        if not use_custom:
+        # Check exclusion filters (only matters if not custom matched and not layer_config matched)
+        if not use_custom and not use_layer_config:
             if (t5xxl or mistral) and any(n in key for n in AVOID_KEY_NAMES):
                 exclusion_reason = "T5XXL/Mistral exclusion"
             elif radiance and any(n in key for n in RADIANCE_LAYER_KEYNAMES):
@@ -1438,7 +1649,7 @@ def convert_to_fp8_scaled(
                 exclusion_reason = "Z-Image refiner layer keep in high precision"
 
         # Handle excluded layers: use fallback if available, otherwise skip
-        if exclusion_reason and not use_custom:
+        if exclusion_reason and not use_custom and not use_layer_config:
             if fallback:
                 use_fallback = True
                 layer_format = fallback
@@ -1451,7 +1662,11 @@ def convert_to_fp8_scaled(
                 continue
 
         # Log what we're doing
-        if use_custom:
+        if use_layer_config:
+            fmt = layer_settings['format']
+            print(f"({i+1}/{total_weights}) Processing (config {fmt}): {key}")
+            custom_count += 1  # Count layer_config as custom
+        elif use_custom:
             print(f"({i+1}/{total_weights}) Processing (custom {custom_type.upper()}): {key}")
             custom_count += 1
         elif use_fallback:
@@ -1479,7 +1694,20 @@ def convert_to_fp8_scaled(
                 continue
 
         # Select the appropriate converter based on layer format
-        if use_custom:
+        if use_layer_config:
+            # Create converter dynamically from layer_config settings
+            cfg_overrides = {}
+            cfg_block_size = layer_settings.get('block_size')
+            cfg_scaling_mode = layer_settings.get('scaling_mode')
+            cfg_simple = layer_settings.get('simple', False)
+            if cfg_block_size is not None:
+                cfg_overrides['block_size'] = cfg_block_size
+            if cfg_scaling_mode is not None:
+                cfg_overrides['scaling_mode'] = cfg_scaling_mode
+            if cfg_simple:
+                cfg_overrides['no_learned_rounding'] = True
+            converter = create_converter_for_format(layer_format, cfg_overrides if cfg_overrides else None)
+        elif use_custom:
             converter = converters['custom']
         elif use_fallback:
             converter = converters['fallback']
@@ -1521,11 +1749,15 @@ def convert_to_fp8_scaled(
                 # Add input_scale placeholder for INT8 (required by ComfyUI)
                 new_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=SCALE_DTYPE, device='cpu')
             else:
-                # FP8 format - determine format based on scaling_mode
+                # FP8 format - determine format based on scaling_mode or layer_config
                 new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
                 
-                # Select FP8 format type based on scaling mode
-                if converter.scaling_mode == 'row':
+                # Select FP8 format type based on layer_config or scaling mode
+                if use_layer_config:
+                    # Use format directly from layer_config
+                    fp8_format = layer_settings['format']
+                    fp8_block_size = layer_settings.get('block_size', layer_block_size)
+                elif converter.scaling_mode == 'row':
                     fp8_format = "float8_e4m3fn_rowwise"
                     fp8_block_size = None
                 elif converter.scaling_mode == 'block2d':
@@ -1892,7 +2124,26 @@ def main():
     parser.add_argument("--full-precision-mm", action='store_true', dest="full_precision_mm",
                         help="Set full_precision_matrix_mult=True in .comfy_quant metadata (for --convert-fp8-scaled)")
 
+    # Per-layer quantization config (JSON file)
+    parser.add_argument("--layer-config", type=str, default=None, dest="layer_config",
+                        help="Path to JSON file with per-layer quantization settings. See MANUAL.md for format.")
+
+    # Dry run / template generation
+    parser.add_argument("--dry-run", type=str, nargs='?', const='analyze', default=None, dest="dry_run",
+                        choices=['analyze', 'create-template'],
+                        help="Dry run mode: 'analyze' shows what would be processed, 'create-template' generates config template")
+
     args = parser.parse_args()
+
+    # Handle dry-run create-template mode (separate workflow)
+    if args.dry_run == 'create-template':
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+        
+        template_path = os.path.splitext(args.input)[0] + '_layer_config_template.json'
+        generate_config_template(args.input, template_path, block_size=args.block_size or 128)
+        return
 
     # Handle fp8_scaled conversion mode first (separate workflow)
     if args.convert_fp8_scaled:
@@ -1996,8 +2247,13 @@ def main():
                      'nerf_large', 'nerf_small', 'radiance', 'wan', 'qwen', 'hunyuan', 'zimage', 'zimage_refiner',
                      'calib_samples', 'manual_seed', 'int8', 'nf4', 'fp4', 'fallback', 'custom_layers', 'custom_type',
                      'custom_block_size', 'custom_scaling_mode', 'custom_simple', 'custom_heur', 'fallback_block_size', 'fallback_simple',
-                     'full_precision_matrix_mult', 'heur', 'input_scale', 'simple']
+                     'full_precision_matrix_mult', 'heur', 'input_scale', 'simple', 'layer_config']
     converter_kwargs = {k: v for k, v in vars(args).items() if k not in excluded_keys}
+
+    # Load layer config if specified
+    layer_config_data = None
+    if args.layer_config:
+        layer_config_data = load_layer_config(args.layer_config)
 
     convert_to_fp8_scaled(
         args.input, output_file, args.comfy_quant, args.t5xxl, args.mistral, args.distillation_large,
@@ -2012,6 +2268,7 @@ def main():
         skip_inefficient_layers=args.heur,
         include_input_scale=args.input_scale,
         no_learned_rounding=args.simple,
+        layer_config=layer_config_data,
         **converter_kwargs
     )
 

@@ -1,8 +1,27 @@
 # Development Log
 
+## 2025-12-14: JSON Layer Config for Per-Layer Quantization
+
+Added `--layer-config PATH` and `--dry-run create-template`:
+- Specificity-based pattern matching (numbers+8chars → internal matches → prefix)
+- `*` wildcards (fnmatch)
+- Strict validation (error on unknown format)
+- **Template generation**: `--dry-run create-template` scans model and creates template JSON
+
+**Example:**
+```bash
+# Generate template
+convert_to_quant -i model.safetensors --dry-run create-template
+
+# Use template
+convert_to_quant -i model.safetensors --layer-config model_layer_config_template.json --comfy_quant
+```
+
+---
+
 ## 2025-12-14: Custom Scaling Mode for Mixed Precision FP8
 
-Added `--custom-scaling-mode {tensor,row,block,block2d}` to override FP8 scaling mode for custom-type layers, enabling mixed precision like tensor scaling for primary layers + block2d for specific layers.
+Added `--custom-scaling-mode {tensor,row,block,block2d}` to override FP8 scaling mode for custom-type layers.
 
 ---
 
