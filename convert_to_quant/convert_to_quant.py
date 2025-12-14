@@ -90,7 +90,7 @@ def tensor_to_dict(tensor_data):
 
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
 VALID_QUANT_FORMATS = {
-    "float8_e4m3fn", "float8_e4m3fn_rowwise", "float8_e4m3fn_blockwise",
+    "float8_e4m3fn", "float8_e4m3fn_rowwise", "float8_e4m3fn_blockwise", "float8_e4m3fn_block3d",
     "int8_blockwise", "int8_lodewise", "bnb_nf4", "bnb_fp4"
 }
 
@@ -385,6 +385,9 @@ class LearnedRoundingConverter:
         
         # INT8 and 4-bit always use block-wise scaling
         if target_format in ('int8', 'nf4', 'fp4'):
+            scaling_mode = 'block'
+        # Normalize block3d alias to block
+        if scaling_mode == 'block3d':
             scaling_mode = 'block'
         self.scaling_mode = scaling_mode
         
@@ -2072,7 +2075,7 @@ def main():
     parser.add_argument("--custom-block-size", type=int, default=None, dest="custom_block_size",
                         help="Block size for custom-type layers (default: inherit --block_size)")
     parser.add_argument("--custom-scaling-mode", type=str, default=None, dest="custom_scaling_mode",
-                        choices=["tensor", "row", "block", "block2d"],
+                        choices=["tensor", "row", "block", "block2d", "block3d"],
                         help="FP8 scaling mode for custom-type layers (default: inherit --scaling_mode)")
     parser.add_argument("--custom-simple", action='store_true', dest="custom_simple",
                         help="Use simple quantization for custom-type layers")
@@ -2102,8 +2105,8 @@ def main():
     parser.add_argument("--zimage", action='store_true', help="Exclude known Z-Image layers.")
     parser.add_argument("--zimage_refiner", action='store_true', help="Exclude known Z-Image refiner layers (context_refiner, noise_refiner).")
     parser.add_argument("--full_matrix", action='store_true', help="If should use torch.linalg.svd with full matices instead of the torch.svd_lowrank.")
-    parser.add_argument("--scaling_mode", type=str, default="tensor", choices=["tensor", "row", "block", "block2d"],
-                        help="FP8 scaling mode: 'tensor' (1 global scale), 'row' (per-row scale), 'block' (per-row-group), 'block2d' (2D tiles like INT8).")
+    parser.add_argument("--scaling_mode", type=str, default="tensor", choices=["tensor", "row", "block", "block2d", "block3d"],
+                        help="FP8 scaling mode: 'tensor' (1 global scale), 'row' (per-row scale), 'block'/'block3d' (per-row-group 3D), 'block2d' (2D tiles like INT8).")
 
     parser.add_argument("--block_size", type=int, default=None, help="Block size for block-wise quantization (REQUIRED for INT8, NF4, FP4). Common values: 64, 128.")
     parser.add_argument("--calib_samples", type=int, default=6144, help="Number of random samples for bias correction.")
