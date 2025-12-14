@@ -23,7 +23,6 @@ classifiers = [
 ]
 keywords = ["quantization", "fp8", "int8", "nf4", "machine-learning", "pytorch", "comfyui"]
 dependencies = [
-    "torch>=2.1.0",
     "safetensors>=0.4.2",
     "tqdm",
     "prodigy-plus-schedule-free",
