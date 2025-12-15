@@ -192,13 +192,15 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def get_layer_settings(layer_key: str, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def get_layer_settings(layer_key: str, config: Dict[str, Any], fullmatch: bool = False) -> Optional[Dict[str, Any]]:
     """
     Find the most specific matching config entry for a layer using regex.
     
     Args:
         layer_key: Full layer name (e.g., "double_blocks.0.img_attn.proj.weight")
         config: Layer config dict (with _compiled_patterns from load_layer_config)
+        fullmatch: If True, use re.fullmatch (pattern must match entire string).
+                   If False (default), use re.search (pattern matches anywhere).
     
     Returns:
         Settings dict for the layer, or None if no match and no _default
@@ -223,7 +225,9 @@ def get_layer_settings(layer_key: str, config: Dict[str, Any]) -> Optional[Dict[
             except re.error:
                 continue  # Skip invalid patterns
         
-        if regex.search(base_key):
+        # Use fullmatch or search based on flag
+        match_result = regex.fullmatch(base_key) if fullmatch else regex.search(base_key)
+        if match_result:
             specificity = pattern_specificity(pattern)
             matches.append((specificity, pattern, settings))
     
@@ -1480,6 +1484,7 @@ def convert_to_fp8_scaled(
     full_precision_matrix_mult: bool = False, skip_inefficient_layers: bool = False,
     include_input_scale: bool = False, no_learned_rounding: bool = False,
     layer_config: Optional[Dict[str, Any]] = None,
+    layer_config_fullmatch: bool = False,
     **converter_kwargs
 ):
     # Determine target format (priority: nf4 > fp4 > int8 > fp8)
@@ -1633,7 +1638,7 @@ def convert_to_fp8_scaled(
 
         # Check layer_config FIRST (highest priority)
         if layer_config:
-            layer_settings = get_layer_settings(key, layer_config)
+            layer_settings = get_layer_settings(key, layer_config, fullmatch=layer_config_fullmatch)
             if layer_settings:
                 if layer_settings.get('skip', False):
                     print(f"({i+1}/{total_weights}) Skipping (layer-config): {key}")
@@ -2181,8 +2186,11 @@ Example config:
   "attn": {"format": "float8_e4m3fn", "full_precision_matrix_mult": true},
   "\\\\.0\\\\.img_mod": {"skip": true}
 }
-Patterns use Python regex (re.search). In JSON, backslashes must be doubled (\\\\. for literal dot).
-See DEVELOPMENT.md for migration guide from fnmatch patterns.""")
+By default, patterns use re.search (substring match). Use --fullmatch for full string matching.
+In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md for details.""")
+    parser.add_argument("--fullmatch", action='store_true', dest="layer_config_fullmatch",
+                        help="Use re.fullmatch instead of re.search for --layer-config patterns. "
+                             "With fullmatch, patterns must match the entire layer name (use .* for wildcards).")
 
     # Dry run / template generation
     parser.add_argument("--dry-run", type=str, nargs='?', const='analyze', default=None, dest="dry_run",
@@ -2325,6 +2333,7 @@ See DEVELOPMENT.md for migration guide from fnmatch patterns.""")
         include_input_scale=args.input_scale,
         no_learned_rounding=args.simple,
         layer_config=layer_config_data,
+        layer_config_fullmatch=args.layer_config_fullmatch,
         **converter_kwargs
     )
 
