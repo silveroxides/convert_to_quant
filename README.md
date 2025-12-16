@@ -26,8 +26,8 @@ pip install torch --index-url https://download.pytorch.org/whl/cu130
 # CUDA 12.8 (stable)
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 
-# CUDA 11.8 (older GPUs)
-pip install torch --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.6
+pip install torch --index-url https://download.pytorch.org/whl/cu126
 
 # CPU only (no GPU acceleration)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -45,10 +45,21 @@ cd convert_to_quant
 pip install -e .
 ```
 
-### Optional: Triton (recommended for INT8)
+### Optional: Triton (needed for INT8)
 
 ```bash
-pip install triton>=2.1.0
+On Linux
+pip install -U triton
+
+On Windows
+for torch>=2.9
+pip install -U "triton-windows<3.6"
+for torch>=2.8
+pip install -U "triton-windows<3.5"
+for torch>=2.7
+pip install -U "triton-windows<3.4"
+for torch>=2.6
+pip install -U "triton-windows<3.3"
 ```
 
 ---
