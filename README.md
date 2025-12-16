@@ -84,14 +84,11 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 
 ---
 
-## Supported Quantization Formats
+## Supported Quantization Format
 
 | Format | Flag | Hardware | Notes |
 |--------|------|----------|-------|
 | FP8 (E4M3) | *(default)* | Any GPU | Tensor core acceleration on Ada+ |
-| INT8 Block-wise | `--int8` | Any GPU | Good balance of quality/speed |
-| NF4 4-bit | `--nf4` | Any GPU | Maximum compression |
-| FP4 4-bit | `--fp4` | Any GPU | Experimental |
 
 ---
 
@@ -182,6 +179,26 @@ convert_to_quant --help-experimental
 
 # View model-specific filter presets
 convert_to_quant --help-filters
+```
+
+---
+
+## Experimental Quantization Formats
+
+These formats are experimental and accessed via `--help-experimental`:
+
+| Format | Flag | Notes |
+|--------|------|-------|
+| INT8 Block-wise | `--int8` | Good balance of quality/speed |
+| NF4 4-bit | `--nf4` | Maximum compression |
+| FP4 4-bit | `--fp4` | Highly experimental |
+
+```bash
+# INT8 with performance heuristics
+convert_to_quant -i model.safetensors --int8 --block_size 128 --comfy_quant --heur
+
+# NF4 4-bit quantization
+convert_to_quant -i model.safetensors --nf4 --block_size 64 --comfy_quant
 ```
 
 ## Requirements
