@@ -91,10 +91,10 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 
 | Format | Flag | Hardware | Notes |
 |--------|------|----------|-------|
-| FP8 (E4M3) | *(default)* | Ada Lovelace+ | Tensor core acceleration |
-| INT8 Block-wise | `--int8` | Broad support | Good balance of quality/speed |
-| NF4 4-bit | `--nf4` | Broad support | Maximum compression |
-| FP4 4-bit | `--fp4` | Broad support | Experimental |
+| FP8 (E4M3) | *(default)* | Any GPU | Tensor core acceleration on Ada+ |
+| INT8 Block-wise | `--int8` | Any GPU | Good balance of quality/speed |
+| NF4 4-bit | `--nf4` | Any GPU | Maximum compression |
+| FP4 4-bit | `--fp4` | Any GPU | Experimental |
 
 ---
 
@@ -102,12 +102,12 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 
 | Model | Flag | Notes |
 |-------|------|-------|
-| Flux / Flux-Dev | `--distillation_large` / `--nerf_large` | Distillation layers excluded |
+| Chroma / Radiance | `--distillation_large` / `--nerf_large` | Distillation layers excluded |
 | T5-XXL Text Encoder | `--t5xxl` | Decoder removed |
 | Hunyuan Video | `--hunyuan` | Attention norms excluded |
 | WAN Video | `--wan` | Time embeddings excluded |
 | Qwen Image | `--qwen` | Image layers excluded |
-| Z-Image | `--zimage` / `--zimage_refiner` | Vision encoder specific |
+| Z-Image | `--zimage` / `--zimage_refiner` | Refiner excludes context/noise refiner |
 
 ---
 
