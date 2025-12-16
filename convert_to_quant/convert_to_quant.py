@@ -1430,7 +1430,7 @@ class LearnedRoundingConverter:
             print(f"    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 W_scaled = W_float32 * quant_scale
-                W_f8 = W_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
+                W_f8 = W_scaled.to(TARGET_FP8_DTYPE)
                 dequant_scale = (1.0 / quant_scale).squeeze(1)  # (M,)
                 dequantized = W_f8.to(COMPUTE_DTYPE) / quant_scale
 
@@ -1475,8 +1475,6 @@ class LearnedRoundingConverter:
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
-        final_tensor_scaled.clamp_(-self.f8_max_val, self.f8_max_val)
-
         with torch.no_grad():
             W_f8 = final_tensor_scaled.to(TARGET_FP8_DTYPE)
             dequant_scale = (1.0 / quant_scale).squeeze(1)  # (M,)
@@ -1518,7 +1516,6 @@ class LearnedRoundingConverter:
                 # Apply scale per-block
                 scale_broadcast = quant_scale.unsqueeze(-1).unsqueeze(-1)  # (M//bs, N//bs, 1, 1)
                 W_scaled_blocked = W_blocked * scale_broadcast
-                W_scaled_blocked = W_scaled_blocked.clamp(-self.f8_max_val, self.f8_max_val)
                 W_f8_blocked = W_scaled_blocked.to(TARGET_FP8_DTYPE)
                 W_f8 = W_f8_blocked.permute(0, 2, 1, 3).reshape(M, N)
 
@@ -1573,8 +1570,6 @@ class LearnedRoundingConverter:
             final_tensor_scaled = self._optimize_original(W_float32, scale_full, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
-
-        final_tensor_scaled.clamp_(-self.f8_max_val, self.f8_max_val)
 
         with torch.no_grad():
             W_f8 = final_tensor_scaled.to(TARGET_FP8_DTYPE)
