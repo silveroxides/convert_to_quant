@@ -1,6 +1,7 @@
 # AI Agent Instructions
 
 > [!IMPORTANT]
+> **Always activate the virtual environment** before running any commands.  
 > **After completing ANY task**, add an entry to [DEVELOPMENT.md](DEVELOPMENT.md):
 > - Add at the top (reverse chronological order)
 > - Include: Session Summary, Files Modified, Usage examples

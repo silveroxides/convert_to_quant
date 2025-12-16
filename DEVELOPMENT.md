@@ -1,5 +1,62 @@
 # Development Log
 
+## 2025-12-16: Shape-Adaptive Plateau Schedule & Early Stopping Controls
+
+### Session Summary
+Added shape-aware LR scaling for plateau schedule and configurable early stopping thresholds. New `--help-advanced` section to keep main help clean.
+
+---
+
+### New CLI Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--lr-shape-influence` | 1.0 | Scale plateau patience/factor based on tensor aspect ratio (0.0=off, 1.0=full) |
+| `--early-stop-loss` | 1e-8 | Loss threshold for early stopping |
+| `--early-stop-lr` | 1e-10 | LR floor threshold for early stopping |
+| `--early-stop-stall` | 1000 | Worse loss counter threshold for early stopping |
+
+### New Help Section
+
+```bash
+convert_to_quant --help-advanced  # or -ha
+```
+
+Shows shape-adaptive LR and early stopping options (hidden from main `--help`).
+
+### Shape-Adaptive Plateau Scaling
+
+When using `--lr_schedule plateau`, the patience, factor, and cooldown are automatically adjusted based on tensor aspect ratio:
+
+| Tensor Shape | Aspect Ratio | Effective Patience (base=9) | Effective Factor (base=0.92) |
+|--------------|--------------|----------------------------|------------------------------|
+| `[3072, 3072]` | 1.0 | 9 | 0.92 |
+| `[12288, 3072]` | 4.0 | 18 | 0.96 |
+| `[18432, 3072]` | 6.0 | 22 | 0.97 |
+
+Set `--lr-shape-influence 0.0` to disable and use raw values.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added `ADVANCED_ARGS`, `--help-advanced`, shape-aware plateau, configurable early stopping |
+
+### Usage
+
+```bash
+# Plateau schedule with shape-adaptive scaling (default)
+convert_to_quant -i model.safetensors --lr_schedule plateau --lr_patience 9 --lr_factor 0.92
+
+# Disable shape scaling
+convert_to_quant -i model.safetensors --lr_schedule plateau --lr-shape-influence 0.0
+
+# Custom early stopping thresholds
+convert_to_quant -i model.safetensors --early-stop-stall 500 --early-stop-lr 1e-8
+```
+
+---
+
 ## 2025-12-16: CRITICAL FIX - FP8 Quantization Quality Degradation
 
 ### Session Summary

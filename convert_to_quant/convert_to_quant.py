@@ -399,7 +399,7 @@ class LearnedRoundingConverter:
     Provides a highly effective optimization strategy.
     Supports both FP8 and INT8 quantization formats.
     """
-    def __init__(self, optimizer="original", num_iter=500, top_p=0.01, min_k=1, max_k=16, scaling_mode='tensor', block_size=64, full_matrix=False, target_format='fp8', no_learned_rounding=False, kernel_backend='triton', lr_schedule='adaptive', lr_gamma=0.99, lr_patience=50, lr_factor=0.5, lr_min=1e-8, lr_cooldown=0, lr_threshold=0.0, lr_adaptive_mode='simple-reset', **kwargs):
+    def __init__(self, optimizer="original", num_iter=500, top_p=0.01, min_k=1, max_k=16, scaling_mode='tensor', block_size=64, full_matrix=False, target_format='fp8', no_learned_rounding=False, kernel_backend='triton', lr_schedule='adaptive', lr_gamma=0.99, lr_patience=50, lr_factor=0.5, lr_min=1e-8, lr_cooldown=0, lr_threshold=0.0, lr_adaptive_mode='simple-reset', lr_shape_influence=1.0, early_stop_loss=1e-8, early_stop_lr=1e-10, early_stop_stall=1000, **kwargs):
         self.num_iter = num_iter
         self.top_p = top_p
         self.min_k = min_k
@@ -422,6 +422,14 @@ class LearnedRoundingConverter:
         self.lr_cooldown = lr_cooldown
         self.lr_threshold = lr_threshold
         self.lr_adaptive_mode = lr_adaptive_mode
+        
+        # Shape-adaptive LR (for plateau schedule)
+        self.lr_shape_influence = lr_shape_influence
+        
+        # Early stopping thresholds
+        self.early_stop_loss = early_stop_loss
+        self.early_stop_lr = early_stop_lr
+        self.early_stop_stall = early_stop_stall
         
         # INT8 and 4-bit always use block-wise scaling
         if target_format in ('int8', 'nf4', 'fp4'):
@@ -582,6 +590,28 @@ class LearnedRoundingConverter:
             small_mult = 1.0
 
         schedule_name = self.lr_schedule
+        
+        # Shape-aware plateau parameters
+        rows, cols = W_float32.shape
+        aspect_ratio = max(rows, cols) / min(rows, cols)
+        
+        if schedule_name == 'plateau' and self.lr_shape_influence > 0:
+            # Scale patience and factor based on aspect ratio, modulated by influence
+            # influence=1.0: full effect, influence=0.0: no effect (use raw values)
+            ar_factor = math.sqrt(aspect_ratio)  # e.g., 1.0 for square, 2.0 for AR=4
+            blend = self.lr_shape_influence
+            
+            effective_patience = int(self.lr_patience * (1.0 + (ar_factor - 1.0) * blend))
+            # Gentler factor for elongated tensors: factor^(1/ar_factor) interpolated
+            raw_factor = self.lr_factor
+            gentler_factor = raw_factor ** (1.0 / ar_factor)
+            effective_factor = raw_factor + (gentler_factor - raw_factor) * blend
+            effective_cooldown = int(self.lr_cooldown * (1.0 + (ar_factor - 1.0) * blend * 0.5))
+        else:
+            effective_patience = self.lr_patience
+            effective_factor = self.lr_factor
+            effective_cooldown = self.lr_cooldown
+        
         pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (Original-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             with torch.no_grad():
@@ -614,13 +644,13 @@ class LearnedRoundingConverter:
                 # ExponentialLR: lr = lr * gamma per step
                 curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
             elif schedule_name == 'plateau':
-                # ReduceLROnPlateau with cooldown
+                # ReduceLROnPlateau with cooldown (shape-aware)
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
-                elif plateau_counter >= self.lr_patience:
+                elif plateau_counter >= effective_patience:
                     if curr_lr > self.lr_min:
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
-                        cooldown_counter = self.lr_cooldown
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
+                        cooldown_counter = effective_cooldown
                     plateau_counter = 0
             else:  # 'adaptive' - tier-based schedule
                 # For no-reset mode, use counter value before reset for tier calculation
@@ -669,19 +699,19 @@ class LearnedRoundingConverter:
 
             pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
         
-            # Early stopping conditions
-            if current_loss < 1e-8 or curr_lr < 1e-10 or worse_loss_counter > 1000:
-                if curr_lr < 1.75e-10 and worse_loss_counter > 950:
+            # Early stopping conditions (configurable thresholds)
+            if current_loss < self.early_stop_loss or curr_lr < self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
+                if curr_lr < self.early_stop_lr * 1.75 and worse_loss_counter > self.early_stop_stall * 0.95:
                     print("      - Loss has stalled and learning rate has bottomed out. Stopping.")
-                elif current_loss < 1e-8 and curr_lr < 1.75e-10:
+                elif current_loss < self.early_stop_loss and curr_lr < self.early_stop_lr * 1.75:
                     print("      - Learning Rate has bottomed out and loss is negligible. Stopping.")
-                elif worse_loss_counter > 950 and current_loss > 2e-8:
+                elif worse_loss_counter > self.early_stop_stall * 0.95 and current_loss > self.early_stop_loss * 2:
                     print("      - Loss is negligible and loss has stalled. Stopping.")
-                elif current_loss < 1e-8:
+                elif current_loss < self.early_stop_loss:
                     print("      - Loss is negligible. Stopping.")
-                elif curr_lr < 1e-10:
+                elif curr_lr < self.early_stop_lr:
                     print("      - Learning Rate has bottomed out. Stopping.")
-                elif worse_loss_counter > 1000:
+                elif worse_loss_counter > self.early_stop_stall:
                     print("      - Loss has stalled. Stopping.")
                 break
         
@@ -1041,6 +1071,25 @@ class LearnedRoundingConverter:
             small_mult = 1.0
 
         schedule_name = self.lr_schedule
+        
+        # Shape-aware plateau parameters
+        aspect_ratio = max(M, N) / min(M, N)
+        
+        if schedule_name == 'plateau' and self.lr_shape_influence > 0:
+            # Scale patience and factor based on aspect ratio, modulated by influence
+            ar_factor = math.sqrt(aspect_ratio)
+            blend = self.lr_shape_influence
+            
+            effective_patience = int(self.lr_patience * (1.0 + (ar_factor - 1.0) * blend))
+            raw_factor = self.lr_factor
+            gentler_factor = raw_factor ** (1.0 / ar_factor)
+            effective_factor = raw_factor + (gentler_factor - raw_factor) * blend
+            effective_cooldown = int(self.lr_cooldown * (1.0 + (ar_factor - 1.0) * blend * 0.5))
+        else:
+            effective_patience = self.lr_patience
+            effective_factor = self.lr_factor
+            effective_cooldown = self.lr_cooldown
+        
         pbar = tqdm(range(self.num_iter), desc=f"    Optimizing INT8 (Original-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             with torch.no_grad():
@@ -1073,13 +1122,13 @@ class LearnedRoundingConverter:
                 # ExponentialLR: lr = lr * gamma per step
                 curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
             elif schedule_name == 'plateau':
-                # ReduceLROnPlateau with cooldown
+                # ReduceLROnPlateau with cooldown (shape-aware)
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
-                elif plateau_counter >= self.lr_patience:
+                elif plateau_counter >= effective_patience:
                     if curr_lr > self.lr_min:
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
-                        cooldown_counter = self.lr_cooldown
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
+                        cooldown_counter = effective_cooldown
                     plateau_counter = 0
             else:  # 'adaptive' - tier-based schedule
                 # For no-reset mode, use counter value before reset for tier calculation
@@ -1128,19 +1177,19 @@ class LearnedRoundingConverter:
 
             pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
         
-            # Early stopping conditions
-            if current_loss < 1e-8 or curr_lr < 1e-10 or worse_loss_counter > 2000:
-                if curr_lr < 1e-10 and worse_loss_counter > 1950:
+            # Early stopping conditions (configurable thresholds)
+            if current_loss < self.early_stop_loss or curr_lr < self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
+                if curr_lr < self.early_stop_lr * 1.75 and worse_loss_counter > self.early_stop_stall * 0.95:
                     print("      - Loss has stalled and learning rate has bottomed out. Stopping.")
-                elif current_loss < 1e-8 and curr_lr < 1e-10:
+                elif current_loss < self.early_stop_loss and curr_lr < self.early_stop_lr * 1.75:
                     print("      - Learning Rate has bottomed out and loss is negligible. Stopping.")
-                elif worse_loss_counter > 1950 and current_loss > 1e-8:
+                elif worse_loss_counter > self.early_stop_stall * 0.95 and current_loss > self.early_stop_loss * 2:
                     print("      - Loss is negligible and loss has stalled. Stopping.")
-                elif current_loss < 1e-8:
+                elif current_loss < self.early_stop_loss:
                     print("      - Loss is negligible. Stopping.")
-                elif curr_lr < 1e-10:
+                elif curr_lr < self.early_stop_lr:
                     print("      - Learning Rate has bottomed out. Stopping.")
-                elif worse_loss_counter > 2000:
+                elif worse_loss_counter > self.early_stop_stall:
                     print("      - Loss has stalled. Stopping.")
                 break
         
@@ -2157,13 +2206,18 @@ FILTER_ARGS = {
     'hunyuan', 'zimage', 'zimage_refiner'
 }
 
+ADVANCED_ARGS = {
+    'lr_shape_influence', 'early_stop_loss', 'early_stop_lr', 'early_stop_stall'
+}
+
 
 class MultiHelpArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with multiple help sections for experimental and filter args."""
     
-    def __init__(self, *args, experimental_args=None, filter_args=None, **kwargs):
+    def __init__(self, *args, experimental_args=None, filter_args=None, advanced_args=None, **kwargs):
         self._experimental_args = experimental_args or set()
         self._filter_args = filter_args or set()
+        self._advanced_args = advanced_args or set()
         self._all_actions = []  # Track all actions for section-specific help
         super().__init__(*args, **kwargs)
     
@@ -2183,6 +2237,9 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             sys.exit(0)
         elif '--help-filters' in args or '-hf' in args:
             self._print_filters_help()
+            sys.exit(0)
+        elif '--help-advanced' in args or '-ha' in args:
+            self._print_advanced_help()
             sys.exit(0)
         
         return super().parse_args(args, namespace)
@@ -2323,6 +2380,37 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         
         print()
     
+    def _print_advanced_help(self):
+        """Print help for advanced LR tuning and early stopping options."""
+        print("Advanced LR Tuning & Early Stopping Options")
+        print("=" * 60)
+        print()
+        print("These options provide fine-grained control over the optimizer")
+        print("learning rate schedules and early stopping behavior.")
+        print()
+        print("Shape-Adaptive LR (Plateau Schedule):")
+        print("-" * 40)
+        
+        shape_args = ['lr_shape_influence']
+        for action in self._all_actions:
+            if self._get_dest_name(action) in shape_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+        
+        print()
+        print("Early Stopping Thresholds:")
+        print("-" * 40)
+        
+        early_args = ['early_stop_loss', 'early_stop_lr', 'early_stop_stall']
+        for action in self._all_actions:
+            if self._get_dest_name(action) in early_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+        
+        print()
+    
     def format_help(self):
         """Override to add section hints and hide experimental/filter args."""
         # Build custom help output
@@ -2332,7 +2420,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         standard_actions = []
         for action in self._actions:
             dest = self._get_dest_name(action)
-            if dest not in self._experimental_args and dest not in self._filter_args:
+            if dest not in self._experimental_args and dest not in self._filter_args and dest not in self._advanced_args:
                 standard_actions.append(action)
         
         # Add usage with only standard actions
@@ -2353,6 +2441,8 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         formatter.add_text('                              (int8, nf4, fp4, custom-layers, scaling_mode, etc.)')
         formatter.add_text('  --help-filters, -hf         Show model-specific exclusion filters')
         formatter.add_text('                              (t5xxl, hunyuan, wan, qwen, etc.)')
+        formatter.add_text('  --help-advanced, -ha        Show advanced LR tuning and early stopping')
+        formatter.add_text('                              (lr-shape-influence, early-stop-*, etc.)')
         
         # Add epilog
         formatter.add_text(self.epilog)
@@ -2367,9 +2457,11 @@ def main():
         description="Convert safetensors weights to Scaled FP8 format.\n\n"
                     "Default behavior: FP8 quantization with per-tensor scaling.\n"
                     "For INT8/NF4/FP4 and other experimental options, see --help-experimental.\n"
-                    "For model-specific layer exclusions, see --help-filters.",
+                    "For model-specific layer exclusions, see --help-filters.\n"
+                    "For advanced LR tuning and early stopping, see --help-advanced.",
         experimental_args=EXPERIMENTAL_ARGS,
-        filter_args=FILTER_ARGS
+        filter_args=FILTER_ARGS,
+        advanced_args=ADVANCED_ARGS
     )
     parser.add_argument("-i", "--input", type=str, required=True, help="Input safetensors file path.")
     parser.add_argument("-o", "--output", type=str, help="Output safetensors file path. Auto-generated if not provided.")
@@ -2437,6 +2529,16 @@ def main():
     parser.add_argument("--lr_threshold", type=float, default=0.0, help="[plateau] Min improvement to reset patience")
     parser.add_argument("--lr_adaptive_mode", type=str, default="simple-reset", choices=["simple-reset", "no-reset"],
                         help="[adaptive] Counter reset behavior (see MANUAL.md)")
+    # Advanced LR tuning (--help-advanced)
+    parser.add_argument("--lr-shape-influence", type=float, default=1.0, dest="lr_shape_influence",
+                        help="[plateau] Scale patience/factor based on tensor aspect ratio. 0.0=disabled, 1.0=full effect. (default: 1.0)")
+    # Early stopping thresholds (--help-advanced)
+    parser.add_argument("--early-stop-loss", type=float, default=1e-8, dest="early_stop_loss",
+                        help="Early stop when loss drops below this value. (default: 1e-8)")
+    parser.add_argument("--early-stop-lr", type=float, default=1e-10, dest="early_stop_lr",
+                        help="Early stop when LR drops below this value. (default: 1e-10)")
+    parser.add_argument("--early-stop-stall", type=int, default=1000, dest="early_stop_stall",
+                        help="Early stop when worse_loss_counter exceeds this. (default: 1000)")
     parser.add_argument("--top_p", type=float, default=0.2, help="Proportion of principal components (SVD) to use.")
     parser.add_argument("--min_k", type=int, default=64, help="Minimum number of principal components.")
     parser.add_argument("--max_k", type=int, default=1024, help="Maximum number of principal components.")
