@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 triton = ["triton>=2.1.0"]
-triton = ["triton-windows>=3.3"]
+triton-windows = ["triton-windows>=3.3"]
 prodigy = ["prodigy-plus-schedule-free"]
 dev = ["pytest", "ruff"]
 
