@@ -25,11 +25,12 @@ keywords = ["quantization", "fp8", "int8", "nf4", "machine-learning", "pytorch",
 dependencies = [
     "safetensors>=0.4.2",
     "tqdm",
-    "prodigy-plus-schedule-free",
 ]
 
 [project.optional-dependencies]
 triton = ["triton>=2.1.0"]
+triton = ["triton-windows >=3.3, <3.6"]
+prodigy = ["prodigy-plus-schedule-free"]
 dev = ["pytest", "ruff"]
 
 [project.scripts]
