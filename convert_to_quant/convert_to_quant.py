@@ -1463,10 +1463,15 @@ class LearnedRoundingConverter:
 
         M, N = W_float32.shape
         block_size = self.block_size
+        
+        # Start with the original absmax
         absmax = quant_state.absmax.clone()
-
+        
+        # Track best results
         best_loss = float('inf')
         best_absmax = absmax.clone()
+        best_packed = packed.clone()
+        
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
@@ -1493,18 +1498,14 @@ class LearnedRoundingConverter:
         pbar = tqdm(range(self.num_iter), desc=f"    Optimizing {quant_type.upper()} ({schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             with torch.no_grad():
-                # Create modified quant_state with current absmax
-                temp_quant_state = QuantState4bit(
-                    absmax=absmax,
-                    shape=quant_state.shape,
-                    code=quant_state.code,
-                    blocksize=quant_state.blocksize,
-                    quant_type=quant_state.quant_type,
-                    dtype=quant_state.dtype
+                # Re-quantize with current absmax (this finds new indices!)
+                curr_packed, curr_quant_state = quantize_4bit(
+                    W_float32, block_size, quant_type, 
+                    compress_statistics=False, custom_absmax=absmax
                 )
-
-                # Dequantize with current scales
-                dequant = dequantize_4bit(packed, temp_quant_state, output_dtype=COMPUTE_DTYPE)
+                
+                # Dequantize to get reconstruction
+                dequant = dequantize_4bit(curr_packed, curr_quant_state, output_dtype=COMPUTE_DTYPE)
                 dequant = dequant.reshape(M, N)
 
                 # Compute SVD-projected error
@@ -1528,6 +1529,7 @@ class LearnedRoundingConverter:
             if improved:
                 best_loss = current_loss
                 best_absmax = absmax.clone()
+                best_packed = curr_packed.clone()
                 plateau_counter = 0
                 if self.lr_adaptive_mode == 'simple-reset':
                     worse_loss_counter = 0
@@ -1607,32 +1609,47 @@ class LearnedRoundingConverter:
                     print("      - Loss has stalled. Stopping.")
                 break
 
-            # Gradient approximation: per-block mean error sign
+            # Compute gradient for absmax update
+            # For 4-bit, we approximate: d(error)/d(absmax) ≈ sign of per-block reconstruction error
+            # If a block's reconstruction is too large, decrease its absmax; if too small, increase it
             with torch.no_grad():
-                # Compute gradient direction
+                # Per-block error: error has shape (M, N), need to compute mean per block
                 error_flat = error.flatten()
                 n_blocks = len(absmax)
-                error_blocked = error_flat[:n_blocks * block_size].reshape(n_blocks, block_size)
-                block_grad = error_blocked.mean(dim=1).sign()
-
-                # Update absmax
+                n_elements = n_blocks * block_size
+                
+                # Reshape error to blocks (may need padding awareness)
+                if error_flat.numel() >= n_elements:
+                    error_blocked = error_flat[:n_elements].reshape(n_blocks, block_size)
+                else:
+                    # Pad if necessary
+                    pad_size = n_elements - error_flat.numel()
+                    error_flat_padded = torch.cat([error_flat, torch.zeros(pad_size, device=error_flat.device)])
+                    error_blocked = error_flat_padded.reshape(n_blocks, block_size)
+                
+                # Get the current dequantized values in block form for sign reference
+                dequant_flat = dequant.flatten()
+                if dequant_flat.numel() >= n_elements:
+                    dequant_blocked = dequant_flat[:n_elements].reshape(n_blocks, block_size)
+                else:
+                    pad_size = n_elements - dequant_flat.numel()
+                    dequant_flat_padded = torch.cat([dequant_flat, torch.zeros(pad_size, device=dequant_flat.device)])
+                    dequant_blocked = dequant_flat_padded.reshape(n_blocks, block_size)
+                
+                # Gradient: if error is positive (dequant > original), we want smaller dequant
+                # dequant = codebook_val * absmax, so if codebook_val > 0, decrease absmax
+                # If codebook_val < 0, increase absmax (opposite)
+                # Simplified: grad = mean(error * sign(dequant))
+                block_grad = (error_blocked * dequant_blocked.sign()).mean(dim=1)
+                
+                # Update absmax (gradient descent)
                 absmax = (absmax - curr_lr * block_grad).clamp(min=1e-8)
 
         pbar.close()
 
-        # Re-quantize with optimized absmax
-        # We need to re-run quantization with the new absmax
-        # Since 4-bit quantization uses absmax for normalization, we scale the weights
-        # and re-quantize
-        print(f"    - Re-quantizing with optimized absmax scales")
-        final_packed, final_quant_state = quantize_4bit(
-            W_float32, block_size, quant_type, compress_statistics=False
-        )
-
-        # The new quant_state will have its own absmax, but we've been optimizing the absmax
-        # For now, return the re-quantized result (which uses standard absmax calculation)
-        # A more advanced approach would modify the quantize function to accept custom absmax
-        return final_packed, final_quant_state.absmax
+        # Return the best found
+        print(f"    - Optimization complete. Best loss: {best_loss:.6e}")
+        return best_packed, best_absmax
 
 
     def _convert_fp8(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -2541,6 +2558,191 @@ def convert_fp8_scaled_to_comfy_quant(
         return
 
 
+def convert_int8_to_comfy_quant(
+    input_file: str,
+    output_file: str,
+    block_size: int = 128,
+    kernel_backend: str = "blockwise",
+):
+    """
+    Convert legacy INT8 quantized models to comfy_quant format.
+
+    This is a format conversion only - NO quantization is performed.
+    INT8 layers are detected by weight dtype (torch.int8).
+    High-precision layers may have dummy .scale_weight which are removed.
+
+    Args:
+        input_file: Path to input INT8 safetensors file
+        output_file: Path to output comfy_quant safetensors file
+        block_size: Block size to use in comfy_quant metadata (default 128)
+        kernel_backend: "blockwise" or "lodewise" for INT8 format type
+    """
+    print(f"Converting INT8 legacy format to comfy_quant format")
+    print(f"Input: {input_file}")
+    print(f"Output: {output_file}")
+    print(f"Block size: {block_size}")
+    print(f"Kernel backend: {kernel_backend}")
+    print("-" * 60)
+
+    # Determine INT8 format type
+    int8_format = "int8_lodewise" if kernel_backend == "lodewise" else "int8_blockwise"
+
+    # Load input tensors
+    tensors: Dict[str, torch.Tensor] = {}
+    try:
+        with safe_open(input_file, framework="pt", device='cpu') as f:
+            print(f"Loading {len(f.keys())} tensors from source file...")
+            for key in tqdm(f.keys(), desc="Loading tensors"):
+                tensors[key] = f.get_tensor(key)
+    except Exception as e:
+        print(f"FATAL: Error loading '{input_file}': {e}")
+        return
+
+    # Group tensors by layer base name
+    layer_info: Dict[str, Dict[str, torch.Tensor]] = {}
+    other_tensors: Dict[str, torch.Tensor] = {}
+
+    for key, tensor in tensors.items():
+        # Skip any existing markers
+        if key in ("scaled_fp8", "scaled_int8"):
+            continue
+
+        # Parse layer and suffix
+        if key.endswith('.weight'):
+            base = key[:-len('.weight')]
+            if base not in layer_info:
+                layer_info[base] = {}
+            layer_info[base]['weight'] = tensor
+        elif key.endswith('.scale_weight'):
+            base = key[:-len('.scale_weight')]
+            if base not in layer_info:
+                layer_info[base] = {}
+            layer_info[base]['scale_weight'] = tensor
+        elif key.endswith('.scale_input'):
+            base = key[:-len('.scale_input')]
+            if base not in layer_info:
+                layer_info[base] = {}
+            layer_info[base]['scale_input'] = tensor
+        elif key.endswith('.weight_scale'):
+            # Already in new format - might be partial conversion
+            base = key[:-len('.weight_scale')]
+            if base not in layer_info:
+                layer_info[base] = {}
+            layer_info[base]['weight_scale'] = tensor
+        elif key.endswith('.input_scale'):
+            base = key[:-len('.input_scale')]
+            if base not in layer_info:
+                layer_info[base] = {}
+            layer_info[base]['input_scale'] = tensor
+        else:
+            other_tensors[key] = tensor
+
+    # Process layers
+    output_tensors: Dict[str, torch.Tensor] = {}
+    int8_layers = []
+    hp_layers = []
+    already_converted = []
+
+    for base_name, layer_data in tqdm(layer_info.items(), desc="Processing layers"):
+        weight = layer_data.get('weight')
+        scale_weight = layer_data.get('scale_weight')
+        scale_input = layer_data.get('scale_input')
+        weight_scale = layer_data.get('weight_scale')  # New format
+        input_scale = layer_data.get('input_scale')    # New format
+
+        if weight is None:
+            # No weight tensor - just copy any scales through (unusual case)
+            if scale_weight is not None:
+                print(f"  WARNING: {base_name} has scale_weight but no weight tensor")
+                output_tensors[f"{base_name}.scale_weight"] = scale_weight
+            if weight_scale is not None:
+                output_tensors[f"{base_name}.weight_scale"] = weight_scale
+            continue
+
+        # Detect if this is an INT8 layer by weight dtype
+        is_int8 = weight.dtype == torch.int8
+
+        # Check if already has new format keys (already converted)
+        has_new_format = weight_scale is not None
+
+        if is_int8:
+            int8_layers.append(base_name)
+            output_tensors[f"{base_name}.weight"] = weight
+
+            if has_new_format:
+                # Already converted - preserve existing
+                already_converted.append(base_name)
+                output_tensors[f"{base_name}.weight_scale"] = weight_scale
+                if input_scale is not None:
+                    output_tensors[f"{base_name}.input_scale"] = input_scale
+                # Check if .comfy_quant already exists in other_tensors
+                if f"{base_name}.comfy_quant" not in other_tensors:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        int8_format,
+                        block_size=block_size,
+                        full_precision_matrix_mult=None
+                    )
+                    output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
+            else:
+                # Convert old format to new format
+                if scale_weight is not None:
+                    output_tensors[f"{base_name}.weight_scale"] = scale_weight
+                else:
+                    print(f"  WARNING: INT8 layer {base_name} missing scale_weight")
+
+                # Handle scale_input -> input_scale
+                if scale_input is not None:
+                    output_tensors[f"{base_name}.input_scale"] = scale_input
+                else:
+                    # Add default input_scale (required by ComfyUI)
+                    output_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=SCALE_DTYPE)
+
+                # Create .comfy_quant metadata
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    int8_format,
+                    block_size=block_size,
+                    full_precision_matrix_mult=None
+                )
+                output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
+
+        else:
+            # High-precision layer: keep weight, remove dummy scales
+            hp_layers.append(base_name)
+            output_tensors[f"{base_name}.weight"] = weight
+
+            if scale_weight is not None:
+                print(f"  Removing dummy scale_weight from high-precision layer: {base_name}")
+            if scale_input is not None:
+                print(f"  Removing dummy scale_input from high-precision layer: {base_name}")
+
+    # Add other tensors (bias, norms, etc.)
+    for key, tensor in other_tensors.items():
+        output_tensors[key] = tensor
+
+    # Summary
+    print("\n" + "-" * 60)
+    print("Conversion Summary:")
+    print(f"  INT8 layers:           {len(int8_layers)}")
+    if already_converted:
+        print(f"    (already converted): {len(already_converted)}")
+    print(f"  High-precision layers: {len(hp_layers)}")
+    print(f"  Other tensors:         {len(other_tensors)}")
+    print(f"  Total output tensors:  {len(output_tensors)}")
+    print(f"  INT8 format:           {int8_format}")
+    print(f"  Block size:            {block_size}")
+    print("-" * 60)
+
+    # Save output
+    print(f"\nSaving to {output_file}...")
+    try:
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        save_file(output_tensors, output_file)
+        print("Conversion complete!")
+    except Exception as e:
+        print(f"FATAL: Error saving file '{output_file}': {e}")
+        return
+
+
 # --- CLI Help Sections ---
 # Arguments categorized for multi-section help output
 
@@ -2908,6 +3110,11 @@ def main():
     parser.add_argument("--full-precision-mm", action='store_true', dest="full_precision_mm",
                         help="Set full_precision_matrix_mult=True in .comfy_quant metadata (for --convert-fp8-scaled)")
 
+    # INT8 to comfy_quant conversion mode
+    parser.add_argument("--convert-int8-scaled", action='store_true', dest="convert_int8_scaled",
+                        help="Convert legacy INT8 model (.scale_weight) to comfy_quant format (.weight_scale + metadata)")
+
+
     # Per-layer quantization config (JSON file)
     parser.add_argument("--layer-config", type=str, default=None, dest="layer_config",
                         help="""Path to JSON file with per-layer quantization settings (regex patterns).
@@ -2959,6 +3166,32 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             args.output,
             hp_filter=args.hp_filter,
             full_precision_mm=args.full_precision_mm
+        )
+        return
+
+    # Handle int8 to comfy_quant conversion mode (separate workflow)
+    if args.convert_int8_scaled:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_int8_comfy.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        # Use block_size from args or default to 128
+        int8_block_size = args.block_size if args.block_size else 128
+        int8_kernel_backend = args.kernel_backend if hasattr(args, 'kernel_backend') else "blockwise"
+
+        convert_int8_to_comfy_quant(
+            args.input,
+            args.output,
+            block_size=int8_block_size,
+            kernel_backend=int8_kernel_backend
         )
         return
 

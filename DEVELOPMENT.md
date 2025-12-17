@@ -1,5 +1,38 @@
 # Development Log
 
+## 2025-12-17: INT8 Legacy-to-ComfyQuant Format Converter
+
+### Session Summary
+Added `--convert-int8-scaled` mode to convert legacy INT8 quantized models (with `.scale_weight` keys) to the comfy_quant format (with `.weight_scale` keys and `.comfy_quant` metadata).
+
+---
+
+### New CLI Argument
+
+```bash
+# Basic conversion
+convert_to_quant -i model_int8.safetensors --convert-int8-scaled
+
+# With custom block size and kernel backend
+convert_to_quant -i model_int8.safetensors --convert-int8-scaled --block_size 128 --kernel_backend blockwise
+```
+
+### Key Transformations
+
+| Old Format | New Format |
+|------------|------------|
+| `.scale_weight` | `.weight_scale` |
+| `.scale_input` | `.input_scale` |
+| (none) | `.comfy_quant` metadata with `int8_blockwise` or `int8_lodewise` format |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added `convert_int8_to_comfy_quant()` function, `--convert-int8-scaled` CLI arg |
+
+---
+
 ## 2025-12-17: NF4/FP4/AF4 Learned Rounding Optimization
 
 ### Session Summary

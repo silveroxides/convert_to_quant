@@ -248,7 +248,8 @@ def quantize_4bit(
     tensor: torch.Tensor,
     block_size: int = 64,
     quant_type: str = "nf4",
-    compress_statistics: bool = False
+    compress_statistics: bool = False,
+    custom_absmax: Optional[torch.Tensor] = None
 ) -> Tuple[torch.Tensor, QuantState4bit]:
     """
     Quantize tensor to 4-bit using NF4 or FP4 codebook.
@@ -256,15 +257,17 @@ def quantize_4bit(
     Args:
         tensor: Input tensor (any shape, but numel must be divisible by block_size)
         block_size: Size of quantization blocks (default 64)
-        quant_type: "nf4" or "fp4"
+        quant_type: "nf4", "fp4", or "af4"
         compress_statistics: If True, also quantize the absmax values (double quant)
+        custom_absmax: Optional pre-computed absmax values. If provided, uses these
+                       instead of computing from tensor. Shape must be (n_blocks,).
         
     Returns:
         Tuple of (packed_data, quant_state)
         - packed_data: uint8 tensor with 2 values per byte
         - quant_state: QuantState4bit with all info needed for dequantization
     """
-    assert quant_type in ("nf4", "fp4"), f"quant_type must be 'nf4' or 'fp4', got {quant_type}"
+    assert quant_type in ("nf4", "fp4", "af4"), f"quant_type must be 'nf4', 'fp4', or 'af4', got {quant_type}"
     
     original_shape = tensor.shape
     original_dtype = tensor.dtype
@@ -287,8 +290,14 @@ def quantize_4bit(
     n_blocks = padded_numel // block_size
     tensor_blocked = tensor_flat.reshape(n_blocks, block_size)
     
-    # Compute per-block absmax
-    absmax = tensor_blocked.abs().max(dim=1)[0]  # Shape: (n_blocks,)
+    # Use custom absmax if provided, otherwise compute from tensor
+    if custom_absmax is not None:
+        assert custom_absmax.shape[0] == n_blocks, \
+            f"custom_absmax shape {custom_absmax.shape} doesn't match n_blocks {n_blocks}"
+        absmax = custom_absmax.to(device=device, dtype=torch.float32)
+    else:
+        # Compute per-block absmax
+        absmax = tensor_blocked.abs().max(dim=1)[0]  # Shape: (n_blocks,)
     
     # Get codebook
     codebook = _get_codebook(quant_type, device)
