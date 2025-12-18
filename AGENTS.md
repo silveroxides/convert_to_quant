@@ -80,14 +80,13 @@ if my_model and any(n in key for n in MODEL_AVOID_KEY_NAMES):
 
 ### ComfyUI Metadata Format
 ```python
-# Per-tensor .comfy_quant metadata (stored as JSON in safetensor)
+# Per-layer .comfy_quant configuration (stored as JSON in torch.uint8 tensor)
 comfy_quant = {
     "format": "float8_e4m3fn",  # or float8_e4m3fn_rowwise, float8_e4m3fn_blockwise,
                                 # int8_blockwise, int8_lodewise, bnb_nf4, bnb_fp4
-    "params": {"group_size": 64},  # Fork only: per-layer override (upstream ignores)
+    "group_size": 64,           # Optional: for block-based formats only
+    "full_precision_matrix_mult": True  # Optional: only if True
 }
-# Note: params.group_size is read by fork's support_bnb_quant branch.
-# Upstream uses QUANT_ALGOS defaults only.
 ```
 
 ---

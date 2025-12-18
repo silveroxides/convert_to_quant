@@ -320,33 +320,25 @@ def generate_config_template(input_file: str, output_path: str, block_size: int 
 
 def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None) -> torch.Tensor:
     """
-    Create a .comfy_quant tensor for ComfyUI quantization metadata.
+    Create a .comfy_quant layer configuration tensor for ComfyUI.
 
     Args:
         format_type: One of "float8_e4m3fn", "float8_e4m3fn_rowwise", "float8_e4m3fn_blockwise",
-                     "int8_blockwise", "int8_lodewise", "bnb_nf4", or "bnb_fp4"
-        block_size: Block/group size for quantization (required for block-based formats)
-        full_precision_matrix_mult: If True, adds "full_precision_matrix_mult": True to metadata.
-                                    If False or None, this key is omitted entirely.
+                     "int8_blockwise", "int8_lodewise", "bnb_nf4", "bnb_fp4", or "bnb_af4"
+        block_size: Block/group size for quantization (for block-based formats)
+        full_precision_matrix_mult: If True, adds "full_precision_matrix_mult": True.
+                                    If False or None, this key is omitted.
 
     Returns:
-        torch.uint8 tensor containing JSON-encoded metadata
-
-    Note: ComfyUI's ops.py reads group_size from layer_conf["params"]["group_size"],
-    so we must nest it inside a "params" sub-object.
+        torch.uint8 tensor containing JSON-encoded layer configuration
     """
+    BLOCK_BASED_FORMATS = ("int8_blockwise", "int8_lodewise", "bnb_nf4", "bnb_fp4", "bnb_af4", "float8_e4m3fn_blockwise")
+
     comfy_quant = {"format": format_type}
 
-    # Build params sub-object - ComfyUI ops.py reads from layer_conf["params"]["group_size"]
-    # Include block_size for all block-based formats
-    params = {}
-    BLOCK_BASED_FORMATS = ("int8_blockwise", "int8_lodewise", "bnb_nf4", "bnb_fp4", "bnb_af4", "float8_e4m3fn_blockwise")
+    # Add group_size directly (not nested in params) for block-based formats
     if block_size is not None and format_type in BLOCK_BASED_FORMATS:
-        params["group_size"] = block_size
-
-
-    if params:
-        comfy_quant["params"] = params
+        comfy_quant["group_size"] = block_size
 
     if full_precision_matrix_mult is True:
         comfy_quant["full_precision_matrix_mult"] = True
@@ -2495,10 +2487,94 @@ def convert_fp8_scaled_to_comfy_quant(
                 else:
                     output_tensors[f"{base_name}.input_scale"] = scale_input
 
+            # Detect format and block_size from scale_weight tensor shape
+            # Scale shape conventions from quant_ops.py layouts:
+            # - TensorCoreFP8Layout: () or (1,) - scalar, single global scale
+            # - RowWiseFP8Layout: (M,) - 1D, one scale per output row
+            # - BlockWiseFP8Layout: (M//bs, N//bs) - 2D grid, one scale per tile
+            # - Block3DFP8Layout: (M, N//bs, 1) - 3D, per-row-block scaling
+            M, N = weight.shape[0], weight.shape[1] if weight.ndim >= 2 else 1
+
+            if scale_weight is None:
+                # No scale tensor - assume tensor-wise (this shouldn't happen for valid FP8 models)
+                format_type = "float8_e4m3fn"
+                block_size = None
+                print(f"    → Format: {format_type} (missing scale, assumed tensor-wise)")
+            elif scale_weight.numel() == 1:
+                # Scalar or single-element tensor → tensor-wise scaling
+                format_type = "float8_e4m3fn"
+                block_size = None
+                print(f"    → Format: {format_type} (scale numel=1)")
+            elif scale_weight.ndim == 1:
+                # 1D scale tensor - check if it matches row count
+                if scale_weight.shape[0] == M:
+                    # One scale per row → row-wise
+                    format_type = "float8_e4m3fn_rowwise"
+                    block_size = None
+                    print(f"    → Format: {format_type} (scale shape={scale_weight.shape}, M={M})")
+                else:
+                    # 1D but doesn't match M - could be flattened block scale
+                    # Try to infer block_size: scale_count = (M//bs) * (N//bs) = M*N / bs^2
+                    # So bs = sqrt(M*N / scale_count)
+                    scale_count = scale_weight.shape[0]
+                    total_elements = M * N
+                    if scale_count > 0 and total_elements % scale_count == 0:
+                        bs_squared = total_elements // scale_count
+                        bs = int(bs_squared ** 0.5)
+                        if bs * bs == bs_squared and M % bs == 0 and N % bs == 0:
+                            format_type = "float8_e4m3fn_blockwise"
+                            block_size = bs
+                            print(f"    → Format: {format_type} (scale 1D flattened, inferred bs={bs})")
+                        else:
+                            format_type = "float8_e4m3fn"
+                            block_size = None
+                            print(f"    → Format: {format_type} (scale 1D unknown pattern, fallback)")
+                    else:
+                        format_type = "float8_e4m3fn"
+                        block_size = None
+                        print(f"    → Format: {format_type} (scale 1D, cannot infer block)")
+            elif scale_weight.ndim == 2:
+                # 2D scale - most likely block-wise: (M//bs, N//bs)
+                scale_M, scale_N = scale_weight.shape
+                if M % scale_M == 0 and N % scale_N == 0:
+                    bs_M = M // scale_M
+                    bs_N = N // scale_N
+                    if bs_M == bs_N:
+                        # Square blocks
+                        format_type = "float8_e4m3fn_blockwise"
+                        block_size = bs_M
+                        print(f"    → Format: {format_type} (scale 2D, bs={block_size})")
+                    else:
+                        # Non-square blocks - use smaller dimension as block_size
+                        format_type = "float8_e4m3fn_blockwise"
+                        block_size = min(bs_M, bs_N)
+                        print(f"    → Format: {format_type} (scale 2D non-square, bs={block_size})")
+                else:
+                    # Doesn't divide evenly - fallback
+                    format_type = "float8_e4m3fn"
+                    block_size = None
+                    print(f"    → Format: {format_type} (scale 2D but dims don't divide)")
+            elif scale_weight.ndim == 3:
+                # 3D scale - likely Block3DFP8Layout: (M, N//bs, 1)
+                scale_M, scale_blocks, scale_last = scale_weight.shape
+                if scale_M == M and scale_last == 1 and N % scale_blocks == 0:
+                    format_type = "float8_e4m3fn_block3d"
+                    block_size = N // scale_blocks
+                    print(f"    → Format: {format_type} (scale 3D, bs={block_size})")
+                else:
+                    format_type = "float8_e4m3fn"
+                    block_size = None
+                    print(f"    → Format: {format_type} (scale 3D unknown pattern)")
+            else:
+                # Unknown ndim
+                format_type = "float8_e4m3fn"
+                block_size = None
+                print(f"    → Format: {format_type} (scale ndim={scale_weight.ndim} unknown)")
+
             # Create .comfy_quant metadata
             comfy_quant_tensor = create_comfy_quant_tensor(
-                "float8_e4m3fn",
-                block_size=None,
+                format_type,
+                block_size=block_size,
                 full_precision_matrix_mult=full_precision_mm if full_precision_mm else None
             )
             output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
@@ -2675,11 +2751,44 @@ def convert_int8_to_comfy_quant(
                 output_tensors[f"{base_name}.weight_scale"] = weight_scale
                 if input_scale is not None:
                     output_tensors[f"{base_name}.input_scale"] = input_scale
+                # Detect INT8 format and block_size from weight_scale shape
+                # Scale shape conventions from quant_ops.py layouts:
+                # - BlockWiseINT8Layout: (M//bs, N//bs) - 2D block grid
+                # - BlockWiseINT8LayoutLodeWise: (N, K//bs) - per-output-row blocking
+                M, K = weight.shape[0], weight.shape[1] if weight.ndim >= 2 else 1
+
+                if weight_scale is None:
+                    detected_format = int8_format
+                    detected_block_size = block_size
+                    print(f"    → Format: {detected_format} (no scale, using CLI default)")
+                elif weight_scale.ndim == 2:
+                    scale_dim0, scale_dim1 = weight_scale.shape
+                    # Check if it's lodewise: (N, K//bs) where N == M (output features)
+                    if scale_dim0 == M and K % scale_dim1 == 0:
+                        detected_format = "int8_lodewise"
+                        detected_block_size = K // scale_dim1
+                        print(f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})")
+                    # Check if it's blockwise: (M//bs, N//bs)
+                    elif M % scale_dim0 == 0 and K % scale_dim1 == 0:
+                        bs_M = M // scale_dim0
+                        bs_K = K // scale_dim1
+                        detected_format = "int8_blockwise"
+                        detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
+                        print(f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})")
+                    else:
+                        detected_format = int8_format
+                        detected_block_size = block_size
+                        print(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")
+                else:
+                    detected_format = int8_format
+                    detected_block_size = block_size
+                    print(f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, using CLI default)")
+
                 # Check if .comfy_quant already exists in other_tensors
                 if f"{base_name}.comfy_quant" not in other_tensors:
                     comfy_quant_tensor = create_comfy_quant_tensor(
-                        int8_format,
-                        block_size=block_size,
+                        detected_format,
+                        block_size=detected_block_size,
                         full_precision_matrix_mult=None
                     )
                     output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
@@ -2697,10 +2806,43 @@ def convert_int8_to_comfy_quant(
                     # Add default input_scale (required by ComfyUI)
                     output_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=SCALE_DTYPE)
 
+                # Detect INT8 format and block_size from scale_weight shape
+                # Scale shape conventions from quant_ops.py layouts:
+                # - BlockWiseINT8Layout: (M//bs, N//bs) - 2D block grid
+                # - BlockWiseINT8LayoutLodeWise: (N, K//bs) - per-output-row blocking
+                M, K = weight.shape[0], weight.shape[1] if weight.ndim >= 2 else 1
+
+                if scale_weight is None:
+                    detected_format = int8_format
+                    detected_block_size = block_size
+                    print(f"    → Format: {detected_format} (no scale, using CLI default)")
+                elif scale_weight.ndim == 2:
+                    scale_dim0, scale_dim1 = scale_weight.shape
+                    # Check if it's lodewise: (N, K//bs) where N == M (output features)
+                    if scale_dim0 == M and K % scale_dim1 == 0:
+                        detected_format = "int8_lodewise"
+                        detected_block_size = K // scale_dim1
+                        print(f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})")
+                    # Check if it's blockwise: (M//bs, N//bs)
+                    elif M % scale_dim0 == 0 and K % scale_dim1 == 0:
+                        bs_M = M // scale_dim0
+                        bs_K = K // scale_dim1
+                        detected_format = "int8_blockwise"
+                        detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
+                        print(f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})")
+                    else:
+                        detected_format = int8_format
+                        detected_block_size = block_size
+                        print(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")
+                else:
+                    detected_format = int8_format
+                    detected_block_size = block_size
+                    print(f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, using CLI default)")
+
                 # Create .comfy_quant metadata
                 comfy_quant_tensor = create_comfy_quant_tensor(
-                    int8_format,
-                    block_size=block_size,
+                    detected_format,
+                    block_size=detected_block_size,
                     full_precision_matrix_mult=None
                 )
                 output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor

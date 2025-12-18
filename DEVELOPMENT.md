@@ -1,5 +1,79 @@
 # Development Log
 
+## 2025-12-18: Scale Shape Format Detection in Conversion Functions
+
+### Session Summary
+Added automatic format and block_size detection from scale tensor shape in `convert_fp8_scaled_to_comfy_quant()` and `convert_int8_to_comfy_quant()`.
+
+---
+
+### Changes
+
+**FP8 Conversion** (`convert_fp8_scaled_to_comfy_quant`):
+| Scale Shape | Detected Format |
+|-------------|-----------------|
+| `()` or `(1,)` | `float8_e4m3fn` |
+| `(M,)` | `float8_e4m3fn_rowwise` |
+| `(M//bs, N//bs)` | `float8_e4m3fn_blockwise` + inferred block_size |
+| `(M, N//bs, 1)` | `float8_e4m3fn_block3d` + inferred block_size |
+
+**INT8 Conversion** (`convert_int8_to_comfy_quant`):
+| Scale Shape | Detected Format |
+|-------------|-----------------|
+| `(M//bs, N//bs)` | `int8_blockwise` + inferred block_size |
+| `(N, K//bs)` | `int8_lodewise` + inferred block_size |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added format detection logic in both conversion functions, with diagnostic output |
+
+### Verification
+
+Tested on `Chroma-DC-2K-fp8_scaled_original_hybrid_rev2.safetensors`:
+- 231 `.comfy_quant` tensors created
+- All using flat structure (no `params` nesting)
+- Correctly detected `float8_e4m3fn` format from scale numel=1
+
+---
+
+## 2025-12-18: Fix ComfyQuant Layer Configuration Structure
+
+### Session Summary
+Fixed `create_comfy_quant_tensor()` to use correct flat structure - `group_size` is now at root level, not nested in `params`.
+
+---
+
+### The Bug
+Previous agent incorrectly nested `group_size` inside a `params` sub-object:
+```python
+# WRONG (was)
+{"format": "int8_blockwise", "params": {"group_size": 128}}
+
+# CORRECT (now)
+{"format": "int8_blockwise", "group_size": 128}
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Simplified `create_comfy_quant_tensor()` - removed params nesting, cleaned up docstring |
+| `AGENTS.md` | Updated "ComfyUI Metadata Format" section to show correct flat structure |
+
+### Verification
+
+```python
+from convert_to_quant.convert_to_quant import create_comfy_quant_tensor, tensor_to_dict
+tensor = create_comfy_quant_tensor("int8_blockwise", block_size=128)
+result = tensor_to_dict(tensor)
+# Result: {'format': 'int8_blockwise', 'group_size': 128}
+# SUCCESS: No 'params' nesting
+```
+
+---
+
 ## 2025-12-17: INT8 Legacy-to-ComfyQuant Format Converter
 
 ### Session Summary
