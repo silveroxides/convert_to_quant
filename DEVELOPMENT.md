@@ -1,5 +1,38 @@
 # Development Log
 
+## 2025-12-18: input_scale Support & comfy_quant Fixes
+
+### Session Summary
+Extended `--input_scale` to work with all quantization methods and legacy conversions. Added automatic fix for incorrect nested `params` structure in existing comfy_quant configs.
+
+---
+
+### Changes
+
+**input_scale for all formats**:
+| Format | input_scale value |
+|--------|-------------------|
+| 4-bit (NF4/FP4/AF4) | `[1.0]` fp32 |
+| INT8 | `[1.0]` fp32 |
+| FP8 (normal) | `[1.0]` fp32 |
+| FP8 (t5xxl/mistral) | `dequant_s` (weight_scale) |
+
+**Legacy conversions**: `--convert-fp8-scaled` and `--convert-int8-scaled` now support `--input_scale`.
+
+**New --legacy_input_add**: Adds `.scale_input = [1.0]` (fp32) to legacy fp8_scaled models without converting to comfy_quant format. Also converts `scaled_fp8` marker to single-element tensor.
+
+**comfy_quant structure fix**: Added `fix_comfy_quant_params_structure()` to detect and fix nested `params` → flat structure during conversions.
+
+**CLI priority**: Detected format now prioritized over CLI default unless explicitly specified.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added `include_input_scale` param to conversions, `fix_comfy_quant_params_structure()`, CLI-explicit priority, AF4 format fix |
+
+---
+
 ## 2025-12-18: Scale Shape Format Detection in Conversion Functions
 
 ### Session Summary

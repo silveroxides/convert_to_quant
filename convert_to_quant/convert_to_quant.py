@@ -2694,6 +2694,113 @@ def convert_fp8_scaled_to_comfy_quant(
         return
 
 
+def add_legacy_input_scale(
+    input_file: str,
+    output_file: str,
+):
+    """
+    Add .scale_input tensors to legacy fp8_scaled models.
+
+    This modifies a legacy fp8_scaled model to add .scale_input = [1.0] (fp32)
+    for every FP8 layer that has .scale_weight but no .scale_input.
+    Also converts the scaled_fp8 marker to a single-element [1] tensor.
+
+    This does NOT convert to comfy_quant format - it keeps the legacy format
+    but adds the missing input scales.
+
+    Args:
+        input_file: Path to input fp8_scaled safetensors file
+        output_file: Path to output safetensors file
+    """
+    print(f"Adding .scale_input to legacy fp8_scaled model")
+    print(f"Input: {input_file}")
+    print(f"Output: {output_file}")
+    print("-" * 60)
+
+    # Load input tensors
+    tensors: Dict[str, torch.Tensor] = {}
+    try:
+        with safe_open(input_file, framework="pt", device='cpu') as f:
+            print(f"Loading {len(f.keys())} tensors from source file...")
+            for key in tqdm(f.keys(), desc="Loading tensors"):
+                tensors[key] = f.get_tensor(key)
+    except Exception as e:
+        print(f"FATAL: Error loading '{input_file}': {e}")
+        return
+
+    # Verify this is an fp8_scaled model
+    if "scaled_fp8" not in tensors:
+        print("ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)")
+        print("       Use this mode only for legacy fp8_scaled format models.")
+        return
+
+    print("Verified: Input is fp8_scaled format")
+
+    # Find all .scale_weight keys and check for corresponding .weight and .scale_input
+    scale_weight_keys = [k for k in tensors.keys() if k.endswith('.scale_weight')]
+    
+    output_tensors: Dict[str, torch.Tensor] = {}
+    added_scale_input = 0
+    skipped_non_fp8 = 0
+    already_has_input = 0
+
+    for key, tensor in tensors.items():
+        # Handle scaled_fp8 marker - convert to single-element vector
+        if key == "scaled_fp8":
+            output_tensors[key] = torch.tensor([1], dtype=tensor.dtype)
+            print(f"  Converted scaled_fp8 marker to single-element tensor")
+            continue
+        
+        # Copy all tensors through
+        output_tensors[key] = tensor
+
+    # Now add .scale_input for each .scale_weight that doesn't have one
+    for scale_weight_key in scale_weight_keys:
+        base_name = scale_weight_key[:-len('.scale_weight')]
+        weight_key = f"{base_name}.weight"
+        scale_input_key = f"{base_name}.scale_input"
+        
+        # Check if .scale_input already exists
+        if scale_input_key in tensors:
+            already_has_input += 1
+            continue
+        
+        # Check if corresponding .weight exists and is FP8
+        if weight_key not in tensors:
+            continue
+            
+        weight = tensors[weight_key]
+        if weight.dtype != torch.float8_e4m3fn:
+            skipped_non_fp8 += 1
+            continue
+        
+        # Add .scale_input = [1.0] fp32
+        output_tensors[scale_input_key] = torch.tensor([1.0], dtype=torch.float32)
+        added_scale_input += 1
+
+    # Summary
+    print("\n" + "-" * 60)
+    print("Conversion Summary:")
+    print(f"  Total tensors input:     {len(tensors)}")
+    print(f"  Total tensors output:    {len(output_tensors)}")
+    print(f"  scale_input added:       {added_scale_input}")
+    if already_has_input > 0:
+        print(f"  Already had scale_input: {already_has_input}")
+    if skipped_non_fp8 > 0:
+        print(f"  Skipped (not FP8):       {skipped_non_fp8}")
+    print("-" * 60)
+
+    # Save output
+    print(f"\nSaving to {output_file}...")
+    try:
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        save_file(output_tensors, output_file)
+        print("Conversion complete!")
+    except Exception as e:
+        print(f"FATAL: Error saving file '{output_file}': {e}")
+        return
+
+
 def convert_int8_to_comfy_quant(
     input_file: str,
     output_file: str,
@@ -3357,6 +3464,10 @@ def main():
     parser.add_argument("--convert-int8-scaled", action='store_true', dest="convert_int8_scaled",
                         help="Convert legacy INT8 model (.scale_weight) to comfy_quant format (.weight_scale + metadata)")
 
+    # Legacy input scale addition mode
+    parser.add_argument("--legacy_input_add", action='store_true',
+                        help="Add .scale_input tensors to legacy fp8_scaled models (keeps legacy format, adds missing input scales)")
+
 
     # Per-layer quantization config (JSON file)
     parser.add_argument("--layer-config", type=str, default=None, dest="layer_config",
@@ -3438,6 +3549,23 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             kernel_backend=int8_kernel_backend,
             include_input_scale=args.input_scale
         )
+        return
+
+    # Handle legacy input scale addition mode (separate workflow)
+    if args.legacy_input_add:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_with_input_scale.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        add_legacy_input_scale(args.input, args.output)
         return
 
     # Determine which formats require block_size
