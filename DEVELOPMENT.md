@@ -1,11 +1,41 @@
 # Development Log
 
+## 2025-12-18: Fix --input_scale for Non-comfy Mode
+
+### Session Summary
+Fixed missing `.scale_input` handling when `--input_scale` is used without `--comfy_quant`. Also fixed T5XXL/Mistral fallback to use correct key format, and `scaled_fp8` marker to use `empty((0))` when `--input_scale` is used.
+
+---
+
+### The Bug
+
+When using `--input_scale` WITHOUT `--comfy_quant`, the script only added `.scale_weight` but never `.scale_input`. The T5XXL/Mistral fallback also incorrectly used `.input_scale` (comfy format) instead of `.scale_input` (legacy format).
+
+### The Fix
+
+| Mode | Model Type | `--input_scale` | Result |
+|------|------------|----------------|--------|
+| `--comfy_quant` | Regular | Yes | `.input_scale = [1.0]` fp32 |
+| `--comfy_quant` | t5xxl/mistral | Auto | `.input_scale = dequant_s` |
+| Non-comfy | Regular | Yes | `.scale_input = ones_like(dequant_s)` fp32, `scaled_fp8 = empty((0))` |
+| Non-comfy | t5xxl/mistral | Auto | `.scale_input = dequant_s`, `scaled_fp8 = empty((0))` |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added `.scale_input` in non-comfy block (lines 2333-2338), fixed T5XXL/Mistral fallback (lines 2370-2375), updated `scaled_fp8` marker logic (line 2398) |
+
+
+---
+
 ## 2025-12-18: input_scale Support & comfy_quant Fixes
 
 ### Session Summary
 Extended `--input_scale` to work with all quantization methods and legacy conversions. Added automatic fix for incorrect nested `params` structure in existing comfy_quant configs.
 
 ---
+
 
 ### Changes
 

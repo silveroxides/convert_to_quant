@@ -2330,6 +2330,13 @@ def convert_to_fp8_scaled(
 
         else:
             new_tensors[f"{base_name}.scale_weight"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+            # Add scale_input for non-comfy mode: use dequant_s for t5xxl/mistral, ones for others
+            if include_input_scale or t5xxl or mistral:
+                if t5xxl or mistral:
+                    new_tensors[f"{base_name}.scale_input"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                else:
+                    # Shape matches scale_weight, filled with 1.0
+                    new_tensors[f"{base_name}.scale_input"] = torch.ones_like(dequant_s, dtype=SCALE_DTYPE, device='cpu')
 
         # Determine if this layer uses simple mode (skip bias correction to save memory)
         layer_uses_simple = custom_simple if use_custom else (fallback_simple if use_fallback else no_learned_rounding)
@@ -2361,9 +2368,13 @@ def convert_to_fp8_scaled(
                         del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new
                         if device == 'cuda': torch.cuda.empty_cache()
 
-        # T5XXL/Mistral always needs input_scale regardless of --include_input_scale flag
-        if (t5xxl or mistral) and f"{base_name}.input_scale" not in new_tensors:
-            new_tensors[f"{base_name}.input_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+        # T5XXL/Mistral fallback: ensure input scale exists with correct key format
+        if t5xxl or mistral:
+            if comfy_quant and f"{base_name}.input_scale" not in new_tensors:
+                new_tensors[f"{base_name}.input_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+            elif not comfy_quant and f"{base_name}.scale_input" not in new_tensors:
+                new_tensors[f"{base_name}.scale_input"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+
 
         # Get scale key name based on comfy_quant mode
         scale_key = f"{base_name}.weight_scale" if comfy_quant else f"{base_name}.scale_weight"
@@ -2382,8 +2393,9 @@ def convert_to_fp8_scaled(
             new_tensors[key] = tensor
 
     # Add scaled_fp8 marker only for legacy non-comfy_quant FP8 format
+    # Use empty((0)) when input_scale is present (t5xxl, mistral, or --input_scale flag)
     if not comfy_quant and not int8 and not custom_layers and "scaled_fp8" not in new_tensors:
-        new_tensors["scaled_fp8"] = torch.empty((0), dtype=TARGET_FP8_DTYPE) if (t5xxl or mistral) else torch.empty((2), dtype=TARGET_FP8_DTYPE)
+        new_tensors["scaled_fp8"] = torch.empty((0), dtype=TARGET_FP8_DTYPE) if (t5xxl or mistral or include_input_scale) else torch.empty((2), dtype=TARGET_FP8_DTYPE)
 
     print(f"Saving {len(new_tensors)} tensors to {output_file}")
     try:
