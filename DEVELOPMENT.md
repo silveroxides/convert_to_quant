@@ -1,5 +1,43 @@
 # Development Log
 
+## 2025-12-19: ComfyQuant Layer Config Editor
+
+### Session Summary
+Added `--edit-quant` mode to edit `.comfy_quant` layer configurations without re-quantizing. Supports adding and removing keys.
+
+---
+
+### New CLI Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--edit-quant` | Enable comfy_quant editing mode |
+| `--remove-keys` | Comma-separated keys to remove (e.g., `full_precision_matrix_mult,group_size`) |
+| `--add-keys` | Python-like key:value pairs (e.g., `"'full_precision_matrix_mult': true"`) |
+| `--quant-filter` | Regex pattern to filter which layers to edit |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added `parse_add_keys_string()`, `edit_comfy_quant()` functions; CLI args; handler |
+
+### Usage
+
+```bash
+# Remove full_precision_matrix_mult from all layers
+convert_to_quant -i model.safetensors --edit-quant --remove-keys full_precision_matrix_mult
+
+# Add full_precision_matrix_mult to all layers
+convert_to_quant -i model.safetensors --edit-quant --add-keys "'full_precision_matrix_mult': true"
+
+# Edit only specific layers
+convert_to_quant -i model.safetensors --edit-quant --remove-keys group_size --quant-filter "double_blocks"
+```
+
+---
+
+
 ## 2025-12-19: Failed 4-bit NF4 Dequantization Fix Attempts
 
 ### Session Summary

@@ -5,7 +5,7 @@ import sys
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Tuple, Optional, Any
+from typing import Dict, Tuple, Optional, Any, List
 from tqdm import tqdm
 # fnmatch removed - using regex for layer config patterns
 import gc
@@ -425,6 +425,192 @@ def fix_comfy_quant_params_structure(comfy_quant_tensor: torch.Tensor) -> Tuple[
                 config[key] = value
 
     return dict_to_tensor(config), True
+
+
+def parse_add_keys_string(add_keys_str: str) -> Dict[str, Any]:
+    """
+    Parse a Python-like key:value string into a dictionary.
+
+    Format: "'key': 'string_value', 'key2': true, 'key3': 123"
+    - Quoted values ('value') → string
+    - true/false → bool
+    - Numbers → int/float
+
+    Args:
+        add_keys_str: String in format "'key': value, 'key2': value2"
+
+    Returns:
+        Dictionary of parsed key-value pairs
+    """
+    result = {}
+    if not add_keys_str or not add_keys_str.strip():
+        return result
+
+    # Split by comma, but handle quoted strings properly
+    # Use regex to match 'key': value patterns
+    import re
+    pattern = r"'([^']+)':\s*([^,]+?)(?:,|$)"
+    matches = re.findall(pattern, add_keys_str.strip())
+
+    for key, value in matches:
+        value = value.strip()
+        # Parse value type
+        if value.startswith("'") and value.endswith("'"):
+            # String value
+            result[key] = value[1:-1]
+        elif value.lower() == 'true':
+            result[key] = True
+        elif value.lower() == 'false':
+            result[key] = False
+        else:
+            # Try to parse as number
+            try:
+                if '.' in value:
+                    result[key] = float(value)
+                else:
+                    result[key] = int(value)
+            except ValueError:
+                # Fallback to string
+                result[key] = value
+
+    return result
+
+
+def edit_comfy_quant(
+    input_file: str,
+    output_file: str,
+    remove_keys: Optional[List[str]] = None,
+    add_keys_str: Optional[str] = None,
+    layer_filter: Optional[str] = None,
+):
+    """
+    Edit comfy_quant layer configurations in a model.
+
+    This loads a safetensors model and modifies the .comfy_quant metadata
+    tensors by adding or removing keys. Useful for batch editing layer
+    configurations without re-quantizing.
+
+    Args:
+        input_file: Path to input safetensors file
+        output_file: Path to output safetensors file
+        remove_keys: List of key names to remove from .comfy_quant configs
+        add_keys_str: Python-like string of key:value pairs to add
+        layer_filter: Regex pattern to filter which layers to edit (None = all)
+    """
+    from safetensors import safe_open
+
+    print(f"ComfyQuant Layer Editor")
+    print(f"=" * 60)
+    print(f"Input:  {input_file}")
+    print(f"Output: {output_file}")
+
+    # Parse add_keys string
+    add_keys = parse_add_keys_string(add_keys_str) if add_keys_str else {}
+
+    if remove_keys:
+        print(f"Keys to remove: {remove_keys}")
+    if add_keys:
+        print(f"Keys to add: {add_keys}")
+    if layer_filter:
+        print(f"Layer filter: {layer_filter}")
+        import re
+        try:
+            layer_regex = re.compile(layer_filter)
+        except re.error as e:
+            print(f"FATAL: Invalid regex pattern '{layer_filter}': {e}")
+            return
+    else:
+        layer_regex = None
+
+    print("-" * 60)
+
+    # Load all tensors
+    tensors = {}
+    with safe_open(input_file, framework="pt", device="cpu") as f:
+        for key in f.keys():
+            tensors[key] = f.get_tensor(key)
+
+    # Track statistics
+    edited_count = 0
+    skipped_filter = 0
+    skipped_no_change = 0
+    total_comfy_quant = 0
+    keys_removed = {}
+    keys_added = {}
+
+    # Process .comfy_quant tensors
+    for key in list(tensors.keys()):
+        if not key.endswith('.comfy_quant'):
+            continue
+
+        total_comfy_quant += 1
+        base_name = key[:-12]  # Remove '.comfy_quant' suffix
+
+        # Apply layer filter
+        if layer_regex and not layer_regex.search(base_name):
+            skipped_filter += 1
+            continue
+
+        # Decode existing config
+        try:
+            config = tensor_to_dict(tensors[key])
+        except Exception as e:
+            print(f"  WARNING: Failed to decode {key}: {e}")
+            continue
+
+        original_config = config.copy()
+
+        # Remove keys
+        if remove_keys:
+            for k in remove_keys:
+                if k in config:
+                    del config[k]
+                    keys_removed[k] = keys_removed.get(k, 0) + 1
+
+        # Add keys
+        if add_keys:
+            for k, v in add_keys.items():
+                if k not in config or config[k] != v:
+                    config[k] = v
+                    keys_added[k] = keys_added.get(k, 0) + 1
+
+        # Check if changed
+        if config == original_config:
+            skipped_no_change += 1
+            continue
+
+        # Re-encode and store
+        tensors[key] = dict_to_tensor(config)
+        edited_count += 1
+
+    # Summary
+    print("-" * 60)
+    print("Edit Summary:")
+    print(f"  Total .comfy_quant tensors: {total_comfy_quant}")
+    print(f"  Edited:                     {edited_count}")
+    if skipped_filter > 0:
+        print(f"  Skipped (filter):           {skipped_filter}")
+    if skipped_no_change > 0:
+        print(f"  Skipped (no change):        {skipped_no_change}")
+    if keys_removed:
+        print(f"  Keys removed:")
+        for k, count in sorted(keys_removed.items()):
+            print(f"    {k}: {count} layers")
+    if keys_added:
+        print(f"  Keys added:")
+        for k, count in sorted(keys_added.items()):
+            print(f"    {k}: {count} layers")
+    print("-" * 60)
+
+    # Save output
+    print(f"\nSaving to {output_file}...")
+    try:
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        save_file(tensors, output_file)
+        print("Edit complete!")
+    except Exception as e:
+        print(f"FATAL: Error saving file '{output_file}': {e}")
+        return
 
 
 def should_skip_layer_for_performance(tensor: torch.Tensor, block_size: int) -> Tuple[bool, str]:
@@ -3542,6 +3728,16 @@ def main():
     parser.add_argument("--legacy_input_add", action='store_true',
                         help="Add .scale_input tensors to legacy fp8_scaled models (keeps legacy format, adds missing input scales)")
 
+    # ComfyQuant layer config editing mode
+    parser.add_argument("--edit-quant", action='store_true', dest="edit_quant",
+                        help="Edit .comfy_quant layer configurations (add/remove keys without re-quantizing)")
+    parser.add_argument("--remove-keys", type=str, default=None, dest="remove_keys",
+                        help="Comma-separated keys to remove from .comfy_quant (e.g., 'full_precision_matrix_mult,group_size')")
+    parser.add_argument("--add-keys", type=str, default=None, dest="add_keys",
+                        help="Python-like key:value pairs to add (e.g., \"'full_precision_matrix_mult': true, 'group_size': 64\")")
+    parser.add_argument("--quant-filter", type=str, default=None, dest="quant_filter",
+                        help="Regex pattern to filter which layers to edit (default: all .comfy_quant layers)")
+
 
     # Per-layer quantization config (JSON file)
     parser.add_argument("--layer-config", type=str, default=None, dest="layer_config",
@@ -3640,6 +3836,38 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             return
 
         add_legacy_input_scale(args.input, args.output)
+        return
+
+    # Handle comfy_quant editing mode (separate workflow)
+    if args.edit_quant:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_edited.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        if not args.remove_keys and not args.add_keys:
+            print("Error: --edit-quant requires at least one of --remove-keys or --add-keys")
+            return
+
+        # Parse remove_keys from comma-separated string
+        remove_keys_list = None
+        if args.remove_keys:
+            remove_keys_list = [k.strip() for k in args.remove_keys.split(',') if k.strip()]
+
+        edit_comfy_quant(
+            args.input,
+            args.output,
+            remove_keys=remove_keys_list,
+            add_keys_str=args.add_keys,
+            layer_filter=args.quant_filter
+        )
         return
 
     # Determine which formats require block_size
