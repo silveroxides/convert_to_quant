@@ -287,7 +287,7 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
                     fmt = settings["format"]
                     if not fmt:  # Empty string check
                         raise ValueError(
-                            f"_default has empty 'format' field. Use skip:true to skip, or specify a valid format."
+                            "_default has empty 'format' field. Use skip:true to skip, or specify a valid format."
                         )
                     if fmt not in VALID_QUANT_FORMATS:
                         raise ValueError(
@@ -449,7 +449,7 @@ def generate_config_template(input_file: str, output_path: str, block_size: int 
         json.dump(config, f, indent=2)
 
     print("-" * 60)
-    print(f"Template Summary:")
+    print("Template Summary:")
     print(f"  Viable layers:  {viable_count}")
     print(f"  Skipped layers: {skipped_count}")
     if skipped_reasons:
@@ -732,11 +732,11 @@ def edit_comfy_quant(
     if skipped_no_change > 0:
         print(f"  Skipped (no change):        {skipped_no_change}")
     if keys_removed:
-        print(f"  Keys removed:")
+        print("  Keys removed:")
         for k, count in sorted(keys_removed.items()):
             print(f"    {k}: {count} layers")
     if keys_added:
-        print(f"  Keys added:")
+        print("  Keys added:")
         for k, count in sorted(keys_added.items()):
             print(f"    {k}: {count} layers")
     print("-" * 60)
@@ -949,7 +949,7 @@ class LearnedRoundingConverter:
                 {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
             )
             if best_loss < 1e-8:
-                print(f"      - Loss is negligible. Stopping early.")
+                print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -996,7 +996,7 @@ class LearnedRoundingConverter:
                 {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
             )
             if best_loss < 1e-8:
-                print(f"      - Loss is negligible. Stopping early.")
+                print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1326,7 +1326,7 @@ class LearnedRoundingConverter:
 
         # Optional: Apply learned rounding optimization for INT8
         if not self.no_learned_rounding and self.num_iter > 0:
-            print(f"    - Applying learned rounding optimization for INT8...")
+            print("    - Applying learned rounding optimization for INT8...")
             qdata, scale = self._optimize_int8_learned_rounding(W_float32, qdata, scale)
 
         # Dequantize to get the reconstructed weight for bias correction
@@ -1402,11 +1402,11 @@ class LearnedRoundingConverter:
         )
 
         if self.full_matrix:
-            print(f"    - Using torch.linalg.svd with full_matrices=True")
+            print("    - Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print(f"    - Trying svd_lowrank")
+                print("    - Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
@@ -1486,7 +1486,7 @@ class LearnedRoundingConverter:
                 {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
             )
             if best_loss < 1e-8:
-                print(f"      - Loss is negligible. Stopping early.")
+                print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1550,7 +1550,7 @@ class LearnedRoundingConverter:
                 {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
             )
             if best_loss < 1e-8:
-                print(f"      - Loss is negligible. Stopping early.")
+                print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1979,11 +1979,11 @@ class LearnedRoundingConverter:
         )
 
         if self.full_matrix:
-            print(f"    - Using torch.linalg.svd with full_matrices=True")
+            print("    - Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print(f"    - Trying svd_lowrank")
+                print("    - Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
@@ -2325,7 +2325,7 @@ class LearnedRoundingConverter:
 
         # Skip SVD optimization if no_learned_rounding is set
         if self.no_learned_rounding:
-            print(f"    - Simple quantization (no learned rounding).")
+            print("    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 W_f8 = (
                     (W_float32 * scale)
@@ -2359,12 +2359,12 @@ class LearnedRoundingConverter:
             f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
         )
 
-        if self.full_matrix == True:
-            print(f"Using torch.linalg.svd with full_matrices=True")
+        if self.full_matrix:
+            print("Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print(f"Trying svd_lowrank")
+                print("Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
@@ -2425,14 +2425,14 @@ class LearnedRoundingConverter:
         Good balance between accuracy and memory for most weight matrices.
         """
         M, N = W_float32.shape
-        print(f"    - Using row-wise FP8 scaling (1 scale per row).")
+        print("    - Using row-wise FP8 scaling (1 scale per row).")
 
         # Compute per-row max
         row_max = W_float32.abs().amax(dim=1, keepdim=True)  # (M, 1)
         quant_scale = self.f8_max_val / row_max.clamp_min_(1e-12)  # (M, 1)
 
         if self.no_learned_rounding:
-            print(f"    - Simple quantization (no learned rounding).")
+            print("    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 W_scaled = W_float32 * quant_scale
                 W_f8 = W_scaled.to(TARGET_FP8_DTYPE)
@@ -2460,11 +2460,11 @@ class LearnedRoundingConverter:
         )
 
         if self.full_matrix:
-            print(f"Using torch.linalg.svd with full_matrices=True")
+            print("Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print(f"Trying svd_lowrank")
+                print("Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
@@ -2528,7 +2528,7 @@ class LearnedRoundingConverter:
         quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12)  # (M//bs, N//bs)
 
         if self.no_learned_rounding:
-            print(f"    - Simple quantization (no learned rounding).")
+            print("    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 # Apply scale per-block
                 scale_broadcast = quant_scale.unsqueeze(-1).unsqueeze(
@@ -2573,11 +2573,11 @@ class LearnedRoundingConverter:
         )
 
         if self.full_matrix:
-            print(f"Using torch.linalg.svd with full_matrices=True")
+            print("Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print(f"Trying svd_lowrank")
+                print("Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
@@ -2693,7 +2693,7 @@ def convert_to_fp8_scaled(
     print(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
     print("-" * 60)
     if int8:
-        print(f"Target format: INT8 (block-wise quantization)")
+        print("Target format: INT8 (block-wise quantization)")
         print(f"INT8 Range: [{-INT8_SYMMETRIC_MAX}, {INT8_SYMMETRIC_MAX}]")
     else:
         print(
@@ -3183,7 +3183,7 @@ def convert_to_fp8_scaled(
                     original_bias = tensors[bias_key]
                     in_features = original_tensor.shape[1]
                     if in_features not in calibration_data_cache:
-                        print(f"  - WARNING: No calibration data for bias correction.")
+                        print("  - WARNING: No calibration data for bias correction.")
                         new_tensors[bias_key] = original_bias
                     else:
                         X_calib_dev = calibration_data_cache[in_features].to(
@@ -3316,7 +3316,7 @@ def convert_fp8_scaled_to_comfy_quant(
         full_precision_mm: If True, set full_precision_matrix_mult in .comfy_quant
         include_input_scale: If True, add input_scale tensor (1.0 fp32) when missing
     """
-    print(f"Converting fp8_scaled to comfy_quant format")
+    print("Converting fp8_scaled to comfy_quant format")
     print(f"Input: {input_file}")
     print(f"Output: {output_file}")
     print("-" * 60)
@@ -4981,7 +4981,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             "INT8" if args.int8 else "NF4" if args.nf4 else "FP4" if args.fp4 else "AF4"
         )
         print(f"Error: --block_size is required when using {format_name} quantization.")
-        print(f"       Example: --block_size 128")
+        print("       Example: --block_size 128")
         sys.exit(1)
 
     # Validate custom-block-size for custom format
@@ -4989,7 +4989,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         print(
             f"Error: --custom-block-size is required when using --custom-type {args.custom_type}."
         )
-        print(f"       Example: --custom-block-size 128")
+        print("       Example: --custom-block-size 128")
         sys.exit(1)
 
     # Validate fallback-block-size for fallback format
@@ -4997,7 +4997,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         print(
             f"Error: --fallback-block-size is required when using --fallback {args.fallback}."
         )
-        print(f"       Example: --fallback-block-size 128")
+        print("       Example: --fallback-block-size 128")
         sys.exit(1)
 
     if not os.path.exists(args.input):
