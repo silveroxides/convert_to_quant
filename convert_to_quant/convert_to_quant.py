@@ -7,12 +7,12 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from typing import Dict, Tuple, Optional, Any, List
 from tqdm import tqdm
+
 # fnmatch removed - using regex for layer config patterns
 import gc
 import math
 import json
 from torch.optim import AdamW, RAdam
-from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree
 from .comfy.quant_ops import BlockWiseINT8Layout, BlockWiseINT8LayoutLodeWise
 
 # NF4/FP4 kernels
@@ -29,6 +29,7 @@ try:
         FP4_CODEBOOK_NORMALIZED,
         AF4_CODEBOOK,
     )
+
     _HAS_NF4 = True
 except ImportError:
     _HAS_NF4 = False
@@ -38,11 +39,11 @@ def get_4bit_codebook(quant_type: str) -> torch.Tensor:
     """Get the codebook tensor for a 4-bit quantization type."""
     if not _HAS_NF4:
         raise RuntimeError("4-bit kernels not available")
-    if quant_type == 'nf4':
+    if quant_type == "nf4":
         return NF4_CODEBOOK.clone()
-    elif quant_type == 'fp4':
+    elif quant_type == "fp4":
         return FP4_CODEBOOK_NORMALIZED.clone()
-    elif quant_type == 'af4':
+    elif quant_type == "af4":
         return AF4_CODEBOOK.clone()
     raise ValueError(f"Unknown 4-bit quant_type: {quant_type}")
 
@@ -54,6 +55,7 @@ try:
         weight_dequant as lodewise_weight_dequant,
         int8_gemm_lodewise,
     )
+
     _HAS_LODEWISE = True
 except ImportError:
     _HAS_LODEWISE = False
@@ -61,24 +63,122 @@ except ImportError:
 # --- Constants and Configuration ---
 torch.set_printoptions(precision=8)
 AVOID_KEY_NAMES = [
-    "norm", "bias", "embed_tokens", "shared", "patch_embedding", "audio_model.patch_embedding", "ref_conv", "control_adapter",
-    "motion_encoder.enc.net_app", "face_encoder.conv", "pose_patch_embedding", "motion_encoder.enc.fc", "img_emb.proj", "k_norm", "q_norm",
-    "motion_encoder.dec", "head.modulation", "casual_audio_encoder", "cond_encoder", "frame_packer", "norm_k", "norm_q",
-    "tekken_model", "multi_modal_projector", "patch_conv", "ln_pre", "input_layernorm", "attention_norm", "post_attention_layernorm"
-    ]
+    "norm",
+    "bias",
+    "embed_tokens",
+    "shared",
+    "patch_embedding",
+    "audio_model.patch_embedding",
+    "ref_conv",
+    "control_adapter",
+    "motion_encoder.enc.net_app",
+    "face_encoder.conv",
+    "pose_patch_embedding",
+    "motion_encoder.enc.fc",
+    "img_emb.proj",
+    "k_norm",
+    "q_norm",
+    "motion_encoder.dec",
+    "head.modulation",
+    "casual_audio_encoder",
+    "cond_encoder",
+    "frame_packer",
+    "norm_k",
+    "norm_q",
+    "tekken_model",
+    "multi_modal_projector",
+    "patch_conv",
+    "ln_pre",
+    "input_layernorm",
+    "attention_norm",
+    "post_attention_layernorm",
+]
 T5XXL_REMOVE_KEY_NAMES = ["decoder", "lm_head"]
 QWEN_AVOID_KEY_NAMES = ["norm_added_k", "norm_added_q", "norm_k", "norm_q", "txt_norm"]
-HUNYUAN_AVOID_KEY_NAMES = ["layernorm", "img_attn_k_norm", "img_attn_q_norm", "txt_attn_k_norm", "txt_attn_q_norm", "norm1", "norm2", "vision_in.proj.0", "vision_in.proj.4", "img_in.proj", "cond_type_embedding"]
-ZIMAGE_AVOID_KEY_NAMES = ["cap_embedder.0", "cap_pad_token", "attention_norm1", "attention_norm2", "ffn_norm1", "ffn_norm2", "k_norm", "q_norm", "x_pad_token"]
-FLUX2_LAYER_KEYNAMES = ["stream_modulation", "guidance_in", "time_in", "final_layer", "img_in", "txt_in"]
-DISTILL_LAYER_KEYNAMES_LARGE = ["distilled_guidance_layer", "final_layer", "img_in", "txt_in"]
+HUNYUAN_AVOID_KEY_NAMES = [
+    "layernorm",
+    "img_attn_k_norm",
+    "img_attn_q_norm",
+    "txt_attn_k_norm",
+    "txt_attn_q_norm",
+    "norm1",
+    "norm2",
+    "vision_in.proj.0",
+    "vision_in.proj.4",
+    "img_in.proj",
+    "cond_type_embedding",
+]
+ZIMAGE_AVOID_KEY_NAMES = [
+    "cap_embedder.0",
+    "cap_pad_token",
+    "attention_norm1",
+    "attention_norm2",
+    "ffn_norm1",
+    "ffn_norm2",
+    "k_norm",
+    "q_norm",
+    "x_pad_token",
+]
+FLUX2_LAYER_KEYNAMES = [
+    "stream_modulation",
+    "guidance_in",
+    "time_in",
+    "final_layer",
+    "img_in",
+    "txt_in",
+]
+DISTILL_LAYER_KEYNAMES_LARGE = [
+    "distilled_guidance_layer",
+    "final_layer",
+    "img_in",
+    "txt_in",
+]
 DISTILL_LAYER_KEYNAMES_SMALL = ["distilled_guidance_layer"]
-NERF_LAYER_KEYNAMES_LARGE = ["distilled_guidance_layer", "nerf_blocks", "nerf_image_embedder", "txt_in"]
-NERF_LAYER_KEYNAMES_SMALL = ["distilled_guidance_layer", "nerf_blocks", "nerf_image_embedder"]
+NERF_LAYER_KEYNAMES_LARGE = [
+    "distilled_guidance_layer",
+    "nerf_blocks",
+    "nerf_image_embedder",
+    "txt_in",
+]
+NERF_LAYER_KEYNAMES_SMALL = [
+    "distilled_guidance_layer",
+    "nerf_blocks",
+    "nerf_image_embedder",
+]
 RADIANCE_LAYER_KEYNAMES = ["img_in_patch", "nerf_final_layer_conv", "__x0__"]
-WAN_LAYER_KEYNAMES = ["text_embedding", "time_embedding", "audio_model.text_embedding", "casual_audio_encoder", "frame_packer", "trainable_cond_mask", "cond_encoder", "audio_model.time_embedding", "time_projection", "video_model.time_projection", "head.head", "face_encoder.out_proj", "face_adapter", "audio_injector"]
-QWEN_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "transformer_blocks.0.img_mod.1", "txt_in"]
-ZIMAGE_LAYER_KEYNAMES = ["x_embedder", "clip_text_pooled_proj", "final_layer", "cap_embedder.1", "adaLN_modulation", "t_embedder", "time_text_embed"]
+WAN_LAYER_KEYNAMES = [
+    "text_embedding",
+    "time_embedding",
+    "audio_model.text_embedding",
+    "casual_audio_encoder",
+    "frame_packer",
+    "trainable_cond_mask",
+    "cond_encoder",
+    "audio_model.time_embedding",
+    "time_projection",
+    "video_model.time_projection",
+    "head.head",
+    "face_encoder.out_proj",
+    "face_adapter",
+    "audio_injector",
+]
+QWEN_LAYER_KEYNAMES = [
+    "time_text_embed",
+    "img_in",
+    "norm_out",
+    "proj_out",
+    "transformer_blocks.0.img_mod.1",
+    "txt_in",
+]
+ZIMAGE_LAYER_KEYNAMES = [
+    "x_embedder",
+    "clip_text_pooled_proj",
+    "final_layer",
+    "cap_embedder.1",
+    "adaLN_modulation",
+    "t_embedder",
+    "time_text_embed",
+]
 ZIMAGE_REFINER_LAYER_KEYNAMES = ["context_refiner", "noise_refiner"]
 TARGET_FP8_DTYPE = torch.float8_e4m3fn
 TARGET_INT8_DTYPE = torch.int8
@@ -93,25 +193,34 @@ FP8_MIN_POS = float(torch.finfo(TARGET_FP8_DTYPE).tiny)
 # INT8 constants (using symmetric range [-127, 127] for symmetric quantization)
 INT8_MIN = int(torch.iinfo(TARGET_INT8_DTYPE).min)  # -128
 INT8_MAX = int(torch.iinfo(TARGET_INT8_DTYPE).max)  # 127
-INT8_SYMMETRIC_MAX = min(abs(INT8_MIN), INT8_MAX)   # 127 (symmetric range)
+INT8_SYMMETRIC_MAX = min(abs(INT8_MIN), INT8_MAX)  # 127 (symmetric range)
+
 
 def dict_to_tensor(data_dict):
     json_str = json.dumps(data_dict)
-    byte_data = json_str.encode('utf-8')
+    byte_data = json_str.encode("utf-8")
     tensor_data = torch.tensor(list(byte_data), dtype=torch.uint8)
     return tensor_data
 
+
 def tensor_to_dict(tensor_data):
     byte_data = bytes(tensor_data.tolist())
-    json_str = byte_data.decode('utf-8')
+    json_str = byte_data.decode("utf-8")
     data_dict = json.loads(json_str)
     return data_dict
 
 
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
 VALID_QUANT_FORMATS = {
-    "float8_e4m3fn", "float8_e4m3fn_rowwise", "float8_e4m3fn_blockwise", "float8_e4m3fn_block3d",
-    "int8_blockwise", "int8_lodewise", "bnb_nf4", "bnb_fp4", "bnb_af4"
+    "float8_e4m3fn",
+    "float8_e4m3fn_rowwise",
+    "float8_e4m3fn_blockwise",
+    "float8_e4m3fn_block3d",
+    "int8_blockwise",
+    "int8_lodewise",
+    "bnb_nf4",
+    "bnb_fp4",
+    "bnb_af4",
 }
 
 
@@ -127,16 +236,16 @@ def pattern_specificity(pattern: str) -> tuple:
     Returns:
         (tier, score) tuple for sorting - lower tier and higher score = more specific
     """
-    if pattern.startswith('_'):
+    if pattern.startswith("_"):
         return (999, 0)  # Special keys like _default have lowest priority
 
     # Count literal characters (exclude regex metacharacters)
     # Remove common regex patterns to get approximate literal length
-    literal_pattern = re.sub(r'\\.|\[.*?\]|\(.*?\)|[.*+?^${}|\\]', '', pattern)
+    literal_pattern = re.sub(r"\\.|\[.*?\]|\(.*?\)|[.*+?^${}|\\]", "", pattern)
     literal_len = len(literal_pattern)
 
     # Check if pattern has explicit numbers (literal digits or \d patterns)
-    has_number = bool(re.search(r'\d|\\d', pattern))
+    has_number = bool(re.search(r"\d|\\d", pattern))
 
     # Tier 0: numbers + 8+ literal chars (very specific layers)
     tier = 0 if (has_number and literal_len >= 8) else 1
@@ -160,45 +269,59 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Layer config file not found: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, "r") as f:
         config = json.load(f)
 
     if not isinstance(config, dict):
-        raise ValueError(f"Layer config must be a JSON object, got {type(config).__name__}")
+        raise ValueError(
+            f"Layer config must be a JSON object, got {type(config).__name__}"
+        )
 
     # Validate each entry and compile regex patterns
     compiled_patterns = {}
     for key, settings in config.items():
-        if key.startswith('_'):
+        if key.startswith("_"):
             # Validate _default has valid format if format is specified
-            if key == '_default' and isinstance(settings, dict):
-                if 'format' in settings:
-                    fmt = settings['format']
+            if key == "_default" and isinstance(settings, dict):
+                if "format" in settings:
+                    fmt = settings["format"]
                     if not fmt:  # Empty string check
-                        raise ValueError(f"_default has empty 'format' field. Use skip:true to skip, or specify a valid format.")
+                        raise ValueError(
+                            f"_default has empty 'format' field. Use skip:true to skip, or specify a valid format."
+                        )
                     if fmt not in VALID_QUANT_FORMATS:
-                        raise ValueError(f"_default has invalid format '{fmt}'. Valid formats: {sorted(VALID_QUANT_FORMATS)}")
+                        raise ValueError(
+                            f"_default has invalid format '{fmt}'. Valid formats: {sorted(VALID_QUANT_FORMATS)}"
+                        )
             continue
 
         if not isinstance(settings, dict):
-            raise ValueError(f"Layer config entry '{key}' must be an object, got {type(settings).__name__}")
+            raise ValueError(
+                f"Layer config entry '{key}' must be an object, got {type(settings).__name__}"
+            )
 
         # Validate regex pattern
         try:
             compiled_patterns[key] = re.compile(key)
         except re.error as e:
-            raise ValueError(f"Layer config entry '{key}' has invalid regex pattern: {e}")
+            raise ValueError(
+                f"Layer config entry '{key}' has invalid regex pattern: {e}"
+            )
 
         # skip:true entries don't need format
-        if settings.get('skip', False):
+        if settings.get("skip", False):
             continue
 
-        if 'format' not in settings:
-            raise ValueError(f"Layer config entry '{key}' missing required 'format' field (or set skip:true)")
+        if "format" not in settings:
+            raise ValueError(
+                f"Layer config entry '{key}' missing required 'format' field (or set skip:true)"
+            )
 
-        fmt = settings['format']
+        fmt = settings["format"]
         if not fmt:  # Empty string check
-            raise ValueError(f"Layer config entry '{key}' has empty 'format' field. Use skip:true to skip, or specify a valid format.")
+            raise ValueError(
+                f"Layer config entry '{key}' has empty 'format' field. Use skip:true to skip, or specify a valid format."
+            )
         if fmt not in VALID_QUANT_FORMATS:
             raise ValueError(
                 f"Layer config entry '{key}' has invalid format '{fmt}'. "
@@ -206,13 +329,17 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
             )
 
     # Store compiled patterns in config for reuse
-    config['_compiled_patterns'] = compiled_patterns
+    config["_compiled_patterns"] = compiled_patterns
 
-    print(f"Loaded layer config with {len([k for k in config if not k.startswith('_')])} layer patterns (regex mode)")
+    print(
+        f"Loaded layer config with {len([k for k in config if not k.startswith('_')])} layer patterns (regex mode)"
+    )
     return config
 
 
-def get_layer_settings(layer_key: str, config: Dict[str, Any], fullmatch: bool = False) -> Optional[Dict[str, Any]]:
+def get_layer_settings(
+    layer_key: str, config: Dict[str, Any], fullmatch: bool = False
+) -> Optional[Dict[str, Any]]:
     """
     Find the most specific matching config entry for a layer using regex.
 
@@ -226,15 +353,15 @@ def get_layer_settings(layer_key: str, config: Dict[str, Any], fullmatch: bool =
         Settings dict for the layer, or None if no match and no _default
     """
     # Strip .weight suffix for matching
-    base_key = layer_key[:-7] if layer_key.endswith('.weight') else layer_key
+    base_key = layer_key[:-7] if layer_key.endswith(".weight") else layer_key
 
     # Get compiled patterns (or compile on demand for backwards compatibility)
-    compiled_patterns = config.get('_compiled_patterns', {})
+    compiled_patterns = config.get("_compiled_patterns", {})
 
     # Find all matching patterns using regex
     matches = []
     for pattern, settings in config.items():
-        if pattern.startswith('_'):
+        if pattern.startswith("_"):
             continue
 
         # Use pre-compiled pattern if available, otherwise compile
@@ -246,7 +373,9 @@ def get_layer_settings(layer_key: str, config: Dict[str, Any], fullmatch: bool =
                 continue  # Skip invalid patterns
 
         # Use fullmatch or search based on flag
-        match_result = regex.fullmatch(base_key) if fullmatch else regex.search(base_key)
+        match_result = (
+            regex.fullmatch(base_key) if fullmatch else regex.search(base_key)
+        )
         if match_result:
             specificity = pattern_specificity(pattern)
             matches.append((specificity, pattern, settings))
@@ -258,7 +387,7 @@ def get_layer_settings(layer_key: str, config: Dict[str, Any], fullmatch: bool =
         return best_settings
 
     # Fall back to _default if present
-    return config.get('_default')
+    return config.get("_default")
 
 
 def generate_config_template(input_file: str, output_path: str, block_size: int = 128):
@@ -278,24 +407,21 @@ def generate_config_template(input_file: str, output_path: str, block_size: int 
 
     # Load tensor metadata (not full tensors)
     try:
-        with safe_open(input_file, framework="pt", device='cpu') as f:
+        with safe_open(input_file, framework="pt", device="cpu") as f:
             all_keys = f.keys()
-            weight_keys = [k for k in all_keys if k.endswith('.weight')]
+            weight_keys = [k for k in all_keys if k.endswith(".weight")]
     except Exception as e:
         raise RuntimeError(f"Error reading model file: {e}")
 
     print(f"Found {len(weight_keys)} weight tensors")
 
-    config = {
-        "_default": {"format": ""},
-        "_exclusions": []
-    }
+    config = {"_default": {"format": ""}, "_exclusions": []}
 
     viable_count = 0
     skipped_count = 0
     skipped_reasons = {}
 
-    with safe_open(input_file, framework="pt", device='cpu') as f:
+    with safe_open(input_file, framework="pt", device="cpu") as f:
         for key in tqdm(weight_keys, desc="Analyzing layers"):
             tensor = f.get_tensor(key)
             base_name = key[:-7]  # Remove .weight suffix
@@ -319,7 +445,7 @@ def generate_config_template(input_file: str, output_path: str, block_size: int 
             viable_count += 1
 
     # Write template
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(config, f, indent=2)
 
     print("-" * 60)
@@ -331,9 +457,12 @@ def generate_config_template(input_file: str, output_path: str, block_size: int 
         for reason, layers in skipped_reasons.items():
             print(f"    {reason}: {len(layers)} layers")
     print(f"\nTemplate written to: {output_path}")
-    print("Edit the template to set 'format' for each layer (float8_e4m3fn, int8_blockwise, etc.)")
+    print(
+        "Edit the template to set 'format' for each layer (float8_e4m3fn, int8_blockwise, etc.)"
+    )
 
     return viable_count, skipped_count
+
 
 def create_comfy_quant_tensor(
     format_type: str,
@@ -362,7 +491,14 @@ def create_comfy_quant_tensor(
     Returns:
         torch.uint8 tensor containing JSON-encoded layer configuration
     """
-    BLOCK_BASED_FORMATS = ("int8_blockwise", "int8_lodewise", "bnb_nf4", "bnb_fp4", "bnb_af4", "float8_e4m3fn_blockwise")
+    BLOCK_BASED_FORMATS = (
+        "int8_blockwise",
+        "int8_lodewise",
+        "bnb_nf4",
+        "bnb_fp4",
+        "bnb_af4",
+        "float8_e4m3fn_blockwise",
+    )
     FOUR_BIT_FORMATS = ("bnb_nf4", "bnb_fp4", "bnb_af4")
 
     comfy_quant = {"format": format_type}
@@ -389,8 +525,9 @@ def create_comfy_quant_tensor(
     return dict_to_tensor(comfy_quant)
 
 
-
-def fix_comfy_quant_params_structure(comfy_quant_tensor: torch.Tensor) -> Tuple[torch.Tensor, bool]:
+def fix_comfy_quant_params_structure(
+    comfy_quant_tensor: torch.Tensor,
+) -> Tuple[torch.Tensor, bool]:
     """
     Check and fix comfy_quant config with incorrect nested params structure.
 
@@ -449,6 +586,7 @@ def parse_add_keys_string(add_keys_str: str) -> Dict[str, Any]:
     # Split by comma, but handle quoted strings properly
     # Use regex to match 'key': value patterns
     import re
+
     pattern = r"'([^']+)':\s*([^,]+?)(?:,|$)"
     matches = re.findall(pattern, add_keys_str.strip())
 
@@ -458,14 +596,14 @@ def parse_add_keys_string(add_keys_str: str) -> Dict[str, Any]:
         if value.startswith("'") and value.endswith("'"):
             # String value
             result[key] = value[1:-1]
-        elif value.lower() == 'true':
+        elif value.lower() == "true":
             result[key] = True
-        elif value.lower() == 'false':
+        elif value.lower() == "false":
             result[key] = False
         else:
             # Try to parse as number
             try:
-                if '.' in value:
+                if "." in value:
                     result[key] = float(value)
                 else:
                     result[key] = int(value)
@@ -514,6 +652,7 @@ def edit_comfy_quant(
     if layer_filter:
         print(f"Layer filter: {layer_filter}")
         import re
+
         try:
             layer_regex = re.compile(layer_filter)
         except re.error as e:
@@ -540,7 +679,7 @@ def edit_comfy_quant(
 
     # Process .comfy_quant tensors
     for key in list(tensors.keys()):
-        if not key.endswith('.comfy_quant'):
+        if not key.endswith(".comfy_quant"):
             continue
 
         total_comfy_quant += 1
@@ -605,7 +744,10 @@ def edit_comfy_quant(
     # Save output
     print(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        os.makedirs(
+            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
+            exist_ok=True,
+        )
         save_file(tensors, output_file)
         print("Edit complete!")
     except Exception as e:
@@ -613,7 +755,9 @@ def edit_comfy_quant(
         return
 
 
-def should_skip_layer_for_performance(tensor: torch.Tensor, block_size: int) -> Tuple[bool, str]:
+def should_skip_layer_for_performance(
+    tensor: torch.Tensor, block_size: int
+) -> Tuple[bool, str]:
     """
     Check if a layer should be skipped based on performance heuristics.
 
@@ -641,12 +785,18 @@ def should_skip_layer_for_performance(tensor: torch.Tensor, block_size: int) -> 
     aspect_ratio = max(rows, cols) / max(min(rows, cols), 1)
     small_dim = min(rows, cols)
     if aspect_ratio > 4.0 and small_dim < 5120:
-        return True, f"highly rectangular (aspect ratio {aspect_ratio:.1f}, small dim {small_dim})"
+        return (
+            True,
+            f"highly rectangular (aspect ratio {aspect_ratio:.1f}, small dim {small_dim})",
+        )
 
     # Skip small-ish layers (< 15M params, aspect ratio < 2.0)
     num_params = rows * cols
     if num_params < 15_000_000 and aspect_ratio < 2.0:
-        return True, f"small layer ({num_params:,} params, aspect ratio {aspect_ratio:.1f})"
+        return (
+            True,
+            f"small layer ({num_params:,} params, aspect ratio {aspect_ratio:.1f})",
+        )
 
     # Skip layers with max dimension < 4096
     if max(rows, cols) < 4096:
@@ -661,13 +811,41 @@ class LearnedRoundingConverter:
     Provides a highly effective optimization strategy.
     Supports both FP8 and INT8 quantization formats.
     """
-    def __init__(self, optimizer="original", num_iter=500, top_p=0.01, min_k=1, max_k=16, scaling_mode='tensor', block_size=64, full_matrix=False, target_format='fp8', no_learned_rounding=False, kernel_backend='triton', lr_schedule='adaptive', lr_gamma=0.99, lr_patience=50, lr_factor=0.5, lr_min=1e-8, lr_cooldown=0, lr_threshold=0.0, lr_adaptive_mode='simple-reset', lr_shape_influence=1.0, lr_threshold_mode='rel', early_stop_loss=1e-8, early_stop_lr=1e-10, early_stop_stall=1000, **kwargs):
+
+    def __init__(
+        self,
+        optimizer="original",
+        num_iter=500,
+        top_p=0.01,
+        min_k=1,
+        max_k=16,
+        scaling_mode="tensor",
+        block_size=64,
+        full_matrix=False,
+        target_format="fp8",
+        no_learned_rounding=False,
+        kernel_backend="triton",
+        lr_schedule="adaptive",
+        lr_gamma=0.99,
+        lr_patience=50,
+        lr_factor=0.5,
+        lr_min=1e-8,
+        lr_cooldown=0,
+        lr_threshold=0.0,
+        lr_adaptive_mode="simple-reset",
+        lr_shape_influence=1.0,
+        lr_threshold_mode="rel",
+        early_stop_loss=1e-8,
+        early_stop_lr=1e-10,
+        early_stop_stall=1000,
+        **kwargs,
+    ):
         self.num_iter = num_iter
         self.top_p = top_p
         self.min_k = min_k
         self.max_k = max_k
         self.block_size = block_size
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.optimizer_choice = optimizer
         self.full_matrix = full_matrix
         self.target_format = target_format
@@ -695,19 +873,19 @@ class LearnedRoundingConverter:
         self.early_stop_stall = early_stop_stall
 
         # INT8 and 4-bit always use block-wise scaling
-        if target_format in ('int8', 'nf4', 'fp4', 'af4'):
-            scaling_mode = 'block'
+        if target_format in ("int8", "nf4", "fp4", "af4"):
+            scaling_mode = "block"
         # Normalize block3d alias to block
-        if scaling_mode == 'block3d':
-            scaling_mode = 'block'
+        if scaling_mode == "block3d":
+            scaling_mode = "block"
         self.scaling_mode = scaling_mode
 
         # Set format-specific max values and dtype
-        if self.target_format == 'int8':
+        if self.target_format == "int8":
             # INT8 uses integer symmetric range [-127, 127]
             self.target_dtype = TARGET_INT8_DTYPE
             self.f8_max_val = None  # Not applicable to INT8
-        elif self.target_format in ('nf4', 'fp4', 'af4'):
+        elif self.target_format in ("nf4", "fp4", "af4"):
             # 4-bit quantization uses uint8 for packed storage (2 values per byte)
             self.target_dtype = torch.uint8
             self.f8_max_val = None  # Not applicable to 4-bit
@@ -718,67 +896,38 @@ class LearnedRoundingConverter:
 
         print(f"LearnedRoundingConverter initialized on device: {self.device}")
         print(f"  - Target format: {self.target_format}")
-        print(f"  - Using optimizer: '{self.optimizer_choice}'" + (" (disabled - simple quant)" if self.no_learned_rounding else ""))
-        if self.optimizer_choice == 'original':
+        print(
+            f"  - Using optimizer: '{self.optimizer_choice}'"
+            + (" (disabled - simple quant)" if self.no_learned_rounding else "")
+        )
+        if self.optimizer_choice == "original":
             print(f"  - LR schedule: {self.lr_schedule}")
         print(f"  - Scaling mode: {self.scaling_mode}")
-        if self.scaling_mode in ('block', 'block2d'):
+        if self.scaling_mode in ("block", "block2d"):
             print(f"    - Block size: {self.block_size}")
-        if self.target_format == 'int8':
+        if self.target_format == "int8":
             print(f"  - Kernel backend: {self.kernel_backend}")
 
-
-    def _optimize_ppsf(self, W_float32: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
+    def _optimize_adamw(
+        self,
+        W_float32: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        lr = self.optimizer_kwargs.get('lr', 1e-2)
-        optimizer = ProdigyPlusScheduleFree([delta], lr=lr, betas=(0.9, 0.99), beta3=None,
-                                            weight_decay=0.0, weight_decay_by_lr=False, d0=1e-3, d_coef=1.0,
-                                            d_limiter=True, prodigy_steps=0, schedulefree_c=0, eps=1e-8,
-                                            split_groups=False, split_groups_mean=False,
-                                            factored=True, factored_fp32=True, use_bias_correction=False,
-                                            use_stableadamw=True, use_schedulefree=True, use_speed=False,
-                                            stochastic_rounding=True, fused_back_pass=False,
-                                            use_cautious=False, use_grams=False, use_adopt=False,
-                                            use_orthograd=False, use_focus=False)
-        best_loss = float('inf')
-        best_delta = delta.detach().clone()
-
-        pbar = tqdm(range(self.num_iter), desc="    Optimizing (ProdigyPlusScheduleFree)", leave=False, dynamic_ncols=True)
-        for i in pbar:
-            optimizer.zero_grad()
-            W_q_refined = W_rounded + delta
-
-            current_dq = W_q_refined / scale
-            error = current_dq - W_float32
-            projected_error = U_k.T @ error @ Vh_k.T
-            loss = torch.linalg.norm(projected_error)
-
-            loss.backward()
-            optimizer.step()
-
-            current_loss_val = loss.item()
-            if current_loss_val < best_loss:
-                best_loss = current_loss_val
-                best_delta = delta.detach().clone()
-
-            pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"})
-            if best_loss < 1e-8:
-                print(f"      - Loss is negligible. Stopping early.")
-                break
-
-        pbar.close()
-        return W_rounded + best_delta
-
-    def _optimize_adamw(self, W_float32: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
-        W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
-        delta = torch.zeros_like(W_rounded, requires_grad=True)
-        lr = self.optimizer_kwargs.get('lr', 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = AdamW([delta], lr=lr)
-        best_loss = float('inf')
+        best_loss = float("inf")
         best_delta = delta.detach().clone()
 
-        pbar = tqdm(range(self.num_iter), desc="    Optimizing (AdamW)", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter),
+            desc="    Optimizing (AdamW)",
+            leave=False,
+            dynamic_ncols=True,
+        )
         for i in pbar:
             optimizer.zero_grad()
             W_q_refined = W_rounded + delta
@@ -796,7 +945,9 @@ class LearnedRoundingConverter:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
 
-            pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"})
+            pbar.set_postfix(
+                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+            )
             if best_loss < 1e-8:
                 print(f"      - Loss is negligible. Stopping early.")
                 break
@@ -804,15 +955,26 @@ class LearnedRoundingConverter:
         pbar.close()
         return W_rounded + best_delta
 
-    def _optimize_radam(self, W_float32: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
+    def _optimize_radam(
+        self,
+        W_float32: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        lr = self.optimizer_kwargs.get('lr', 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = RAdam([delta], lr=lr)
-        best_loss = float('inf')
+        best_loss = float("inf")
         best_delta = delta.detach().clone()
 
-        pbar = tqdm(range(self.num_iter), desc="    Optimizing (RAdam)", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter),
+            desc="    Optimizing (RAdam)",
+            leave=False,
+            dynamic_ncols=True,
+        )
         for i in pbar:
             optimizer.zero_grad()
             W_q_refined = W_rounded + delta
@@ -830,7 +992,9 @@ class LearnedRoundingConverter:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
 
-            pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"})
+            pbar.set_postfix(
+                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+            )
             if best_loss < 1e-8:
                 print(f"      - Loss is negligible. Stopping early.")
                 break
@@ -838,15 +1002,21 @@ class LearnedRoundingConverter:
         pbar.close()
         return W_rounded + best_delta
 
-    def _optimize_original(self, W_float32: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
+    def _optimize_original(
+        self,
+        W_float32: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         W_q_refined = W_rounded.clone()
-        best_loss = float('inf')
+        best_loss = float("inf")
         best_tensor = None
         worse_loss_counter = 0
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
-        curr_lr = self.optimizer_kwargs.get('lr', 8.077300000003e-3)
+        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         if W_float32.shape[0] == W_float32.shape[1]:
             small_mult = 0.95
         else:
@@ -858,7 +1028,7 @@ class LearnedRoundingConverter:
         rows, cols = W_float32.shape
         aspect_ratio = max(rows, cols) / min(rows, cols)
 
-        if schedule_name == 'plateau' and self.lr_shape_influence > 0:
+        if schedule_name == "plateau" and self.lr_shape_influence > 0:
             # Scale factor based on aspect ratio, modulated by influence
             # influence=1.0: full effect, influence=0.0: no effect (use raw values)
             # Elongated tensors need MORE AGGRESSIVE decay (lower factor)
@@ -871,7 +1041,7 @@ class LearnedRoundingConverter:
             # More aggressive factor for elongated tensors: factor^ar_factor makes it smaller
             # E.g., 0.92^2 = 0.846 for AR=4, 0.92^2.45 = 0.808 for AR=6
             raw_factor = self.lr_factor
-            aggressive_factor = raw_factor ** ar_factor
+            aggressive_factor = raw_factor**ar_factor
             effective_factor = raw_factor + (aggressive_factor - raw_factor) * blend
 
             # Cooldown unchanged
@@ -881,7 +1051,12 @@ class LearnedRoundingConverter:
             effective_factor = self.lr_factor
             effective_cooldown = self.lr_cooldown
 
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (Original-{schedule_name})", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter),
+            desc=f"    Optimizing (Original-{schedule_name})",
+            leave=False,
+            dynamic_ncols=True,
+        )
         for i in pbar:
             with torch.no_grad():
                 current_dq = W_q_refined / scale
@@ -892,7 +1067,7 @@ class LearnedRoundingConverter:
             current_loss = loss.item()
             # Check if improvement exceeds threshold (supports rel/abs mode like PyTorch ReduceLROnPlateau)
             if self.lr_threshold > 0:
-                if self.lr_threshold_mode == 'rel':
+                if self.lr_threshold_mode == "rel":
                     # Relative: significant if loss < best * (1 - threshold)
                     improved = current_loss < best_loss * (1.0 - self.lr_threshold)
                 else:  # 'abs'
@@ -908,7 +1083,7 @@ class LearnedRoundingConverter:
                 best_loss = current_loss
                 best_tensor = W_q_refined.clone()
                 plateau_counter = 0
-                if self.lr_adaptive_mode == 'simple-reset':
+                if self.lr_adaptive_mode == "simple-reset":
                     worse_loss_counter = 0
                 # no-reset mode: worse_loss_counter preserved for tier calculation
             else:
@@ -916,10 +1091,10 @@ class LearnedRoundingConverter:
                 plateau_counter += 1
 
             # LR update based on schedule
-            if schedule_name == 'exponential':
+            if schedule_name == "exponential":
                 # ExponentialLR: lr = lr * gamma per step
                 curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-            elif schedule_name == 'plateau':
+            elif schedule_name == "plateau":
                 # ReduceLROnPlateau with cooldown (shape-aware)
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
@@ -930,7 +1105,11 @@ class LearnedRoundingConverter:
                     plateau_counter = 0
             else:  # 'adaptive' - tier-based schedule
                 # For no-reset mode, use counter value before reset for tier calculation
-                counter_for_tier = prev_worse_counter if (improved and self.lr_adaptive_mode == 'no-reset') else worse_loss_counter
+                counter_for_tier = (
+                    prev_worse_counter
+                    if (improved and self.lr_adaptive_mode == "no-reset")
+                    else worse_loss_counter
+                )
 
                 if improved and counter_for_tier < 50:
                     curr_lr = min(curr_lr * (1.25 * small_mult), 100.0)
@@ -970,18 +1149,42 @@ class LearnedRoundingConverter:
                     curr_lr = max(curr_lr * (0.995 * small_mult), 5e-9)
 
                 # Reset counter after boost in no-reset mode
-                if improved and self.lr_adaptive_mode == 'no-reset':
+                if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
-            pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
+            pbar.set_postfix(
+                {
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                }
+            )
 
             # Early stopping conditions (configurable thresholds)
-            if current_loss < self.early_stop_loss or curr_lr < self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
-                if curr_lr < self.early_stop_lr * 1.75 and worse_loss_counter > self.early_stop_stall * 0.95:
-                    print("      - Loss has stalled and learning rate has bottomed out. Stopping.")
-                elif current_loss < self.early_stop_loss and curr_lr < self.early_stop_lr * 1.75:
-                    print("      - Learning Rate has bottomed out and loss is negligible. Stopping.")
-                elif worse_loss_counter > self.early_stop_stall * 0.95 and current_loss > self.early_stop_loss * 2:
+            if (
+                current_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if (
+                    curr_lr < self.early_stop_lr * 1.75
+                    and worse_loss_counter > self.early_stop_stall * 0.95
+                ):
+                    print(
+                        "      - Loss has stalled and learning rate has bottomed out. Stopping."
+                    )
+                elif (
+                    current_loss < self.early_stop_loss
+                    and curr_lr < self.early_stop_lr * 1.75
+                ):
+                    print(
+                        "      - Learning Rate has bottomed out and loss is negligible. Stopping."
+                    )
+                elif (
+                    worse_loss_counter > self.early_stop_stall * 0.95
+                    and current_loss > self.early_stop_loss * 2
+                ):
                     print("      - Loss is negligible and loss has stalled. Stopping.")
                 elif current_loss < self.early_stop_loss:
                     print("      - Loss is negligible. Stopping.")
@@ -998,7 +1201,9 @@ class LearnedRoundingConverter:
         pbar.close()
         return best_tensor if best_tensor is not None else W_q_refined
 
-    def convert(self, W_orig: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def convert(
+        self, W_orig: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         W_float32 = W_orig.to(self.device, dtype=COMPUTE_DTYPE)
 
         if torch.all(W_float32 == 0):
@@ -1009,23 +1214,49 @@ class LearnedRoundingConverter:
             if W_float32.ndim == 2:
                 out_features, in_features = W_float32.shape
 
-                if self.target_format == 'int8':
+                if self.target_format == "int8":
                     # INT8 uses 2D block scaling (M//block_size, N//block_size)
                     num_blocks_m = out_features // self.block_size
                     num_blocks_n = in_features // self.block_size
-                    dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode == 'row':
+                    dequant_scale = torch.ones(
+                        num_blocks_m,
+                        num_blocks_n,
+                        device=self.device,
+                        dtype=SCALE_DTYPE,
+                    )
+                elif self.scaling_mode == "row":
                     # Row-wise: one scale per row
-                    dequant_scale = torch.ones(out_features, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode == 'block2d' and out_features % self.block_size == 0 and in_features % self.block_size == 0:
+                    dequant_scale = torch.ones(
+                        out_features, device=self.device, dtype=SCALE_DTYPE
+                    )
+                elif (
+                    self.scaling_mode == "block2d"
+                    and out_features % self.block_size == 0
+                    and in_features % self.block_size == 0
+                ):
                     # 2D block-wise: (M//bs, N//bs)
                     num_blocks_m = out_features // self.block_size
                     num_blocks_n = in_features // self.block_size
-                    dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode == 'block' and in_features > 0 and in_features % self.block_size == 0:
+                    dequant_scale = torch.ones(
+                        num_blocks_m,
+                        num_blocks_n,
+                        device=self.device,
+                        dtype=SCALE_DTYPE,
+                    )
+                elif (
+                    self.scaling_mode == "block"
+                    and in_features > 0
+                    and in_features % self.block_size == 0
+                ):
                     # Per-row-group: (out_features, num_blocks, 1)
                     num_blocks = in_features // self.block_size
-                    dequant_scale = torch.ones(out_features, num_blocks, 1, device=self.device, dtype=SCALE_DTYPE)
+                    dequant_scale = torch.ones(
+                        out_features,
+                        num_blocks,
+                        1,
+                        device=self.device,
+                        dtype=SCALE_DTYPE,
+                    )
                 else:
                     # Tensor-wise: single scale
                     dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
@@ -1035,32 +1266,33 @@ class LearnedRoundingConverter:
             return quantized_tensor, dequant_scale, torch.zeros_like(W_float32)
 
         # INT8 quantization path
-        if self.target_format == 'int8':
+        if self.target_format == "int8":
             return self._convert_int8(W_float32)
 
         # NF4 quantization path
-        if self.target_format == 'nf4':
+        if self.target_format == "nf4":
             return self._convert_nf4(W_float32)
 
         # FP4 quantization path
-        if self.target_format == 'fp4':
+        if self.target_format == "fp4":
             return self._convert_fp4(W_float32)
 
         # AF4 quantization path
-        if self.target_format == 'af4':
+        if self.target_format == "af4":
             return self._convert_af4(W_float32)
 
         # FP8 quantization path - route based on scaling_mode
-        if self.scaling_mode == 'row':
+        if self.scaling_mode == "row":
             return self._convert_fp8_rowwise(W_float32)
-        elif self.scaling_mode == 'block2d':
+        elif self.scaling_mode == "block2d":
             return self._convert_fp8_block2d(W_float32)
         else:
             # 'tensor' or 'block' (original per-row-group) mode
             return self._convert_fp8(W_float32)
 
-
-    def _convert_int8(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_int8(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         INT8 block-wise quantization using BlockWiseINT8Layout or Lode-Wise kernels.
 
@@ -1079,22 +1311,18 @@ class LearnedRoundingConverter:
             )
 
         # Select quantization backend
-        if self.kernel_backend == 'lodewise':
+        if self.kernel_backend == "lodewise":
             # Use BlockWiseINT8LayoutLodeWise for per-row scale format (N, K//block_size)
             qdata, layout_params = BlockWiseINT8LayoutLodeWise.quantize(
-                W_float32,
-                block_size=self.block_size,
-                is_weight=True
+                W_float32, block_size=self.block_size, is_weight=True
             )
-            scale = layout_params['scale']  # Shape: (N, K//block_size)
+            scale = layout_params["scale"]  # Shape: (N, K//block_size)
         else:
             # Use BlockWiseINT8Layout (default 'blockwise' backend from quant_ops.py)
             qdata, layout_params = BlockWiseINT8Layout.quantize(
-                W_float32,
-                block_size=self.block_size,
-                is_weight=True
+                W_float32, block_size=self.block_size, is_weight=True
             )
-            scale = layout_params['scale']  # Shape: (M//block_size, N//block_size)
+            scale = layout_params["scale"]  # Shape: (M//block_size, N//block_size)
 
         # Optional: Apply learned rounding optimization for INT8
         if not self.no_learned_rounding and self.num_iter > 0:
@@ -1102,7 +1330,7 @@ class LearnedRoundingConverter:
             qdata, scale = self._optimize_int8_learned_rounding(W_float32, qdata, scale)
 
         # Dequantize to get the reconstructed weight for bias correction
-        if self.kernel_backend == 'lodewise':
+        if self.kernel_backend == "lodewise":
             dequantized_weight = BlockWiseINT8LayoutLodeWise.dequantize(
                 qdata, scale, self.block_size, is_weight=True, orig_dtype=COMPUTE_DTYPE
             )
@@ -1114,12 +1342,18 @@ class LearnedRoundingConverter:
         # Clean up
         del W_float32
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
-        return qdata, scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight
+        return (
+            qdata,
+            scale.to(device=self.device, dtype=SCALE_DTYPE),
+            dequantized_weight,
+        )
 
-    def _int8_dequantize_blockwise(self, qdata: torch.Tensor, scale: torch.Tensor, M: int, N: int, block_size: int) -> torch.Tensor:
+    def _int8_dequantize_blockwise(
+        self, qdata: torch.Tensor, scale: torch.Tensor, M: int, N: int, block_size: int
+    ) -> torch.Tensor:
         """
         Differentiable block-wise INT8 dequantization for optimization.
         Matches BlockWiseINT8Layout._weight_quantize_pytorch logic.
@@ -1134,7 +1368,9 @@ class LearnedRoundingConverter:
             Dequantized tensor, shape (M, N)
         """
         # Reshape to blocks: (M//bs, bs, N//bs, bs)
-        q_blocked = qdata.reshape(M // block_size, block_size, N // block_size, block_size)
+        q_blocked = qdata.reshape(
+            M // block_size, block_size, N // block_size, block_size
+        )
         # Permute to: (M//bs, N//bs, bs, bs)
         q_blocked = q_blocked.permute(0, 2, 1, 3)
         # Broadcast scale: (M//bs, N//bs, 1, 1)
@@ -1145,11 +1381,13 @@ class LearnedRoundingConverter:
         dequantized = dequantized.permute(0, 2, 1, 3).reshape(M, N)
         return dequantized
 
-    def _optimize_int8_learned_rounding(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _optimize_int8_learned_rounding(
+        self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply learned rounding optimization for INT8 quantization.
         Uses SVD-based optimization similar to FP8 but adapted for INT8.
-        Supports multiple optimizer choices: original, adamw, radam, ppsf.
+        Supports multiple optimizer choices: original, adamw, radam.
         """
         M, N = W_float32.shape
         block_size = self.block_size
@@ -1159,15 +1397,19 @@ class LearnedRoundingConverter:
         k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
         k = min(k, max_rank)
 
-        print(f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components.")
+        print(
+            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
+        )
 
         if self.full_matrix:
             print(f"    - Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver='gesvd')
+            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
                 print(f"    - Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(W_float32, q=min(k + 10, max_rank), niter=4)
+                U, _, Vh = torch.svd_lowrank(
+                    W_float32, q=min(k + 10, max_rank), niter=4
+                )
                 Vh = Vh.T
             except RuntimeError:
                 print("    - svd_lowrank failed, falling back to full SVD.")
@@ -1176,25 +1418,32 @@ class LearnedRoundingConverter:
         U_k, Vh_k = U[:, :k], Vh[:k, :]
 
         # Route to appropriate optimizer
-        if self.optimizer_choice == 'original':
-            final_qdata = self._optimize_int8_original(W_float32, qdata, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'adamw':
+        if self.optimizer_choice == "original":
+            final_qdata = self._optimize_int8_original(
+                W_float32, qdata, scale, U_k, Vh_k
+            )
+        elif self.optimizer_choice == "adamw":
             final_qdata = self._optimize_int8_adamw(W_float32, qdata, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'radam':
+        elif self.optimizer_choice == "radam":
             final_qdata = self._optimize_int8_radam(W_float32, qdata, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'ppsf':
-            final_qdata = self._optimize_int8_ppsf(W_float32, qdata, scale, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
         del U, Vh, U_k, Vh_k
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
         return final_qdata, scale
 
-    def _optimize_int8_adamw(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
+    def _optimize_int8_adamw(
+        self,
+        W_float32: torch.Tensor,
+        qdata: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
         """INT8 optimization using AdamW optimizer."""
         M, N = W_float32.shape
         block_size = self.block_size
@@ -1202,17 +1451,24 @@ class LearnedRoundingConverter:
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        lr = self.optimizer_kwargs.get('lr', 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = AdamW([delta], lr=lr)
-        best_loss = float('inf')
+        best_loss = float("inf")
         best_delta = delta.detach().clone()
 
-        pbar = tqdm(range(self.num_iter), desc="    Optimizing INT8 (AdamW)", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter),
+            desc="    Optimizing INT8 (AdamW)",
+            leave=False,
+            dynamic_ncols=True,
+        )
         for i in pbar:
             optimizer.zero_grad()
 
             q_refined = qdata_float + delta
-            current_dq = self._int8_dequantize_blockwise(q_refined, scale, M, N, block_size)
+            current_dq = self._int8_dequantize_blockwise(
+                q_refined, scale, M, N, block_size
+            )
 
             error = current_dq - W_float32
             projected_error = U_k.T @ error @ Vh_k.T
@@ -1226,18 +1482,32 @@ class LearnedRoundingConverter:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
 
-            pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"})
+            pbar.set_postfix(
+                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+            )
             if best_loss < 1e-8:
                 print(f"      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
 
-        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
+        final_qdata = (
+            (qdata_float + best_delta)
+            .clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX)
+            .round()
+            .to(TARGET_INT8_DTYPE)
+        )
         del qdata_float, delta
         return final_qdata
 
-    def _optimize_int8_radam(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
+    def _optimize_int8_radam(
+        self,
+        W_float32: torch.Tensor,
+        qdata: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
         """INT8 optimization using RAdam optimizer."""
         M, N = W_float32.shape
         block_size = self.block_size
@@ -1245,17 +1515,24 @@ class LearnedRoundingConverter:
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        lr = self.optimizer_kwargs.get('lr', 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = RAdam([delta], lr=lr)
-        best_loss = float('inf')
+        best_loss = float("inf")
         best_delta = delta.detach().clone()
 
-        pbar = tqdm(range(self.num_iter), desc="    Optimizing INT8 (RAdam)", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter),
+            desc="    Optimizing INT8 (RAdam)",
+            leave=False,
+            dynamic_ncols=True,
+        )
         for i in pbar:
             optimizer.zero_grad()
 
             q_refined = qdata_float + delta
-            current_dq = self._int8_dequantize_blockwise(q_refined, scale, M, N, block_size)
+            current_dq = self._int8_dequantize_blockwise(
+                q_refined, scale, M, N, block_size
+            )
 
             error = current_dq - W_float32
             projected_error = U_k.T @ error @ Vh_k.T
@@ -1269,69 +1546,32 @@ class LearnedRoundingConverter:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
 
-            pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"})
+            pbar.set_postfix(
+                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+            )
             if best_loss < 1e-8:
                 print(f"      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
 
-        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
+        final_qdata = (
+            (qdata_float + best_delta)
+            .clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX)
+            .round()
+            .to(TARGET_INT8_DTYPE)
+        )
         del qdata_float, delta
         return final_qdata
 
-    def _optimize_int8_ppsf(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
-        """INT8 optimization using ProdigyPlusScheduleFree optimizer."""
-        M, N = W_float32.shape
-        block_size = self.block_size
-
-        qdata_float = qdata.to(COMPUTE_DTYPE)
-        delta = torch.zeros_like(qdata_float, requires_grad=True)
-
-        lr = self.optimizer_kwargs.get('lr', 1e-2)
-        optimizer = ProdigyPlusScheduleFree([delta], lr=lr, betas=(0.9, 0.99), beta3=None,
-                                            weight_decay=0.0, weight_decay_by_lr=False, d0=1e-3, d_coef=1.0,
-                                            d_limiter=True, prodigy_steps=0, schedulefree_c=0, eps=1e-8,
-                                            split_groups=False, split_groups_mean=False,
-                                            factored=True, factored_fp32=True, use_bias_correction=False,
-                                            use_stableadamw=True, use_schedulefree=True, use_speed=False,
-                                            stochastic_rounding=True, fused_back_pass=False,
-                                            use_cautious=False, use_grams=False, use_adopt=False,
-                                            use_orthograd=False, use_focus=False)
-        best_loss = float('inf')
-        best_delta = delta.detach().clone()
-
-        pbar = tqdm(range(self.num_iter), desc="    Optimizing INT8 (ProdigyPlusScheduleFree)", leave=False, dynamic_ncols=True)
-        for i in pbar:
-            optimizer.zero_grad()
-
-            q_refined = qdata_float + delta
-            current_dq = self._int8_dequantize_blockwise(q_refined, scale, M, N, block_size)
-
-            error = current_dq - W_float32
-            projected_error = U_k.T @ error @ Vh_k.T
-            loss = torch.linalg.norm(projected_error)
-
-            loss.backward()
-            optimizer.step()
-
-            current_loss_val = loss.item()
-            if current_loss_val < best_loss:
-                best_loss = current_loss_val
-                best_delta = delta.detach().clone()
-
-            pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"})
-            if best_loss < 1e-8:
-                print(f"      - Loss is negligible. Stopping early.")
-                break
-
-        pbar.close()
-
-        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        del qdata_float, delta
-        return final_qdata
-
-    def _optimize_int8_original(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
+    def _optimize_int8_original(
+        self,
+        W_float32: torch.Tensor,
+        qdata: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
         """INT8 optimization using original gradient-based optimizer (no autograd)."""
         M, N = W_float32.shape
         block_size = self.block_size
@@ -1339,12 +1579,12 @@ class LearnedRoundingConverter:
         qdata_float = qdata.to(COMPUTE_DTYPE)
         q_refined = qdata_float.clone()
 
-        best_loss = float('inf')
+        best_loss = float("inf")
         best_tensor = None
         worse_loss_counter = 0
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
-        curr_lr = self.optimizer_kwargs.get('lr', 8.077300000003e-3)
+        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         if M == N:
             small_mult = 0.95
         else:
@@ -1355,7 +1595,7 @@ class LearnedRoundingConverter:
         # Shape-aware plateau parameters
         aspect_ratio = max(M, N) / min(M, N)
 
-        if schedule_name == 'plateau' and self.lr_shape_influence > 0:
+        if schedule_name == "plateau" and self.lr_shape_influence > 0:
             # Scale factor based on aspect ratio, modulated by influence
             # Elongated tensors need MORE AGGRESSIVE decay (lower factor)
             ar_factor = math.sqrt(aspect_ratio)
@@ -1366,7 +1606,7 @@ class LearnedRoundingConverter:
 
             # More aggressive factor for elongated tensors: factor^ar_factor makes it smaller
             raw_factor = self.lr_factor
-            aggressive_factor = raw_factor ** ar_factor
+            aggressive_factor = raw_factor**ar_factor
             effective_factor = raw_factor + (aggressive_factor - raw_factor) * blend
 
             # Cooldown unchanged
@@ -1376,10 +1616,17 @@ class LearnedRoundingConverter:
             effective_factor = self.lr_factor
             effective_cooldown = self.lr_cooldown
 
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing INT8 (Original-{schedule_name})", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter),
+            desc=f"    Optimizing INT8 (Original-{schedule_name})",
+            leave=False,
+            dynamic_ncols=True,
+        )
         for i in pbar:
             with torch.no_grad():
-                current_dq = self._int8_dequantize_blockwise(q_refined, scale, M, N, block_size)
+                current_dq = self._int8_dequantize_blockwise(
+                    q_refined, scale, M, N, block_size
+                )
                 error = current_dq - W_float32
                 projected_error = U_k.T @ error @ Vh_k.T
                 loss = torch.linalg.norm(projected_error)
@@ -1387,7 +1634,7 @@ class LearnedRoundingConverter:
             current_loss = loss.item()
             # Check if improvement exceeds threshold (supports rel/abs mode like PyTorch ReduceLROnPlateau)
             if self.lr_threshold > 0:
-                if self.lr_threshold_mode == 'rel':
+                if self.lr_threshold_mode == "rel":
                     # Relative: significant if loss < best * (1 - threshold)
                     improved = current_loss < best_loss * (1.0 - self.lr_threshold)
                 else:  # 'abs'
@@ -1403,7 +1650,7 @@ class LearnedRoundingConverter:
                 best_loss = current_loss
                 best_tensor = q_refined.clone()
                 plateau_counter = 0
-                if self.lr_adaptive_mode == 'simple-reset':
+                if self.lr_adaptive_mode == "simple-reset":
                     worse_loss_counter = 0
                 # no-reset mode: worse_loss_counter preserved for tier calculation
             else:
@@ -1411,10 +1658,10 @@ class LearnedRoundingConverter:
                 plateau_counter += 1
 
             # LR update based on schedule
-            if schedule_name == 'exponential':
+            if schedule_name == "exponential":
                 # ExponentialLR: lr = lr * gamma per step
                 curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-            elif schedule_name == 'plateau':
+            elif schedule_name == "plateau":
                 # ReduceLROnPlateau with cooldown (shape-aware)
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
@@ -1425,7 +1672,11 @@ class LearnedRoundingConverter:
                     plateau_counter = 0
             else:  # 'adaptive' - tier-based schedule
                 # For no-reset mode, use counter value before reset for tier calculation
-                counter_for_tier = prev_worse_counter if (improved and self.lr_adaptive_mode == 'no-reset') else worse_loss_counter
+                counter_for_tier = (
+                    prev_worse_counter
+                    if (improved and self.lr_adaptive_mode == "no-reset")
+                    else worse_loss_counter
+                )
 
                 if improved and counter_for_tier < 50:
                     curr_lr = min(curr_lr * (1.25 * small_mult), 100.0)
@@ -1465,18 +1716,42 @@ class LearnedRoundingConverter:
                     curr_lr = max(curr_lr * (0.995 * small_mult), 5e-9)
 
                 # Reset counter after boost in no-reset mode
-                if improved and self.lr_adaptive_mode == 'no-reset':
+                if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
-            pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
+            pbar.set_postfix(
+                {
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                }
+            )
 
             # Early stopping conditions (configurable thresholds)
-            if current_loss < self.early_stop_loss or curr_lr < self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
-                if curr_lr < self.early_stop_lr * 1.75 and worse_loss_counter > self.early_stop_stall * 0.95:
-                    print("      - Loss has stalled and learning rate has bottomed out. Stopping.")
-                elif current_loss < self.early_stop_loss and curr_lr < self.early_stop_lr * 1.75:
-                    print("      - Learning Rate has bottomed out and loss is negligible. Stopping.")
-                elif worse_loss_counter > self.early_stop_stall * 0.95 and current_loss > self.early_stop_loss * 2:
+            if (
+                current_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if (
+                    curr_lr < self.early_stop_lr * 1.75
+                    and worse_loss_counter > self.early_stop_stall * 0.95
+                ):
+                    print(
+                        "      - Loss has stalled and learning rate has bottomed out. Stopping."
+                    )
+                elif (
+                    current_loss < self.early_stop_loss
+                    and curr_lr < self.early_stop_lr * 1.75
+                ):
+                    print(
+                        "      - Learning Rate has bottomed out and loss is negligible. Stopping."
+                    )
+                elif (
+                    worse_loss_counter > self.early_stop_stall * 0.95
+                    and current_loss > self.early_stop_loss * 2
+                ):
                     print("      - Loss is negligible and loss has stalled. Stopping.")
                 elif current_loss < self.early_stop_loss:
                     print("      - Loss is negligible. Stopping.")
@@ -1499,7 +1774,9 @@ class LearnedRoundingConverter:
 
                 # Transform gradient through block-wise structure
                 # Reshape grad to blocks, multiply by scale (chain rule), then reshape back
-                grad_blocked = grad_direction.reshape(M // block_size, block_size, N // block_size, block_size)
+                grad_blocked = grad_direction.reshape(
+                    M // block_size, block_size, N // block_size, block_size
+                )
                 grad_blocked = grad_blocked.permute(0, 2, 1, 3)
                 scale_broadcast = scale.unsqueeze(-1).unsqueeze(-1)
                 grad_scaled = grad_blocked * scale_broadcast
@@ -1510,11 +1787,17 @@ class LearnedRoundingConverter:
         pbar.close()
 
         final_tensor = best_tensor if best_tensor is not None else q_refined
-        final_qdata = final_tensor.clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
+        final_qdata = (
+            final_tensor.clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX)
+            .round()
+            .to(TARGET_INT8_DTYPE)
+        )
         del qdata_float, q_refined
         return final_qdata
 
-    def _convert_nf4(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_nf4(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         NF4 (4-bit Normal Float) quantization using codebook-based quantization.
 
@@ -1528,13 +1811,17 @@ class LearnedRoundingConverter:
             - dequantized_weight: reconstructed weight for bias correction
         """
         if not _HAS_NF4:
-            raise RuntimeError("NF4 kernels not available. Check kernels/nf4_kernels.py")
+            raise RuntimeError(
+                "NF4 kernels not available. Check kernels/nf4_kernels.py"
+            )
 
         M, N = W_float32.shape
         print(f"    - NF4 quantization with block_size={self.block_size}")
 
         # Quantize using NF4 kernels
-        packed, quant_state = quantize_nf4(W_float32, self.block_size, compress_statistics=False)
+        packed, quant_state = quantize_nf4(
+            W_float32, self.block_size, compress_statistics=False
+        )
 
         # Apply learned rounding optimization if enabled
         if not self.no_learned_rounding and self.num_iter > 0:
@@ -1544,16 +1831,24 @@ class LearnedRoundingConverter:
             )
 
         # Dequantize for bias correction
-        dequantized_weight = dequantize_nf4(packed, quant_state, output_dtype=COMPUTE_DTYPE)
+        dequantized_weight = dequantize_nf4(
+            packed, quant_state, output_dtype=COMPUTE_DTYPE
+        )
 
         # Clean up
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
-        return packed, quant_state.absmax.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight
+        return (
+            packed,
+            quant_state.absmax.to(device=self.device, dtype=SCALE_DTYPE),
+            dequantized_weight,
+        )
 
-    def _convert_fp4(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_fp4(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         FP4 (4-bit Floating Point) quantization using codebook-based quantization.
 
@@ -1564,13 +1859,17 @@ class LearnedRoundingConverter:
             Tuple of (packed_qdata, absmax, dequantized_weight)
         """
         if not _HAS_NF4:
-            raise RuntimeError("FP4 kernels not available. Check kernels/nf4_kernels.py")
+            raise RuntimeError(
+                "FP4 kernels not available. Check kernels/nf4_kernels.py"
+            )
 
         M, N = W_float32.shape
         print(f"    - FP4 quantization with block_size={self.block_size}")
 
         # Quantize using FP4 kernels
-        packed, quant_state = quantize_fp4(W_float32, self.block_size, compress_statistics=False)
+        packed, quant_state = quantize_fp4(
+            W_float32, self.block_size, compress_statistics=False
+        )
 
         # Apply learned rounding optimization if enabled
         if not self.no_learned_rounding and self.num_iter > 0:
@@ -1580,16 +1879,24 @@ class LearnedRoundingConverter:
             )
 
         # Dequantize for bias correction
-        dequantized_weight = dequantize_fp4(packed, quant_state, output_dtype=COMPUTE_DTYPE)
+        dequantized_weight = dequantize_fp4(
+            packed, quant_state, output_dtype=COMPUTE_DTYPE
+        )
 
         # Clean up
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
-        return packed, quant_state.absmax.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight
+        return (
+            packed,
+            quant_state.absmax.to(device=self.device, dtype=SCALE_DTYPE),
+            dequantized_weight,
+        )
 
-    def _convert_af4(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_af4(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         AF4 (AbnormalFloat4) quantization using codebook-based quantization.
 
@@ -1601,15 +1908,21 @@ class LearnedRoundingConverter:
             Tuple of (packed_qdata, absmax, dequantized_weight)
         """
         if not _HAS_NF4:
-            raise RuntimeError("AF4 kernels not available. Check kernels/nf4_kernels.py")
+            raise RuntimeError(
+                "AF4 kernels not available. Check kernels/nf4_kernels.py"
+            )
 
         M, N = W_float32.shape
         print(f"    - AF4 quantization with block_size={self.block_size}")
         if self.block_size != 64:
-            print(f"    - WARNING: AF4 is optimized for block_size=64, got {self.block_size}")
+            print(
+                f"    - WARNING: AF4 is optimized for block_size=64, got {self.block_size}"
+            )
 
         # Quantize using AF4 kernels
-        packed, quant_state = quantize_af4(W_float32, self.block_size, compress_statistics=False)
+        packed, quant_state = quantize_af4(
+            W_float32, self.block_size, compress_statistics=False
+        )
 
         # Apply learned rounding optimization if enabled
         if not self.no_learned_rounding and self.num_iter > 0:
@@ -1619,21 +1932,27 @@ class LearnedRoundingConverter:
             )
 
         # Dequantize for bias correction
-        dequantized_weight = dequantize_af4(packed, quant_state, output_dtype=COMPUTE_DTYPE)
+        dequantized_weight = dequantize_af4(
+            packed, quant_state, output_dtype=COMPUTE_DTYPE
+        )
 
         # Clean up
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
-        return packed, quant_state.absmax.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight
+        return (
+            packed,
+            quant_state.absmax.to(device=self.device, dtype=SCALE_DTYPE),
+            dequantized_weight,
+        )
 
     def _optimize_nf4_learned_rounding(
         self,
         W_float32: torch.Tensor,
         packed: torch.Tensor,
         quant_state: QuantState4bit,
-        quant_type: str  # "nf4", "fp4", or "af4"
+        quant_type: str,  # "nf4", "fp4", or "af4"
     ) -> Tuple[torch.Tensor, QuantState4bit]:
         """
         Apply learned rounding optimization for 4-bit quantization.
@@ -1655,15 +1974,19 @@ class LearnedRoundingConverter:
         k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
         k = min(k, max_rank)
 
-        print(f"    - Shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} SVD components.")
+        print(
+            f"    - Shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} SVD components."
+        )
 
         if self.full_matrix:
             print(f"    - Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver='gesvd')
+            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
                 print(f"    - Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(W_float32, q=min(k + 10, max_rank), niter=4)
+                U, _, Vh = torch.svd_lowrank(
+                    W_float32, q=min(k + 10, max_rank), niter=4
+                )
                 Vh = Vh.T
             except RuntimeError:
                 print("    - svd_lowrank failed, falling back to full SVD.")
@@ -1672,19 +1995,21 @@ class LearnedRoundingConverter:
         U_k, Vh_k = U[:, :k], Vh[:k, :]
 
         # Route to optimizer (only 'original' for now)
-        if self.optimizer_choice == 'original':
+        if self.optimizer_choice == "original":
             optimized_packed, optimized_absmax = self._optimize_nf4_original(
                 W_float32, packed, quant_state, U_k, Vh_k, quant_type
             )
         else:
-            print(f"    - WARNING: Optimizer '{self.optimizer_choice}' not supported for NF4/FP4/AF4, using 'original'")
+            print(
+                f"    - WARNING: Optimizer '{self.optimizer_choice}' not supported for NF4/FP4/AF4, using 'original'"
+            )
             optimized_packed, optimized_absmax = self._optimize_nf4_original(
                 W_float32, packed, quant_state, U_k, Vh_k, quant_type
             )
 
         del U, Vh, U_k, Vh_k
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
         # Create new quant_state with optimized absmax
@@ -1697,7 +2022,7 @@ class LearnedRoundingConverter:
             dtype=quant_state.dtype,
             offset=quant_state.offset,
             nested_absmax=quant_state.nested_absmax,
-            nested_code=quant_state.nested_code
+            nested_code=quant_state.nested_code,
         )
 
         return optimized_packed, optimized_quant_state
@@ -1709,7 +2034,7 @@ class LearnedRoundingConverter:
         quant_state: QuantState4bit,
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
-        quant_type: str
+        quant_type: str,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Optimize absmax scales via gradient descent with full LR schedule support.
@@ -1722,31 +2047,31 @@ class LearnedRoundingConverter:
 
         M, N = W_float32.shape
         block_size = self.block_size
-        
+
         # Start with the original absmax
         absmax = quant_state.absmax.clone()
-        
+
         # Track best results
-        best_loss = float('inf')
+        best_loss = float("inf")
         best_absmax = absmax.clone()
         best_packed = packed.clone()
-        
+
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
-        curr_lr = self.optimizer_kwargs.get('lr', 8.077300000003e-3)
+        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         small_mult = 0.95 if M == N else 1.0
         schedule_name = self.lr_schedule
 
         # Shape-aware plateau parameters (same as FP8/INT8)
         aspect_ratio = max(M, N) / min(M, N)
 
-        if schedule_name == 'plateau' and self.lr_shape_influence > 0:
+        if schedule_name == "plateau" and self.lr_shape_influence > 0:
             ar_factor = math.sqrt(aspect_ratio)
             blend = self.lr_shape_influence
             effective_patience = self.lr_patience
             raw_factor = self.lr_factor
-            aggressive_factor = raw_factor ** ar_factor
+            aggressive_factor = raw_factor**ar_factor
             effective_factor = raw_factor + (aggressive_factor - raw_factor) * blend
             effective_cooldown = self.lr_cooldown
         else:
@@ -1754,17 +2079,27 @@ class LearnedRoundingConverter:
             effective_factor = self.lr_factor
             effective_cooldown = self.lr_cooldown
 
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing {quant_type.upper()} ({schedule_name})", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter),
+            desc=f"    Optimizing {quant_type.upper()} ({schedule_name})",
+            leave=False,
+            dynamic_ncols=True,
+        )
         for i in pbar:
             with torch.no_grad():
                 # Re-quantize with current absmax (this finds new indices!)
                 curr_packed, curr_quant_state = quantize_4bit(
-                    W_float32, block_size, quant_type, 
-                    compress_statistics=False, custom_absmax=absmax
+                    W_float32,
+                    block_size,
+                    quant_type,
+                    compress_statistics=False,
+                    custom_absmax=absmax,
                 )
-                
+
                 # Dequantize to get reconstruction
-                dequant = dequantize_4bit(curr_packed, curr_quant_state, output_dtype=COMPUTE_DTYPE)
+                dequant = dequantize_4bit(
+                    curr_packed, curr_quant_state, output_dtype=COMPUTE_DTYPE
+                )
                 dequant = dequant.reshape(M, N)
 
                 # Compute SVD-projected error
@@ -1776,7 +2111,7 @@ class LearnedRoundingConverter:
 
             # Check if improvement exceeds threshold (supports rel/abs mode)
             if self.lr_threshold > 0:
-                if self.lr_threshold_mode == 'rel':
+                if self.lr_threshold_mode == "rel":
                     improved = current_loss < best_loss * (1.0 - self.lr_threshold)
                 else:
                     improved = (best_loss - current_loss) > self.lr_threshold
@@ -1790,16 +2125,16 @@ class LearnedRoundingConverter:
                 best_absmax = absmax.clone()
                 best_packed = curr_packed.clone()
                 plateau_counter = 0
-                if self.lr_adaptive_mode == 'simple-reset':
+                if self.lr_adaptive_mode == "simple-reset":
                     worse_loss_counter = 0
             else:
                 worse_loss_counter += 1
                 plateau_counter += 1
 
             # LR update based on schedule (identical to FP8/INT8)
-            if schedule_name == 'exponential':
+            if schedule_name == "exponential":
                 curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-            elif schedule_name == 'plateau':
+            elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
                 elif plateau_counter >= effective_patience:
@@ -1808,7 +2143,11 @@ class LearnedRoundingConverter:
                         cooldown_counter = effective_cooldown
                     plateau_counter = 0
             else:  # 'adaptive' tier-based
-                counter_for_tier = prev_worse_counter if (improved and self.lr_adaptive_mode == 'no-reset') else worse_loss_counter
+                counter_for_tier = (
+                    prev_worse_counter
+                    if (improved and self.lr_adaptive_mode == "no-reset")
+                    else worse_loss_counter
+                )
 
                 if improved and counter_for_tier < 50:
                     curr_lr = min(curr_lr * (1.25 * small_mult), 100.0)
@@ -1847,18 +2186,42 @@ class LearnedRoundingConverter:
                 else:
                     curr_lr = max(curr_lr * (0.995 * small_mult), 5e-9)
 
-                if improved and self.lr_adaptive_mode == 'no-reset':
+                if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
-            pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
+            pbar.set_postfix(
+                {
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                }
+            )
 
             # Early stopping conditions
-            if current_loss < self.early_stop_loss or curr_lr < self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
-                if curr_lr < self.early_stop_lr * 1.75 and worse_loss_counter > self.early_stop_stall * 0.95:
-                    print("      - Loss has stalled and learning rate has bottomed out. Stopping.")
-                elif current_loss < self.early_stop_loss and curr_lr < self.early_stop_lr * 1.75:
-                    print("      - Learning Rate has bottomed out and loss is negligible. Stopping.")
-                elif worse_loss_counter > self.early_stop_stall * 0.95 and current_loss > self.early_stop_loss * 2:
+            if (
+                current_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if (
+                    curr_lr < self.early_stop_lr * 1.75
+                    and worse_loss_counter > self.early_stop_stall * 0.95
+                ):
+                    print(
+                        "      - Loss has stalled and learning rate has bottomed out. Stopping."
+                    )
+                elif (
+                    current_loss < self.early_stop_loss
+                    and curr_lr < self.early_stop_lr * 1.75
+                ):
+                    print(
+                        "      - Learning Rate has bottomed out and loss is negligible. Stopping."
+                    )
+                elif (
+                    worse_loss_counter > self.early_stop_stall * 0.95
+                    and current_loss > self.early_stop_loss * 2
+                ):
                     print("      - Loss is negligible and loss has stalled. Stopping.")
                 elif current_loss < self.early_stop_loss:
                     print("      - Loss is negligible. Stopping.")
@@ -1876,31 +2239,42 @@ class LearnedRoundingConverter:
                 error_flat = error.flatten()
                 n_blocks = len(absmax)
                 n_elements = n_blocks * block_size
-                
+
                 # Reshape error to blocks (may need padding awareness)
                 if error_flat.numel() >= n_elements:
-                    error_blocked = error_flat[:n_elements].reshape(n_blocks, block_size)
+                    error_blocked = error_flat[:n_elements].reshape(
+                        n_blocks, block_size
+                    )
                 else:
                     # Pad if necessary
                     pad_size = n_elements - error_flat.numel()
-                    error_flat_padded = torch.cat([error_flat, torch.zeros(pad_size, device=error_flat.device)])
+                    error_flat_padded = torch.cat(
+                        [error_flat, torch.zeros(pad_size, device=error_flat.device)]
+                    )
                     error_blocked = error_flat_padded.reshape(n_blocks, block_size)
-                
+
                 # Get the current dequantized values in block form for sign reference
                 dequant_flat = dequant.flatten()
                 if dequant_flat.numel() >= n_elements:
-                    dequant_blocked = dequant_flat[:n_elements].reshape(n_blocks, block_size)
+                    dequant_blocked = dequant_flat[:n_elements].reshape(
+                        n_blocks, block_size
+                    )
                 else:
                     pad_size = n_elements - dequant_flat.numel()
-                    dequant_flat_padded = torch.cat([dequant_flat, torch.zeros(pad_size, device=dequant_flat.device)])
+                    dequant_flat_padded = torch.cat(
+                        [
+                            dequant_flat,
+                            torch.zeros(pad_size, device=dequant_flat.device),
+                        ]
+                    )
                     dequant_blocked = dequant_flat_padded.reshape(n_blocks, block_size)
-                
+
                 # Gradient: if error is positive (dequant > original), we want smaller dequant
                 # dequant = codebook_val * absmax, so if codebook_val > 0, decrease absmax
                 # If codebook_val < 0, increase absmax (opposite)
                 # Simplified: grad = mean(error * sign(dequant))
                 block_grad = (error_blocked * dequant_blocked.sign()).mean(dim=1)
-                
+
                 # Update absmax (gradient descent)
                 absmax = (absmax - curr_lr * block_grad).clamp(min=1e-8)
 
@@ -1910,51 +2284,70 @@ class LearnedRoundingConverter:
         print(f"    - Optimization complete. Best loss: {best_loss:.6e}")
         return best_packed, best_absmax
 
-
-    def _convert_fp8(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_fp8(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Original FP8 quantization path."""
 
         scale = None
         compact_scale = None
         current_scaling_mode = self.scaling_mode
 
-        if current_scaling_mode == 'block':
-            if W_float32.ndim == 2 and W_float32.shape[1] > 0 and W_float32.shape[1] % self.block_size == 0:
+        if current_scaling_mode == "block":
+            if (
+                W_float32.ndim == 2
+                and W_float32.shape[1] > 0
+                and W_float32.shape[1] % self.block_size == 0
+            ):
                 print(f"    - Using block scaling with block size {self.block_size}.")
                 out_features, in_features = W_float32.shape
                 num_blocks = in_features // self.block_size
                 W_reshaped = W_float32.view(out_features, num_blocks, self.block_size)
                 w_max = W_reshaped.abs().max(dim=2, keepdim=True)[0]
                 compact_scale = self.f8_max_val / w_max.clamp_min_(1e-12)
-                scale = compact_scale.repeat_interleave(self.block_size, dim=2).view(out_features, in_features)
+                scale = compact_scale.repeat_interleave(self.block_size, dim=2).view(
+                    out_features, in_features
+                )
             else:
-                print(f"    - WARNING: Tensor shape {list(W_float32.shape)} not suitable for block size {self.block_size}. Falling back to 'tensor' scaling.")
-                current_scaling_mode = 'tensor'
+                print(
+                    f"    - WARNING: Tensor shape {list(W_float32.shape)} not suitable for block size {self.block_size}. Falling back to 'tensor' scaling."
+                )
+                current_scaling_mode = "tensor"
 
-        if current_scaling_mode == 'tensor':
+        if current_scaling_mode == "tensor":
             w_max = W_float32.abs().max()
             scale = self.f8_max_val / w_max.clamp_min_(1e-12)
             compact_scale = scale
 
-        assert scale is not None, "scale should not be None after scaling mode selection"
+        assert (
+            scale is not None
+        ), "scale should not be None after scaling mode selection"
 
         # Skip SVD optimization if no_learned_rounding is set
         if self.no_learned_rounding:
             print(f"    - Simple quantization (no learned rounding).")
             with torch.no_grad():
-                W_f8 = (W_float32 * scale).clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
+                W_f8 = (
+                    (W_float32 * scale)
+                    .clamp(-self.f8_max_val, self.f8_max_val)
+                    .to(TARGET_FP8_DTYPE)
+                )
                 if compact_scale is None:
                     dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
                 else:
-                    if current_scaling_mode == 'block':
+                    if current_scaling_mode == "block":
                         dequant_scale = compact_scale.reciprocal()
                     else:
                         dequant_scale = compact_scale.reciprocal().reshape(1)
-                    dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
-                dequantized_weight_tensor = (W_f8.to(self.device, dtype=COMPUTE_DTYPE) / scale)
+                    dequant_scale = dequant_scale.to(
+                        device=self.device, dtype=SCALE_DTYPE
+                    )
+                dequantized_weight_tensor = (
+                    W_f8.to(self.device, dtype=COMPUTE_DTYPE) / scale
+                )
             del W_float32, scale, compact_scale
             gc.collect()
-            if self.device == 'cuda':
+            if self.device == "cuda":
                 torch.cuda.empty_cache()
             return W_f8, dequant_scale, dequantized_weight_tensor
 
@@ -1962,15 +2355,19 @@ class LearnedRoundingConverter:
         k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
         k = min(k, max_rank)
 
-        print(f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components.")
+        print(
+            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
+        )
 
         if self.full_matrix == True:
             print(f"Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver='gesvd')
+            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
                 print(f"Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(W_float32, q=min(k + 10, max_rank), niter=4)
+                U, _, Vh = torch.svd_lowrank(
+                    W_float32, q=min(k + 10, max_rank), niter=4
+                )
                 Vh = Vh.T
             except RuntimeError:
                 print("    - svd_lowrank failed, falling back to full SVD.")
@@ -1978,13 +2375,11 @@ class LearnedRoundingConverter:
 
         U_k, Vh_k = U[:, :k], Vh[:k, :]
 
-        if self.optimizer_choice == 'ppsf':
-            final_tensor_scaled = self._optimize_ppsf(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'adamw':
+        if self.optimizer_choice == "adamw":
             final_tensor_scaled = self._optimize_adamw(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'radam':
+        elif self.optimizer_choice == "radam":
             final_tensor_scaled = self._optimize_radam(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'original':
+        elif self.optimizer_choice == "original":
             final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
@@ -1996,23 +2391,33 @@ class LearnedRoundingConverter:
             W_f8 = final_tensor_scaled.to(TARGET_FP8_DTYPE)
             # Ensure compact_scale is valid before calling reciprocal; fall back to ones if missing.
             if compact_scale is None:
-                print("    - WARNING: compact_scale is None, falling back to torch.ones for dequant_scale.")
+                print(
+                    "    - WARNING: compact_scale is None, falling back to torch.ones for dequant_scale."
+                )
                 dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
             else:
-                if current_scaling_mode == 'block':
+                if current_scaling_mode == "block":
                     dequant_scale = compact_scale.reciprocal()
                 else:
                     dequant_scale = compact_scale.reciprocal().reshape(1)
                 dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
-            dequantized_weight_tensor = (W_f8.to(self.device, dtype=COMPUTE_DTYPE) / scale)
+            dequantized_weight_tensor = (
+                W_f8.to(self.device, dtype=COMPUTE_DTYPE) / scale
+            )
         del W_float32, scale, U, Vh, U_k, Vh_k, final_tensor_scaled, compact_scale
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
-        return W_f8, dequant_scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight_tensor
+        return (
+            W_f8,
+            dequant_scale.to(device=self.device, dtype=SCALE_DTYPE),
+            dequantized_weight_tensor,
+        )
 
-    def _convert_fp8_rowwise(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_fp8_rowwise(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Row-wise FP8 quantization - one scale per row.
 
@@ -2036,25 +2441,33 @@ class LearnedRoundingConverter:
 
             del W_float32
             gc.collect()
-            if self.device == 'cuda':
+            if self.device == "cuda":
                 torch.cuda.empty_cache()
 
-            return W_f8, dequant_scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized
+            return (
+                W_f8,
+                dequant_scale.to(device=self.device, dtype=SCALE_DTYPE),
+                dequantized,
+            )
 
         # With learned rounding optimization
         max_rank = min(W_float32.shape)
         k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
         k = min(k, max_rank)
 
-        print(f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components.")
+        print(
+            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
+        )
 
         if self.full_matrix:
             print(f"Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver='gesvd')
+            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
                 print(f"Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(W_float32, q=min(k + 10, max_rank), niter=4)
+                U, _, Vh = torch.svd_lowrank(
+                    W_float32, q=min(k + 10, max_rank), niter=4
+                )
                 Vh = Vh.T
             except RuntimeError:
                 print("    - svd_lowrank failed, falling back to full SVD.")
@@ -2064,13 +2477,11 @@ class LearnedRoundingConverter:
 
         # Use the appropriate optimizer with row-wise scale
         scale = quant_scale  # (M, 1) for broadcast
-        if self.optimizer_choice == 'ppsf':
-            final_tensor_scaled = self._optimize_ppsf(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'adamw':
+        if self.optimizer_choice == "adamw":
             final_tensor_scaled = self._optimize_adamw(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'radam':
+        elif self.optimizer_choice == "radam":
             final_tensor_scaled = self._optimize_radam(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == 'original':
+        elif self.optimizer_choice == "original":
             final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
@@ -2083,12 +2494,14 @@ class LearnedRoundingConverter:
 
         del W_float32, scale, U, Vh, U_k, Vh_k, final_tensor_scaled, quant_scale
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
         return W_f8, dequant_scale, dequantized
 
-    def _convert_fp8_block2d(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_fp8_block2d(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         True 2D block-wise FP8 quantization - one scale per block_size x block_size tile.
 
@@ -2100,13 +2513,17 @@ class LearnedRoundingConverter:
 
         # Validate dimensions
         if M % bs != 0 or N % bs != 0:
-            print(f"    - WARNING: Dimensions ({M}, {N}) not divisible by block_size={bs}. Falling back to row-wise.")
+            print(
+                f"    - WARNING: Dimensions ({M}, {N}) not divisible by block_size={bs}. Falling back to row-wise."
+            )
             return self._convert_fp8_rowwise(W_float32)
 
         print(f"    - Using 2D block-wise FP8 scaling with block size {bs}.")
 
         # Reshape to 2D blocks
-        W_blocked = W_float32.reshape(M // bs, bs, N // bs, bs).permute(0, 2, 1, 3)  # (M//bs, N//bs, bs, bs)
+        W_blocked = W_float32.reshape(M // bs, bs, N // bs, bs).permute(
+            0, 2, 1, 3
+        )  # (M//bs, N//bs, bs, bs)
         block_max = W_blocked.abs().amax(dim=(2, 3))  # (M//bs, N//bs)
         quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12)  # (M//bs, N//bs)
 
@@ -2114,7 +2531,9 @@ class LearnedRoundingConverter:
             print(f"    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 # Apply scale per-block
-                scale_broadcast = quant_scale.unsqueeze(-1).unsqueeze(-1)  # (M//bs, N//bs, 1, 1)
+                scale_broadcast = quant_scale.unsqueeze(-1).unsqueeze(
+                    -1
+                )  # (M//bs, N//bs, 1, 1)
                 W_scaled_blocked = W_blocked * scale_broadcast
                 W_f8_blocked = W_scaled_blocked.to(TARGET_FP8_DTYPE)
                 W_f8 = W_f8_blocked.permute(0, 2, 1, 3).reshape(M, N)
@@ -2129,13 +2548,19 @@ class LearnedRoundingConverter:
 
             del W_float32, W_blocked
             gc.collect()
-            if self.device == 'cuda':
+            if self.device == "cuda":
                 torch.cuda.empty_cache()
 
-            return W_f8, dequant_scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized
+            return (
+                W_f8,
+                dequant_scale.to(device=self.device, dtype=SCALE_DTYPE),
+                dequantized,
+            )
 
         # With learned rounding - expand scale to full tensor for optimization
-        scale_broadcast = quant_scale.unsqueeze(-1).unsqueeze(-1)  # (M//bs, N//bs, 1, 1)
+        scale_broadcast = quant_scale.unsqueeze(-1).unsqueeze(
+            -1
+        )  # (M//bs, N//bs, 1, 1)
         scale_full_blocked = scale_broadcast.expand(-1, -1, bs, bs)
         scale_full = scale_full_blocked.permute(0, 2, 1, 3).reshape(M, N)
 
@@ -2143,15 +2568,19 @@ class LearnedRoundingConverter:
         k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
         k = min(k, max_rank)
 
-        print(f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components.")
+        print(
+            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
+        )
 
         if self.full_matrix:
             print(f"Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver='gesvd')
+            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
                 print(f"Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(W_float32, q=min(k + 10, max_rank), niter=4)
+                U, _, Vh = torch.svd_lowrank(
+                    W_float32, q=min(k + 10, max_rank), niter=4
+                )
                 Vh = Vh.T
             except RuntimeError:
                 print("    - svd_lowrank failed, falling back to full SVD.")
@@ -2160,14 +2589,14 @@ class LearnedRoundingConverter:
         U_k, Vh_k = U[:, :k], Vh[:k, :]
 
         # Use the optimizer with the expanded scale
-        if self.optimizer_choice == 'ppsf':
-            final_tensor_scaled = self._optimize_ppsf(W_float32, scale_full, U_k, Vh_k)
-        elif self.optimizer_choice == 'adamw':
+        if self.optimizer_choice == "adamw":
             final_tensor_scaled = self._optimize_adamw(W_float32, scale_full, U_k, Vh_k)
-        elif self.optimizer_choice == 'radam':
+        elif self.optimizer_choice == "radam":
             final_tensor_scaled = self._optimize_radam(W_float32, scale_full, U_k, Vh_k)
-        elif self.optimizer_choice == 'original':
-            final_tensor_scaled = self._optimize_original(W_float32, scale_full, U_k, Vh_k)
+        elif self.optimizer_choice == "original":
+            final_tensor_scaled = self._optimize_original(
+                W_float32, scale_full, U_k, Vh_k
+            )
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -2177,49 +2606,87 @@ class LearnedRoundingConverter:
             dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
             dequantized = W_f8.to(COMPUTE_DTYPE) / scale_full
 
-        del W_float32, W_blocked, scale_full, scale_broadcast, U, Vh, U_k, Vh_k, final_tensor_scaled, quant_scale
+        del (
+            W_float32,
+            W_blocked,
+            scale_full,
+            scale_broadcast,
+            U,
+            Vh,
+            U_k,
+            Vh_k,
+            final_tensor_scaled,
+            quant_scale,
+        )
         gc.collect()
-        if self.device == 'cuda':
+        if self.device == "cuda":
             torch.cuda.empty_cache()
 
         return W_f8, dequant_scale, dequantized
 
+
 # --- Main script execution functions ---
 
+
 def convert_to_fp8_scaled(
-    input_file: str, output_file: str, comfy_quant: bool, t5xxl: bool, mistral: bool, flux2: bool, distillation_large: bool,
-    distillation_small: bool, nerf_large: bool, nerf_small: bool,
-    radiance: bool, wan: bool, qwen: bool, hunyuan: bool, zimage: bool, zimage_refiner: bool, calib_samples: int, seed: int,
-    int8: bool = False, nf4: bool = False, fp4: bool = False, af4: bool = False,
-    fallback: Optional[str] = None, custom_layers: Optional[str] = None, custom_type: Optional[str] = None,
-    custom_block_size: Optional[int] = None, custom_scaling_mode: Optional[str] = None,
-    custom_simple: bool = False, custom_heur: bool = False,
-    fallback_block_size: Optional[int] = None, fallback_simple: bool = False,
-    full_precision_matrix_mult: bool = False, skip_inefficient_layers: bool = False,
-    include_input_scale: bool = False, no_learned_rounding: bool = False,
+    input_file: str,
+    output_file: str,
+    comfy_quant: bool,
+    t5xxl: bool,
+    mistral: bool,
+    flux2: bool,
+    distillation_large: bool,
+    distillation_small: bool,
+    nerf_large: bool,
+    nerf_small: bool,
+    radiance: bool,
+    wan: bool,
+    qwen: bool,
+    hunyuan: bool,
+    zimage: bool,
+    zimage_refiner: bool,
+    calib_samples: int,
+    seed: int,
+    int8: bool = False,
+    nf4: bool = False,
+    fp4: bool = False,
+    af4: bool = False,
+    fallback: Optional[str] = None,
+    custom_layers: Optional[str] = None,
+    custom_type: Optional[str] = None,
+    custom_block_size: Optional[int] = None,
+    custom_scaling_mode: Optional[str] = None,
+    custom_simple: bool = False,
+    custom_heur: bool = False,
+    fallback_block_size: Optional[int] = None,
+    fallback_simple: bool = False,
+    full_precision_matrix_mult: bool = False,
+    skip_inefficient_layers: bool = False,
+    include_input_scale: bool = False,
+    no_learned_rounding: bool = False,
     layer_config: Optional[Dict[str, Any]] = None,
     layer_config_fullmatch: bool = False,
-    **converter_kwargs
+    **converter_kwargs,
 ):
     # Determine target format (priority: af4 > nf4 > fp4 > int8 > fp8)
     if af4:
-        target_format = 'af4'
+        target_format = "af4"
         target_dtype = torch.uint8
         format_name = "AF4"
     elif nf4:
-        target_format = 'nf4'
+        target_format = "nf4"
         target_dtype = torch.uint8
         format_name = "NF4"
     elif fp4:
-        target_format = 'fp4'
+        target_format = "fp4"
         target_dtype = torch.uint8
         format_name = "FP4"
     elif int8:
-        target_format = 'int8'
+        target_format = "int8"
         target_dtype = TARGET_INT8_DTYPE
         format_name = "INT8"
     else:
-        target_format = 'fp8'
+        target_format = "fp8"
         target_dtype = TARGET_FP8_DTYPE
         format_name = "FP8"
 
@@ -2229,23 +2696,27 @@ def convert_to_fp8_scaled(
         print(f"Target format: INT8 (block-wise quantization)")
         print(f"INT8 Range: [{-INT8_SYMMETRIC_MAX}, {INT8_SYMMETRIC_MAX}]")
     else:
-        print(f"Target FP8 format: {TARGET_FP8_DTYPE}\nFP8 Range: [{FP8_MIN}, {FP8_MAX}]")
+        print(
+            f"Target FP8 format: {TARGET_FP8_DTYPE}\nFP8 Range: [{FP8_MIN}, {FP8_MAX}]"
+        )
     print("-" * 60)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     seed_device = device
     seed_generator = torch.Generator(device=seed_device)
     seed_generator.manual_seed(seed)
 
     if comfy_quant:
-        print("Comfy quantization mode enabled: Using comfy_quant layer names and settings.")
+        print(
+            "Comfy quantization mode enabled: Using comfy_quant layer names and settings."
+        )
         comfy_quant = True
     else:
         comfy_quant = False
 
     tensors: Dict[str, torch.Tensor] = {}
     try:
-        with safe_open(input_file, framework="pt", device='cpu') as f:
+        with safe_open(input_file, framework="pt", device="cpu") as f:
             print(f"Loading {len(f.keys())} tensors from source file...")
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
@@ -2254,17 +2725,19 @@ def convert_to_fp8_scaled(
         return
 
     # Add target_format and no_learned_rounding to converter kwargs
-    converter_kwargs['target_format'] = target_format
-    converter_kwargs['no_learned_rounding'] = no_learned_rounding
+    converter_kwargs["target_format"] = target_format
+    converter_kwargs["no_learned_rounding"] = no_learned_rounding
 
     # Extract kernel_backend for comfy_quant format (default to 'blockwise')
-    kernel_backend = converter_kwargs.get('kernel_backend', 'blockwise')
-    block_size = converter_kwargs.get('block_size', 64)
+    kernel_backend = converter_kwargs.get("kernel_backend", "blockwise")
+    block_size = converter_kwargs.get("block_size", 64)
 
     # Helper function to create converter for a specific format type
-    def create_converter_for_format(fmt: str, overrides: dict = None) -> LearnedRoundingConverter:
+    def create_converter_for_format(
+        fmt: str, overrides: dict = None
+    ) -> LearnedRoundingConverter:
         kwargs = converter_kwargs.copy()
-        kwargs['target_format'] = fmt
+        kwargs["target_format"] = fmt
         if overrides:
             kwargs.update(overrides)
         return LearnedRoundingConverter(**kwargs)
@@ -2273,42 +2746,56 @@ def convert_to_fp8_scaled(
     def get_format_info(fmt: str) -> dict:
         """Returns dtype and format name for a quantization format."""
         format_map = {
-            'nf4': {'dtype': torch.uint8, 'name': 'NF4', 'is_4bit': True},
-            'fp4': {'dtype': torch.uint8, 'name': 'FP4', 'is_4bit': True},
-            'int8': {'dtype': TARGET_INT8_DTYPE, 'name': 'INT8', 'is_4bit': False},
-            'fp8': {'dtype': TARGET_FP8_DTYPE, 'name': 'FP8', 'is_4bit': False},
+            "nf4": {"dtype": torch.uint8, "name": "NF4", "is_4bit": True},
+            "fp4": {"dtype": torch.uint8, "name": "FP4", "is_4bit": True},
+            "int8": {"dtype": TARGET_INT8_DTYPE, "name": "INT8", "is_4bit": False},
+            "fp8": {"dtype": TARGET_FP8_DTYPE, "name": "FP8", "is_4bit": False},
         }
-        return format_map.get(fmt, format_map['fp8'])
+        return format_map.get(fmt, format_map["fp8"])
 
     # Create converters for each format type used
-    converters = {'primary': create_converter_for_format(target_format)}
+    converters = {"primary": create_converter_for_format(target_format)}
 
     # Create fallback converter with optional overrides
     if fallback:
         fallback_overrides = {}
         if fallback_block_size is not None:
-            fallback_overrides['block_size'] = fallback_block_size
+            fallback_overrides["block_size"] = fallback_block_size
         if fallback_simple:
-            fallback_overrides['no_learned_rounding'] = True
-        converters['fallback'] = create_converter_for_format(fallback, fallback_overrides if fallback_overrides else None)
-        override_note = f" (block_size={fallback_block_size})" if fallback_block_size else ""
+            fallback_overrides["no_learned_rounding"] = True
+        converters["fallback"] = create_converter_for_format(
+            fallback, fallback_overrides if fallback_overrides else None
+        )
+        override_note = (
+            f" (block_size={fallback_block_size})" if fallback_block_size else ""
+        )
         override_note += " (simple)" if fallback_simple else ""
-        print(f"Fallback quantization enabled: {fallback.upper()}{override_note} for excluded layers")
+        print(
+            f"Fallback quantization enabled: {fallback.upper()}{override_note} for excluded layers"
+        )
 
     # Create custom converter with optional overrides
     if custom_layers and custom_type:
         custom_overrides = {}
         if custom_block_size is not None:
-            custom_overrides['block_size'] = custom_block_size
+            custom_overrides["block_size"] = custom_block_size
         if custom_scaling_mode is not None:
-            custom_overrides['scaling_mode'] = custom_scaling_mode
+            custom_overrides["scaling_mode"] = custom_scaling_mode
         if custom_simple:
-            custom_overrides['no_learned_rounding'] = True
-        converters['custom'] = create_converter_for_format(custom_type, custom_overrides if custom_overrides else None)
-        override_note = f" (block_size={custom_block_size})" if custom_block_size else ""
-        override_note += f" (scaling_mode={custom_scaling_mode})" if custom_scaling_mode else ""
+            custom_overrides["no_learned_rounding"] = True
+        converters["custom"] = create_converter_for_format(
+            custom_type, custom_overrides if custom_overrides else None
+        )
+        override_note = (
+            f" (block_size={custom_block_size})" if custom_block_size else ""
+        )
+        override_note += (
+            f" (scaling_mode={custom_scaling_mode})" if custom_scaling_mode else ""
+        )
         override_note += " (simple)" if custom_simple else ""
-        print(f"Custom layer quantization enabled: {custom_type.upper()}{override_note} for pattern '{custom_layers}'")
+        print(
+            f"Custom layer quantization enabled: {custom_type.upper()}{override_note} for pattern '{custom_layers}'"
+        )
 
     # Compile custom_layers regex pattern
     custom_pattern = None
@@ -2322,15 +2809,27 @@ def convert_to_fp8_scaled(
     print("\nScanning model and generating simulated calibration data...")
     calibration_data_cache = {}
     for key, tensor in tensors.items():
-        if key.endswith('.weight') and tensor.ndim == 2:
+        if key.endswith(".weight") and tensor.ndim == 2:
             in_features = tensor.shape[1]
             if in_features not in calibration_data_cache:
                 print(f"  - Found new input dimension: {in_features}.")
-                calibration_data_cache[in_features] = torch.randn(calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device)
+                calibration_data_cache[in_features] = torch.randn(
+                    calib_samples,
+                    in_features,
+                    dtype=COMPUTE_DTYPE,
+                    generator=seed_generator,
+                    device=seed_device,
+                )
     print("Simulated calibration data generated.\n")
 
     new_tensors: Dict[str, torch.Tensor] = {}
-    weight_keys = sorted([key for key in tensors.keys() if key.endswith('.weight') and tensors[key].ndim == 2])
+    weight_keys = sorted(
+        [
+            key
+            for key in tensors.keys()
+            if key.endswith(".weight") and tensors[key].ndim == 2
+        ]
+    )
     total_weights = len(weight_keys)
     skipped_count = 0
     processed_count = 0
@@ -2356,27 +2855,31 @@ def convert_to_fp8_scaled(
 
         # Check layer_config FIRST (highest priority)
         if layer_config:
-            layer_settings = get_layer_settings(key, layer_config, fullmatch=layer_config_fullmatch)
+            layer_settings = get_layer_settings(
+                key, layer_config, fullmatch=layer_config_fullmatch
+            )
             if layer_settings:
-                if layer_settings.get('skip', False):
+                if layer_settings.get("skip", False):
                     print(f"({i+1}/{total_weights}) Skipping (layer-config): {key}")
                     original_tensor = tensors[key]
-                    new_tensors[key] = original_tensor.to(device='cpu', dtype=original_tensor.dtype)
+                    new_tensors[key] = original_tensor.to(
+                        device="cpu", dtype=original_tensor.dtype
+                    )
                     skipped_count += 1
                     continue
                 use_layer_config = True
                 # Map format to layer_format type
-                fmt = layer_settings['format']
-                if fmt.startswith('float8'):
-                    layer_format = 'fp8'
-                elif fmt.startswith('int8'):
-                    layer_format = 'int8'
-                elif fmt == 'bnb_nf4':
-                    layer_format = 'nf4'
-                elif fmt == 'bnb_fp4':
-                    layer_format = 'fp4'
+                fmt = layer_settings["format"]
+                if fmt.startswith("float8"):
+                    layer_format = "fp8"
+                elif fmt.startswith("int8"):
+                    layer_format = "int8"
+                elif fmt == "bnb_nf4":
+                    layer_format = "nf4"
+                elif fmt == "bnb_fp4":
+                    layer_format = "fp4"
                 else:
-                    layer_format = 'fp8'  # fallback
+                    layer_format = "fp8"  # fallback
 
         # Check for custom pattern match (second priority, only if no layer_config match)
         if not use_layer_config and custom_pattern and custom_pattern.search(key):
@@ -2393,27 +2896,43 @@ def convert_to_fp8_scaled(
                 exclusion_reason = "WAN exclusion"
             elif qwen and any(n in key for n in QWEN_AVOID_KEY_NAMES):
                 exclusion_reason = "Qwen Image exclusion"
-            elif (zimage or zimage_refiner) and any(n in key for n in ZIMAGE_AVOID_KEY_NAMES):
+            elif (zimage or zimage_refiner) and any(
+                n in key for n in ZIMAGE_AVOID_KEY_NAMES
+            ):
                 exclusion_reason = "Z-Image exclusion"
             elif hunyuan and any(n in key for n in HUNYUAN_AVOID_KEY_NAMES):
                 exclusion_reason = "Hunyuan Video 1.5 exclusion"
             elif flux2 and any(n in key for n in FLUX2_LAYER_KEYNAMES):
                 exclusion_reason = "Flux2 exclusion and keep in high precision"
-            elif distillation_large and any(n in key for n in DISTILL_LAYER_KEYNAMES_LARGE):
-                exclusion_reason = "Distillation layer and Chroma keep in high precision"
-            elif distillation_small and any(n in key for n in DISTILL_LAYER_KEYNAMES_SMALL):
-                exclusion_reason = "Distillation layer and Chroma keep in high precision"
+            elif distillation_large and any(
+                n in key for n in DISTILL_LAYER_KEYNAMES_LARGE
+            ):
+                exclusion_reason = (
+                    "Distillation layer and Chroma keep in high precision"
+                )
+            elif distillation_small and any(
+                n in key for n in DISTILL_LAYER_KEYNAMES_SMALL
+            ):
+                exclusion_reason = (
+                    "Distillation layer and Chroma keep in high precision"
+                )
             elif nerf_large and any(n in key for n in NERF_LAYER_KEYNAMES_LARGE):
-                exclusion_reason = "NeRF layer, distillation layer and txt_in keep in high precision"
+                exclusion_reason = (
+                    "NeRF layer, distillation layer and txt_in keep in high precision"
+                )
             elif nerf_small and any(n in key for n in NERF_LAYER_KEYNAMES_SMALL):
-                exclusion_reason = "NeRF layer and distillation layer keep in high precision"
+                exclusion_reason = (
+                    "NeRF layer and distillation layer keep in high precision"
+                )
             elif wan and any(n in key for n in WAN_LAYER_KEYNAMES):
                 exclusion_reason = "WAN layer keep in high precision"
             elif qwen and any(n in key for n in QWEN_LAYER_KEYNAMES):
                 exclusion_reason = "Qwen Image layer keep in high precision"
             elif zimage and any(n in key for n in ZIMAGE_LAYER_KEYNAMES):
                 exclusion_reason = "Z-Image layer keep in high precision"
-            elif zimage_refiner and any(n in key for n in ZIMAGE_REFINER_LAYER_KEYNAMES):
+            elif zimage_refiner and any(
+                n in key for n in ZIMAGE_REFINER_LAYER_KEYNAMES
+            ):
                 exclusion_reason = "Z-Image refiner layer keep in high precision"
 
         # Handle excluded layers: use fallback if available, otherwise skip
@@ -2421,21 +2940,29 @@ def convert_to_fp8_scaled(
             if fallback:
                 use_fallback = True
                 layer_format = fallback
-                print(f"({i+1}/{total_weights}) Processing (fallback {fallback.upper()}): {key} (was: {exclusion_reason})")
+                print(
+                    f"({i+1}/{total_weights}) Processing (fallback {fallback.upper()}): {key} (was: {exclusion_reason})"
+                )
             else:
-                print(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})")
+                print(
+                    f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})"
+                )
                 original_tensor = tensors[key]
-                new_tensors[key] = original_tensor.to(device='cpu', dtype=original_tensor.dtype)
+                new_tensors[key] = original_tensor.to(
+                    device="cpu", dtype=original_tensor.dtype
+                )
                 skipped_count += 1
                 continue
 
         # Log what we're doing
         if use_layer_config:
-            fmt = layer_settings['format']
+            fmt = layer_settings["format"]
             print(f"({i+1}/{total_weights}) Processing (config {fmt}): {key}")
             custom_count += 1  # Count layer_config as custom
         elif use_custom:
-            print(f"({i+1}/{total_weights}) Processing (custom {custom_type.upper()}): {key}")
+            print(
+                f"({i+1}/{total_weights}) Processing (custom {custom_type.upper()}): {key}"
+            )
             custom_count += 1
         elif use_fallback:
             fallback_count += 1
@@ -2447,17 +2974,23 @@ def convert_to_fp8_scaled(
 
         if original_tensor.numel() == 0 or original_tensor.ndim != 2:
             print(f"  - Skipping empty or non-2D tensor: {key}")
-            new_tensors[key] = original_tensor.to(device='cpu', dtype=original_tensor.dtype)
+            new_tensors[key] = original_tensor.to(
+                device="cpu", dtype=original_tensor.dtype
+            )
             continue
 
         # Check performance heuristics for inefficient layers
         # Custom layers use custom_heur flag, others use global skip_inefficient_layers
         apply_heur = custom_heur if use_custom else skip_inefficient_layers
         if apply_heur:
-            should_skip, skip_perf_reason = should_skip_layer_for_performance(original_tensor, block_size)
+            should_skip, skip_perf_reason = should_skip_layer_for_performance(
+                original_tensor, block_size
+            )
             if should_skip:
                 print(f"  - Skipping for performance: {skip_perf_reason}")
-                new_tensors[key] = original_tensor.to(device='cpu', dtype=original_tensor.dtype)
+                new_tensors[key] = original_tensor.to(
+                    device="cpu", dtype=original_tensor.dtype
+                )
                 skipped_count += 1
                 continue
 
@@ -2465,31 +2998,33 @@ def convert_to_fp8_scaled(
         if use_layer_config:
             # Create converter dynamically from layer_config settings
             cfg_overrides = {}
-            cfg_block_size = layer_settings.get('block_size')
-            cfg_scaling_mode = layer_settings.get('scaling_mode')
-            cfg_simple = layer_settings.get('simple', False)
+            cfg_block_size = layer_settings.get("block_size")
+            cfg_scaling_mode = layer_settings.get("scaling_mode")
+            cfg_simple = layer_settings.get("simple", False)
             if cfg_block_size is not None:
-                cfg_overrides['block_size'] = cfg_block_size
+                cfg_overrides["block_size"] = cfg_block_size
             if cfg_scaling_mode is not None:
-                cfg_overrides['scaling_mode'] = cfg_scaling_mode
+                cfg_overrides["scaling_mode"] = cfg_scaling_mode
             if cfg_simple:
-                cfg_overrides['no_learned_rounding'] = True
-            converter = create_converter_for_format(layer_format, cfg_overrides if cfg_overrides else None)
+                cfg_overrides["no_learned_rounding"] = True
+            converter = create_converter_for_format(
+                layer_format, cfg_overrides if cfg_overrides else None
+            )
         elif use_custom:
-            converter = converters['custom']
+            converter = converters["custom"]
         elif use_fallback:
-            converter = converters['fallback']
+            converter = converters["fallback"]
         else:
-            converter = converters['primary']
+            converter = converters["primary"]
 
         # Get format info for this layer
         fmt_info = get_format_info(layer_format)
-        is_4bit = fmt_info['is_4bit']
-        is_int8 = (layer_format == 'int8')
+        is_4bit = fmt_info["is_4bit"]
+        is_int8 = layer_format == "int8"
 
         q_tensor, dequant_s, dequant_w = converter.convert(original_tensor)
-        new_tensors[key] = q_tensor.to(device='cpu')
-        base_name = key[:key.rfind('.weight')]
+        new_tensors[key] = q_tensor.to(device="cpu")
+        base_name = key[: key.rfind(".weight")]
         bias_key = f"{base_name}.bias"
 
         if comfy_quant is True:
@@ -2498,17 +3033,23 @@ def convert_to_fp8_scaled(
 
             # Determine full_precision_matrix_mult: per-layer config takes priority over global
             layer_full_precision_mm = full_precision_matrix_mult
-            if use_layer_config and 'full_precision_matrix_mult' in layer_settings:
-                layer_full_precision_mm = layer_settings['full_precision_matrix_mult']
+            if use_layer_config and "full_precision_matrix_mult" in layer_settings:
+                layer_full_precision_mm = layer_settings["full_precision_matrix_mult"]
 
             # Use appropriate scale key name based on format
             if is_4bit:
                 # 4-bit formats use absmax instead of weight_scale
-                new_tensors[f"{base_name}.absmax"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                new_tensors[f"{base_name}.absmax"] = (
+                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                )
                 comfy_quant_tensor = create_comfy_quant_tensor(
-                    "bnb_nf4" if layer_format == 'nf4' else ("bnb_af4" if layer_format == 'af4' else "bnb_fp4"),
+                    "bnb_nf4"
+                    if layer_format == "nf4"
+                    else ("bnb_af4" if layer_format == "af4" else "bnb_fp4"),
                     block_size=layer_block_size,
-                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    full_precision_matrix_mult=layer_full_precision_mm
+                    if layer_full_precision_mm
+                    else None,
                     quant_type=layer_format,
                     original_dtype=str(original_tensor.dtype).replace("torch.", ""),
                     original_shape=tuple(original_tensor.shape),
@@ -2516,32 +3057,46 @@ def convert_to_fp8_scaled(
                 )
                 # Add input_scale for 4-bit if requested
                 if include_input_scale:
-                    new_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=torch.float32, device='cpu')
+                    new_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                        [1.0], dtype=torch.float32, device="cpu"
+                    )
             elif is_int8:
-                new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                new_tensors[f"{base_name}.weight_scale"] = (
+                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                )
                 # Use int8_blockwise or int8_lodewise based on kernel_backend
-                int8_format = "int8_lodewise" if kernel_backend == "lodewise" else "int8_blockwise"
+                int8_format = (
+                    "int8_lodewise"
+                    if kernel_backend == "lodewise"
+                    else "int8_blockwise"
+                )
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     int8_format,
                     block_size=layer_block_size,
-                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None
+                    full_precision_matrix_mult=layer_full_precision_mm
+                    if layer_full_precision_mm
+                    else None,
                 )
                 # Add input_scale for INT8 if requested
                 if include_input_scale:
-                    new_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=torch.float32, device='cpu')
+                    new_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                        [1.0], dtype=torch.float32, device="cpu"
+                    )
             else:
                 # FP8 format - determine format based on scaling_mode or layer_config
-                new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                new_tensors[f"{base_name}.weight_scale"] = (
+                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                )
 
                 # Select FP8 format type based on layer_config or scaling mode
                 if use_layer_config:
                     # Use format directly from layer_config
-                    fp8_format = layer_settings['format']
-                    fp8_block_size = layer_settings.get('block_size', layer_block_size)
-                elif converter.scaling_mode == 'row':
+                    fp8_format = layer_settings["format"]
+                    fp8_block_size = layer_settings.get("block_size", layer_block_size)
+                elif converter.scaling_mode == "row":
                     fp8_format = "float8_e4m3fn_rowwise"
                     fp8_block_size = None
-                elif converter.scaling_mode == 'block2d':
+                elif converter.scaling_mode == "block2d":
                     fp8_format = "float8_e4m3fn_blockwise"
                     fp8_block_size = layer_block_size
                 else:
@@ -2552,42 +3107,70 @@ def convert_to_fp8_scaled(
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     fp8_format,
                     block_size=fp8_block_size,
-                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None
+                    full_precision_matrix_mult=layer_full_precision_mm
+                    if layer_full_precision_mm
+                    else None,
                 )
                 # Add input_scale for FP8: use weight_scale for t5xxl/mistral, 1.0 otherwise
                 if include_input_scale or t5xxl or mistral:
                     if t5xxl or mistral:
-                        new_tensors[f"{base_name}.input_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                        new_tensors[f"{base_name}.input_scale"] = (
+                            dequant_s.to(device="cpu", dtype=SCALE_DTYPE)
+                            .detach()
+                            .clone()
+                        )
                     else:
-                        new_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=torch.float32, device='cpu')
-            new_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor.to(device='cpu')
+                        new_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                            [1.0], dtype=torch.float32, device="cpu"
+                        )
+            new_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor.to(
+                device="cpu"
+            )
 
         else:
             # Non-comfy (legacy) path
             if is_4bit:
                 # Bitsandbytes-compatible structure for 4-bit formats
-                new_tensors[f"{base_name}.absmax"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
-                new_tensors[f"{base_name}.quant_map"] = get_4bit_codebook(layer_format).to(device='cpu', dtype=SCALE_DTYPE)
+                new_tensors[f"{base_name}.absmax"] = (
+                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                )
+                new_tensors[f"{base_name}.quant_map"] = get_4bit_codebook(
+                    layer_format
+                ).to(device="cpu", dtype=SCALE_DTYPE)
                 quant_state_dict = {
                     "quant_type": layer_format,
                     "blocksize": converter.block_size,
                     "dtype": str(original_tensor.dtype).replace("torch.", ""),
                     "shape": list(original_tensor.shape),
                 }
-                new_tensors[f"{base_name}.quant_state.bitsandbytes__{layer_format}"] = dict_to_tensor(quant_state_dict)
+                new_tensors[f"{base_name}.quant_state.bitsandbytes__{layer_format}"] = (
+                    dict_to_tensor(quant_state_dict)
+                )
             else:
                 # FP8/INT8 legacy path
-                new_tensors[f"{base_name}.scale_weight"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                new_tensors[f"{base_name}.scale_weight"] = (
+                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                )
                 # Add scale_input for non-comfy mode: use dequant_s for t5xxl/mistral, ones for others
                 if include_input_scale or t5xxl or mistral:
                     if t5xxl or mistral:
-                        new_tensors[f"{base_name}.scale_input"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                        new_tensors[f"{base_name}.scale_input"] = (
+                            dequant_s.to(device="cpu", dtype=SCALE_DTYPE)
+                            .detach()
+                            .clone()
+                        )
                     else:
                         # Shape matches scale_weight, filled with 1.0
-                        new_tensors[f"{base_name}.scale_input"] = torch.ones_like(dequant_s, dtype=SCALE_DTYPE, device='cpu')
+                        new_tensors[f"{base_name}.scale_input"] = torch.ones_like(
+                            dequant_s, dtype=SCALE_DTYPE, device="cpu"
+                        )
 
         # Determine if this layer uses simple mode (skip bias correction to save memory)
-        layer_uses_simple = custom_simple if use_custom else (fallback_simple if use_fallback else no_learned_rounding)
+        layer_uses_simple = (
+            custom_simple
+            if use_custom
+            else (fallback_simple if use_fallback else no_learned_rounding)
+        )
 
         if bias_key in tensors:
             if layer_uses_simple:
@@ -2603,47 +3186,85 @@ def convert_to_fp8_scaled(
                         print(f"  - WARNING: No calibration data for bias correction.")
                         new_tensors[bias_key] = original_bias
                     else:
-                        X_calib_dev = calibration_data_cache[in_features].to(device=device)
-                        W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
+                        X_calib_dev = calibration_data_cache[in_features].to(
+                            device=device
+                        )
+                        W_orig_dev = original_tensor.to(
+                            device=device, dtype=COMPUTE_DTYPE
+                        )
                         W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
-                        b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
+                        b_orig_dev = original_bias.to(
+                            device=device, dtype=COMPUTE_DTYPE
+                        )
                         weight_error = W_orig_dev - W_dequant_dev
                         output_error = X_calib_dev @ weight_error.T
                         bias_correction = output_error.mean(dim=0)
                         b_new = b_orig_dev - bias_correction
-                        new_tensors[bias_key] = b_new.to(device='cpu', dtype=original_bias.dtype)
-                        print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
-                        del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new
-                        if device == 'cuda': torch.cuda.empty_cache()
+                        new_tensors[bias_key] = b_new.to(
+                            device="cpu", dtype=original_bias.dtype
+                        )
+                        print(
+                            f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}"
+                        )
+                        del (
+                            W_orig_dev,
+                            W_dequant_dev,
+                            X_calib_dev,
+                            b_orig_dev,
+                            weight_error,
+                            output_error,
+                            bias_correction,
+                            b_new,
+                        )
+                        if device == "cuda":
+                            torch.cuda.empty_cache()
 
         # T5XXL/Mistral fallback: ensure input scale exists with correct key format
         if t5xxl or mistral:
             if comfy_quant and f"{base_name}.input_scale" not in new_tensors:
-                new_tensors[f"{base_name}.input_scale"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
+                new_tensors[f"{base_name}.input_scale"] = (
+                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                )
             elif not comfy_quant and f"{base_name}.scale_input" not in new_tensors:
-                new_tensors[f"{base_name}.scale_input"] = dequant_s.to(device='cpu', dtype=SCALE_DTYPE).detach().clone()
-
+                new_tensors[f"{base_name}.scale_input"] = (
+                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                )
 
         # Get scale key name based on comfy_quant mode
-        scale_key = f"{base_name}.weight_scale" if comfy_quant else f"{base_name}.scale_weight"
+        scale_key = (
+            f"{base_name}.weight_scale" if comfy_quant else f"{base_name}.scale_weight"
+        )
         if scale_key in new_tensors:
             new_scale = new_tensors[scale_key]
             if dequant_s.ndim == 1:
-                print(f"    - Final Dequant Scale value: {new_scale}\n    - Final Weight shape       : {q_tensor.shape}")
+                print(
+                    f"    - Final Dequant Scale value: {new_scale}\n    - Final Weight shape       : {q_tensor.shape}"
+                )
             else:
-                print(f"    - Final Dequant Scale shape: {new_scale.shape}\n    - Final Weight shape       : {q_tensor.shape}")
+                print(
+                    f"    - Final Dequant Scale shape: {new_scale.shape}\n    - Final Weight shape       : {q_tensor.shape}"
+                )
         print("-" * 60)
 
     for key, tensor in tensors.items():
-        if (any(n in key for n in T5XXL_REMOVE_KEY_NAMES) and t5xxl):
+        if any(n in key for n in T5XXL_REMOVE_KEY_NAMES) and t5xxl:
             continue
         if key not in new_tensors:
             new_tensors[key] = tensor
 
     # Add scaled_fp8 marker only for legacy non-comfy_quant FP8 format
     # Use empty((0)) when input_scale is present (t5xxl, mistral, or --input_scale flag)
-    if not comfy_quant and not int8 and not custom_layers and "scaled_fp8" not in new_tensors:
-        new_tensors["scaled_fp8"] = torch.empty((0), dtype=TARGET_FP8_DTYPE) if (t5xxl or mistral or include_input_scale) else torch.empty((2), dtype=TARGET_FP8_DTYPE)
+    if (
+        not comfy_quant
+        and not int8
+        and not custom_layers
+        and "scaled_fp8" not in new_tensors
+    ):
+        new_tensors["scaled_fp8"] = (
+            torch.empty((0), dtype=TARGET_FP8_DTYPE)
+            if (t5xxl or mistral or include_input_scale)
+            else torch.empty((2), dtype=TARGET_FP8_DTYPE)
+        )
 
     print(f"Saving {len(new_tensors)} tensors to {output_file}")
     try:
@@ -2664,12 +3285,15 @@ def convert_to_fp8_scaled(
         summary_parts.append(f"    - Custom type layers  : {custom_count}")
     if fallback_count > 0:
         summary_parts.append(f"    - Fallback type layers: {fallback_count}")
-    summary_parts.extend([
-        f"  - Weights skipped       : {skipped_count}",
-        f"  - Final tensor count    : {len(new_tensors)}",
-    ])
+    summary_parts.extend(
+        [
+            f"  - Weights skipped       : {skipped_count}",
+            f"  - Final tensor count    : {len(new_tensors)}",
+        ]
+    )
     print("\n".join(summary_parts))
     print("-" * 60)
+
 
 def convert_fp8_scaled_to_comfy_quant(
     input_file: str,
@@ -2700,7 +3324,7 @@ def convert_fp8_scaled_to_comfy_quant(
     # Load input tensors
     tensors: Dict[str, torch.Tensor] = {}
     try:
-        with safe_open(input_file, framework="pt", device='cpu') as f:
+        with safe_open(input_file, framework="pt", device="cpu") as f:
             print(f"Loading {len(f.keys())} tensors from source file...")
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
@@ -2710,7 +3334,9 @@ def convert_fp8_scaled_to_comfy_quant(
 
     # Verify this is an fp8_scaled model
     if "scaled_fp8" not in tensors:
-        print("ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)")
+        print(
+            "ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)"
+        )
         print("       Use this mode only for legacy fp8_scaled format models.")
         return
 
@@ -2736,21 +3362,21 @@ def convert_fp8_scaled_to_comfy_quant(
             continue  # Skip marker, will be removed
 
         # Parse layer and suffix
-        if key.endswith('.weight'):
-            base = key[:-len('.weight')]
+        if key.endswith(".weight"):
+            base = key[: -len(".weight")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['weight'] = tensor
-        elif key.endswith('.scale_weight'):
-            base = key[:-len('.scale_weight')]
+            layer_info[base]["weight"] = tensor
+        elif key.endswith(".scale_weight"):
+            base = key[: -len(".scale_weight")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['scale_weight'] = tensor
-        elif key.endswith('.scale_input'):
-            base = key[:-len('.scale_input')]
+            layer_info[base]["scale_weight"] = tensor
+        elif key.endswith(".scale_input"):
+            base = key[: -len(".scale_input")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['scale_input'] = tensor
+            layer_info[base]["scale_input"] = tensor
         else:
             other_tensors[key] = tensor
 
@@ -2760,9 +3386,9 @@ def convert_fp8_scaled_to_comfy_quant(
     hp_layers = []
 
     for base_name, layer_data in tqdm(layer_info.items(), desc="Processing layers"):
-        weight = layer_data.get('weight')
-        scale_weight = layer_data.get('scale_weight')
-        scale_input = layer_data.get('scale_input')
+        weight = layer_data.get("weight")
+        scale_weight = layer_data.get("scale_weight")
+        scale_input = layer_data.get("scale_input")
 
         if weight is None:
             # No weight tensor - just copy any scales through (unusual case)
@@ -2791,12 +3417,16 @@ def convert_fp8_scaled_to_comfy_quant(
                 if scale_input.numel() == 1 and abs(scale_input.item() - 1.0) < 1e-6:
                     # Dummy input_scale (1.0) - only include if explicitly requested
                     if include_input_scale:
-                        output_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=torch.float32)
+                        output_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                            [1.0], dtype=torch.float32
+                        )
                 else:
                     output_tensors[f"{base_name}.input_scale"] = scale_input
             elif include_input_scale:
                 # No scale_input but flag is set - add default input_scale
-                output_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=torch.float32)
+                output_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                    [1.0], dtype=torch.float32
+                )
 
             # Detect format and block_size from scale_weight tensor shape
             # Scale shape conventions from quant_ops.py layouts:
@@ -2810,7 +3440,9 @@ def convert_fp8_scaled_to_comfy_quant(
                 # No scale tensor - assume tensor-wise (this shouldn't happen for valid FP8 models)
                 format_type = "float8_e4m3fn"
                 block_size = None
-                print(f"    → Format: {format_type} (missing scale, assumed tensor-wise)")
+                print(
+                    f"    → Format: {format_type} (missing scale, assumed tensor-wise)"
+                )
             elif scale_weight.numel() == 1:
                 # Scalar or single-element tensor → tensor-wise scaling
                 format_type = "float8_e4m3fn"
@@ -2822,7 +3454,9 @@ def convert_fp8_scaled_to_comfy_quant(
                     # One scale per row → row-wise
                     format_type = "float8_e4m3fn_rowwise"
                     block_size = None
-                    print(f"    → Format: {format_type} (scale shape={scale_weight.shape}, M={M})")
+                    print(
+                        f"    → Format: {format_type} (scale shape={scale_weight.shape}, M={M})"
+                    )
                 else:
                     # 1D but doesn't match M - could be flattened block scale
                     # Try to infer block_size: scale_count = (M//bs) * (N//bs) = M*N / bs^2
@@ -2831,19 +3465,25 @@ def convert_fp8_scaled_to_comfy_quant(
                     total_elements = M * N
                     if scale_count > 0 and total_elements % scale_count == 0:
                         bs_squared = total_elements // scale_count
-                        bs = int(bs_squared ** 0.5)
+                        bs = int(bs_squared**0.5)
                         if bs * bs == bs_squared and M % bs == 0 and N % bs == 0:
                             format_type = "float8_e4m3fn_blockwise"
                             block_size = bs
-                            print(f"    → Format: {format_type} (scale 1D flattened, inferred bs={bs})")
+                            print(
+                                f"    → Format: {format_type} (scale 1D flattened, inferred bs={bs})"
+                            )
                         else:
                             format_type = "float8_e4m3fn"
                             block_size = None
-                            print(f"    → Format: {format_type} (scale 1D unknown pattern, fallback)")
+                            print(
+                                f"    → Format: {format_type} (scale 1D unknown pattern, fallback)"
+                            )
                     else:
                         format_type = "float8_e4m3fn"
                         block_size = None
-                        print(f"    → Format: {format_type} (scale 1D, cannot infer block)")
+                        print(
+                            f"    → Format: {format_type} (scale 1D, cannot infer block)"
+                        )
             elif scale_weight.ndim == 2:
                 # 2D scale - most likely block-wise: (M//bs, N//bs)
                 scale_M, scale_N = scale_weight.shape
@@ -2854,17 +3494,23 @@ def convert_fp8_scaled_to_comfy_quant(
                         # Square blocks
                         format_type = "float8_e4m3fn_blockwise"
                         block_size = bs_M
-                        print(f"    → Format: {format_type} (scale 2D, bs={block_size})")
+                        print(
+                            f"    → Format: {format_type} (scale 2D, bs={block_size})"
+                        )
                     else:
                         # Non-square blocks - use smaller dimension as block_size
                         format_type = "float8_e4m3fn_blockwise"
                         block_size = min(bs_M, bs_N)
-                        print(f"    → Format: {format_type} (scale 2D non-square, bs={block_size})")
+                        print(
+                            f"    → Format: {format_type} (scale 2D non-square, bs={block_size})"
+                        )
                 else:
                     # Doesn't divide evenly - fallback
                     format_type = "float8_e4m3fn"
                     block_size = None
-                    print(f"    → Format: {format_type} (scale 2D but dims don't divide)")
+                    print(
+                        f"    → Format: {format_type} (scale 2D but dims don't divide)"
+                    )
             elif scale_weight.ndim == 3:
                 # 3D scale - likely Block3DFP8Layout: (M, N//bs, 1)
                 scale_M, scale_blocks, scale_last = scale_weight.shape
@@ -2880,13 +3526,17 @@ def convert_fp8_scaled_to_comfy_quant(
                 # Unknown ndim
                 format_type = "float8_e4m3fn"
                 block_size = None
-                print(f"    → Format: {format_type} (scale ndim={scale_weight.ndim} unknown)")
+                print(
+                    f"    → Format: {format_type} (scale ndim={scale_weight.ndim} unknown)"
+                )
 
             # Create .comfy_quant metadata
             comfy_quant_tensor = create_comfy_quant_tensor(
                 format_type,
                 block_size=block_size,
-                full_precision_matrix_mult=full_precision_mm if full_precision_mm else None
+                full_precision_matrix_mult=full_precision_mm
+                if full_precision_mm
+                else None,
             )
             output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
@@ -2896,14 +3546,18 @@ def convert_fp8_scaled_to_comfy_quant(
             output_tensors[f"{base_name}.weight"] = weight
 
             if scale_weight is not None:
-                print(f"  Removing dummy scale_weight from high-precision layer: {base_name}")
+                print(
+                    f"  Removing dummy scale_weight from high-precision layer: {base_name}"
+                )
             if scale_input is not None:
-                print(f"  Removing dummy scale_input from high-precision layer: {base_name}")
+                print(
+                    f"  Removing dummy scale_input from high-precision layer: {base_name}"
+                )
 
     # Add other tensors (bias, norms, etc.) - also fix any incorrect comfy_quant structures
     fixed_comfy_quant_count = 0
     for key, tensor in other_tensors.items():
-        if key.endswith('.comfy_quant'):
+        if key.endswith(".comfy_quant"):
             fixed_tensor, was_fixed = fix_comfy_quant_params_structure(tensor)
             if was_fixed:
                 fixed_comfy_quant_count += 1
@@ -2920,11 +3574,17 @@ def convert_fp8_scaled_to_comfy_quant(
                 violations.append(base_name)
 
         if violations:
-            print("ERROR: The following layers matched hp-filter but are FP8 (not high-precision):")
+            print(
+                "ERROR: The following layers matched hp-filter but are FP8 (not high-precision):"
+            )
             for v in violations:
                 print(f"  - {v}")
-            print("\nThese layers have float8_e4m3fn weights. If they should be high-precision,")
-            print("the input model needs to be regenerated with correct layer exclusions.")
+            print(
+                "\nThese layers have float8_e4m3fn weights. If they should be high-precision,"
+            )
+            print(
+                "the input model needs to be regenerated with correct layer exclusions."
+            )
             return
 
         # Report matched hp layers
@@ -2940,13 +3600,18 @@ def convert_fp8_scaled_to_comfy_quant(
     print(f"  Other tensors:         {len(other_tensors)}")
     print(f"  Total output tensors:  {len(output_tensors)}")
     if fixed_comfy_quant_count > 0:
-        print(f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)")
+        print(
+            f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)"
+        )
     print("-" * 60)
 
     # Save output
     print(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        os.makedirs(
+            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
+            exist_ok=True,
+        )
         save_file(output_tensors, output_file)
         print("Conversion complete!")
     except Exception as e:
@@ -2980,7 +3645,7 @@ def add_legacy_input_scale(
     # Load input tensors
     tensors: Dict[str, torch.Tensor] = {}
     try:
-        with safe_open(input_file, framework="pt", device='cpu') as f:
+        with safe_open(input_file, framework="pt", device="cpu") as f:
             print(f"Loading {len(f.keys())} tensors from source file...")
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
@@ -2990,15 +3655,17 @@ def add_legacy_input_scale(
 
     # Verify this is an fp8_scaled model
     if "scaled_fp8" not in tensors:
-        print("ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)")
+        print(
+            "ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)"
+        )
         print("       Use this mode only for legacy fp8_scaled format models.")
         return
 
     print("Verified: Input is fp8_scaled format")
 
     # Find all .scale_weight keys and check for corresponding .weight and .scale_input
-    scale_weight_keys = [k for k in tensors.keys() if k.endswith('.scale_weight')]
-    
+    scale_weight_keys = [k for k in tensors.keys() if k.endswith(".scale_weight")]
+
     output_tensors: Dict[str, torch.Tensor] = {}
     added_scale_input = 0
     skipped_non_fp8 = 0
@@ -3010,30 +3677,30 @@ def add_legacy_input_scale(
             output_tensors[key] = torch.tensor([1], dtype=tensor.dtype)
             print(f"  Converted scaled_fp8 marker to single-element tensor")
             continue
-        
+
         # Copy all tensors through
         output_tensors[key] = tensor
 
     # Now add .scale_input for each .scale_weight that doesn't have one
     for scale_weight_key in scale_weight_keys:
-        base_name = scale_weight_key[:-len('.scale_weight')]
+        base_name = scale_weight_key[: -len(".scale_weight")]
         weight_key = f"{base_name}.weight"
         scale_input_key = f"{base_name}.scale_input"
-        
+
         # Check if .scale_input already exists
         if scale_input_key in tensors:
             already_has_input += 1
             continue
-        
+
         # Check if corresponding .weight exists and is FP8
         if weight_key not in tensors:
             continue
-            
+
         weight = tensors[weight_key]
         if weight.dtype != torch.float8_e4m3fn:
             skipped_non_fp8 += 1
             continue
-        
+
         # Add .scale_input = [1.0] fp32
         output_tensors[scale_input_key] = torch.tensor([1.0], dtype=torch.float32)
         added_scale_input += 1
@@ -3053,7 +3720,10 @@ def add_legacy_input_scale(
     # Save output
     print(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        os.makedirs(
+            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
+            exist_ok=True,
+        )
         save_file(output_tensors, output_file)
         print("Conversion complete!")
     except Exception as e:
@@ -3090,13 +3760,15 @@ def convert_int8_to_comfy_quant(
     print("-" * 60)
 
     # Determine INT8 format type - only use CLI if explicitly specified (non-default)
-    cli_format_explicit = kernel_backend != "blockwise"  # User explicitly chose a format
+    cli_format_explicit = (
+        kernel_backend != "blockwise"
+    )  # User explicitly chose a format
     int8_format = "int8_lodewise" if kernel_backend == "lodewise" else "int8_blockwise"
 
     # Load input tensors
     tensors: Dict[str, torch.Tensor] = {}
     try:
-        with safe_open(input_file, framework="pt", device='cpu') as f:
+        with safe_open(input_file, framework="pt", device="cpu") as f:
             print(f"Loading {len(f.keys())} tensors from source file...")
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
@@ -3114,32 +3786,32 @@ def convert_int8_to_comfy_quant(
             continue
 
         # Parse layer and suffix
-        if key.endswith('.weight'):
-            base = key[:-len('.weight')]
+        if key.endswith(".weight"):
+            base = key[: -len(".weight")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['weight'] = tensor
-        elif key.endswith('.scale_weight'):
-            base = key[:-len('.scale_weight')]
+            layer_info[base]["weight"] = tensor
+        elif key.endswith(".scale_weight"):
+            base = key[: -len(".scale_weight")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['scale_weight'] = tensor
-        elif key.endswith('.scale_input'):
-            base = key[:-len('.scale_input')]
+            layer_info[base]["scale_weight"] = tensor
+        elif key.endswith(".scale_input"):
+            base = key[: -len(".scale_input")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['scale_input'] = tensor
-        elif key.endswith('.weight_scale'):
+            layer_info[base]["scale_input"] = tensor
+        elif key.endswith(".weight_scale"):
             # Already in new format - might be partial conversion
-            base = key[:-len('.weight_scale')]
+            base = key[: -len(".weight_scale")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['weight_scale'] = tensor
-        elif key.endswith('.input_scale'):
-            base = key[:-len('.input_scale')]
+            layer_info[base]["weight_scale"] = tensor
+        elif key.endswith(".input_scale"):
+            base = key[: -len(".input_scale")]
             if base not in layer_info:
                 layer_info[base] = {}
-            layer_info[base]['input_scale'] = tensor
+            layer_info[base]["input_scale"] = tensor
         else:
             other_tensors[key] = tensor
 
@@ -3151,11 +3823,11 @@ def convert_int8_to_comfy_quant(
     detected_formats = {}  # Track format detection counts
 
     for base_name, layer_data in tqdm(layer_info.items(), desc="Processing layers"):
-        weight = layer_data.get('weight')
-        scale_weight = layer_data.get('scale_weight')
-        scale_input = layer_data.get('scale_input')
-        weight_scale = layer_data.get('weight_scale')  # New format
-        input_scale = layer_data.get('input_scale')    # New format
+        weight = layer_data.get("weight")
+        scale_weight = layer_data.get("scale_weight")
+        scale_input = layer_data.get("scale_input")
+        weight_scale = layer_data.get("weight_scale")  # New format
+        input_scale = layer_data.get("input_scale")  # New format
 
         if weight is None:
             # No weight tensor - just copy any scales through (unusual case)
@@ -3184,7 +3856,9 @@ def convert_int8_to_comfy_quant(
                     output_tensors[f"{base_name}.input_scale"] = input_scale
                 elif include_input_scale:
                     # No input_scale but flag is set - add default (fp32, 1.0)
-                    output_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=torch.float32)
+                    output_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                        [1.0], dtype=torch.float32
+                    )
                 # Detect INT8 format and block_size from weight_scale shape
                 # Scale shape conventions from quant_ops.py layouts:
                 # - BlockWiseINT8Layout: (M//bs, N//bs) - 2D block grid
@@ -3192,48 +3866,72 @@ def convert_int8_to_comfy_quant(
                 M, K = weight.shape[0], weight.shape[1] if weight.ndim >= 2 else 1
 
                 if weight_scale is None:
-                    detected_format = int8_format if cli_format_explicit else "int8_blockwise"
+                    detected_format = (
+                        int8_format if cli_format_explicit else "int8_blockwise"
+                    )
                     detected_block_size = block_size
                     if cli_format_explicit:
-                        print(f"    → Format: {detected_format} (no scale, using CLI-specified format)")
+                        print(
+                            f"    → Format: {detected_format} (no scale, using CLI-specified format)"
+                        )
                     else:
-                        print(f"    → Format: {detected_format} (no scale, assumed blockwise)")
+                        print(
+                            f"    → Format: {detected_format} (no scale, assumed blockwise)"
+                        )
                 elif weight_scale.ndim == 2:
                     scale_dim0, scale_dim1 = weight_scale.shape
                     # Check if it's lodewise: (N, K//bs) where N == M (output features)
                     if scale_dim0 == M and K % scale_dim1 == 0:
                         detected_format = "int8_lodewise"
                         detected_block_size = K // scale_dim1
-                        print(f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})")
+                        print(
+                            f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})"
+                        )
                     # Check if it's blockwise: (M//bs, N//bs)
                     elif M % scale_dim0 == 0 and K % scale_dim1 == 0:
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_format = "int8_blockwise"
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        print(f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})")
+                        print(
+                            f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})"
+                        )
                     else:
-                        detected_format = int8_format if cli_format_explicit else "int8_blockwise"
+                        detected_format = (
+                            int8_format if cli_format_explicit else "int8_blockwise"
+                        )
                         detected_block_size = block_size
                         if cli_format_explicit:
-                            print(f"    → Format: {detected_format} (scale 2D, cannot identify - using CLI-specified)")
+                            print(
+                                f"    → Format: {detected_format} (scale 2D, cannot identify - using CLI-specified)"
+                            )
                         else:
-                            print(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")
+                            print(
+                                f"    → Format: {detected_format} (scale 2D, cannot identify layout)"
+                            )
                 else:
-                    detected_format = int8_format if cli_format_explicit else "int8_blockwise"
+                    detected_format = (
+                        int8_format if cli_format_explicit else "int8_blockwise"
+                    )
                     detected_block_size = block_size
                     if cli_format_explicit:
-                        print(f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, using CLI-specified)")
+                        print(
+                            f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, using CLI-specified)"
+                        )
                     else:
-                        print(f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, assumed blockwise)")
+                        print(
+                            f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, assumed blockwise)"
+                        )
 
                 # Check if .comfy_quant already exists in other_tensors
                 if f"{base_name}.comfy_quant" not in other_tensors:
-                    detected_formats[detected_format] = detected_formats.get(detected_format, 0) + 1
+                    detected_formats[detected_format] = (
+                        detected_formats.get(detected_format, 0) + 1
+                    )
                     comfy_quant_tensor = create_comfy_quant_tensor(
                         detected_format,
                         block_size=detected_block_size,
-                        full_precision_matrix_mult=None
+                        full_precision_matrix_mult=None,
                     )
                     output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
             else:
@@ -3248,7 +3946,9 @@ def convert_int8_to_comfy_quant(
                     output_tensors[f"{base_name}.input_scale"] = scale_input
                 elif include_input_scale:
                     # No scale_input but flag is set - add default input_scale (fp32, 1.0)
-                    output_tensors[f"{base_name}.input_scale"] = torch.tensor([1.0], dtype=torch.float32)
+                    output_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                        [1.0], dtype=torch.float32
+                    )
 
                 # Detect INT8 format and block_size from scale_weight shape
                 # Scale shape conventions from quant_ops.py layouts:
@@ -3257,47 +3957,71 @@ def convert_int8_to_comfy_quant(
                 M, K = weight.shape[0], weight.shape[1] if weight.ndim >= 2 else 1
 
                 if scale_weight is None:
-                    detected_format = int8_format if cli_format_explicit else "int8_blockwise"
+                    detected_format = (
+                        int8_format if cli_format_explicit else "int8_blockwise"
+                    )
                     detected_block_size = block_size
                     if cli_format_explicit:
-                        print(f"    → Format: {detected_format} (no scale, using CLI-specified format)")
+                        print(
+                            f"    → Format: {detected_format} (no scale, using CLI-specified format)"
+                        )
                     else:
-                        print(f"    → Format: {detected_format} (no scale, assumed blockwise)")
+                        print(
+                            f"    → Format: {detected_format} (no scale, assumed blockwise)"
+                        )
                 elif scale_weight.ndim == 2:
                     scale_dim0, scale_dim1 = scale_weight.shape
                     # Check if it's lodewise: (N, K//bs) where N == M (output features)
                     if scale_dim0 == M and K % scale_dim1 == 0:
                         detected_format = "int8_lodewise"
                         detected_block_size = K // scale_dim1
-                        print(f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})")
+                        print(
+                            f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})"
+                        )
                     # Check if it's blockwise: (M//bs, N//bs)
                     elif M % scale_dim0 == 0 and K % scale_dim1 == 0:
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_format = "int8_blockwise"
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        print(f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})")
+                        print(
+                            f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})"
+                        )
                     else:
-                        detected_format = int8_format if cli_format_explicit else "int8_blockwise"
+                        detected_format = (
+                            int8_format if cli_format_explicit else "int8_blockwise"
+                        )
                         detected_block_size = block_size
                         if cli_format_explicit:
-                            print(f"    → Format: {detected_format} (scale 2D, cannot identify - using CLI-specified)")
+                            print(
+                                f"    → Format: {detected_format} (scale 2D, cannot identify - using CLI-specified)"
+                            )
                         else:
-                            print(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")
+                            print(
+                                f"    → Format: {detected_format} (scale 2D, cannot identify layout)"
+                            )
                 else:
-                    detected_format = int8_format if cli_format_explicit else "int8_blockwise"
+                    detected_format = (
+                        int8_format if cli_format_explicit else "int8_blockwise"
+                    )
                     detected_block_size = block_size
                     if cli_format_explicit:
-                        print(f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, using CLI-specified)")
+                        print(
+                            f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, using CLI-specified)"
+                        )
                     else:
-                        print(f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, assumed blockwise)")
+                        print(
+                            f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, assumed blockwise)"
+                        )
 
                 # Create .comfy_quant metadata
-                detected_formats[detected_format] = detected_formats.get(detected_format, 0) + 1
+                detected_formats[detected_format] = (
+                    detected_formats.get(detected_format, 0) + 1
+                )
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     detected_format,
                     block_size=detected_block_size,
-                    full_precision_matrix_mult=None
+                    full_precision_matrix_mult=None,
                 )
                 output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
@@ -3307,14 +4031,18 @@ def convert_int8_to_comfy_quant(
             output_tensors[f"{base_name}.weight"] = weight
 
             if scale_weight is not None:
-                print(f"  Removing dummy scale_weight from high-precision layer: {base_name}")
+                print(
+                    f"  Removing dummy scale_weight from high-precision layer: {base_name}"
+                )
             if scale_input is not None:
-                print(f"  Removing dummy scale_input from high-precision layer: {base_name}")
+                print(
+                    f"  Removing dummy scale_input from high-precision layer: {base_name}"
+                )
 
     # Add other tensors (bias, norms, etc.) - also fix any incorrect comfy_quant structures
     fixed_comfy_quant_count = 0
     for key, tensor in other_tensors.items():
-        if key.endswith('.comfy_quant'):
+        if key.endswith(".comfy_quant"):
             fixed_tensor, was_fixed = fix_comfy_quant_params_structure(tensor)
             if was_fixed:
                 fixed_comfy_quant_count += 1
@@ -3339,13 +4067,18 @@ def convert_int8_to_comfy_quant(
         print(f"  INT8 format (CLI):     {int8_format}")
         print(f"  Block size (CLI):      {block_size}")
     if fixed_comfy_quant_count > 0:
-        print(f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)")
+        print(
+            f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)"
+        )
     print("-" * 60)
 
     # Save output
     print(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        os.makedirs(
+            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
+            exist_ok=True,
+        )
         save_file(output_tensors, output_file)
         print("Conversion complete!")
     except Exception as e:
@@ -3357,29 +4090,61 @@ def convert_int8_to_comfy_quant(
 # Arguments categorized for multi-section help output
 
 EXPERIMENTAL_ARGS = {
-    'int8', 'nf4', 'fp4', 'af4', 'fallback',
-    'custom_layers', 'custom_type', 'custom_block_size', 'custom_scaling_mode',
-    'custom_simple', 'custom_heur',
-    'fallback_block_size', 'fallback_simple',
-    'kernel_backend', 'heur', 'scaling_mode', 'block_size'
+    "int8",
+    "nf4",
+    "fp4",
+    "af4",
+    "fallback",
+    "custom_layers",
+    "custom_type",
+    "custom_block_size",
+    "custom_scaling_mode",
+    "custom_simple",
+    "custom_heur",
+    "fallback_block_size",
+    "fallback_simple",
+    "kernel_backend",
+    "heur",
+    "scaling_mode",
+    "block_size",
 }
 
 FILTER_ARGS = {
-    't5xxl', 'mistral', 'flux2', 'distillation_large', 'distillation_small',
-    'nerf_large', 'nerf_small', 'radiance', 'wan', 'qwen',
-    'hunyuan', 'zimage', 'zimage_refiner'
+    "t5xxl",
+    "mistral",
+    "flux2",
+    "distillation_large",
+    "distillation_small",
+    "nerf_large",
+    "nerf_small",
+    "radiance",
+    "wan",
+    "qwen",
+    "hunyuan",
+    "zimage",
+    "zimage_refiner",
 }
 
 ADVANCED_ARGS = {
-    'lr_shape_influence', 'lr_threshold_mode',
-    'early_stop_loss', 'early_stop_lr', 'early_stop_stall'
+    "lr_shape_influence",
+    "lr_threshold_mode",
+    "early_stop_loss",
+    "early_stop_lr",
+    "early_stop_stall",
 }
 
 
 class MultiHelpArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with multiple help sections for experimental and filter args."""
 
-    def __init__(self, *args, experimental_args=None, filter_args=None, advanced_args=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        experimental_args=None,
+        filter_args=None,
+        advanced_args=None,
+        **kwargs,
+    ):
         self._experimental_args = experimental_args or set()
         self._filter_args = filter_args or set()
         self._advanced_args = advanced_args or set()
@@ -3388,7 +4153,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
     def add_argument(self, *args, **kwargs):
         action = super().add_argument(*args, **kwargs)
-        if hasattr(self, '_all_actions'):
+        if hasattr(self, "_all_actions"):
             self._all_actions.append(action)
         return action
 
@@ -3397,13 +4162,13 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             args = sys.argv[1:]
 
         # Check for special help flags before parsing
-        if '--help-experimental' in args or '-he' in args:
+        if "--help-experimental" in args or "-he" in args:
             self._print_experimental_help()
             sys.exit(0)
-        elif '--help-filters' in args or '-hf' in args:
+        elif "--help-filters" in args or "-hf" in args:
             self._print_filters_help()
             sys.exit(0)
-        elif '--help-advanced' in args or '-ha' in args:
+        elif "--help-advanced" in args or "-ha" in args:
             self._print_advanced_help()
             sys.exit(0)
 
@@ -3416,16 +4181,18 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
     def _format_action_help(self, action):
         """Format a single action for help output."""
         # Get option strings
-        opts = ', '.join(action.option_strings) if action.option_strings else action.dest
+        opts = (
+            ", ".join(action.option_strings) if action.option_strings else action.dest
+        )
 
         # Get help text
-        help_text = action.help or ''
+        help_text = action.help or ""
         if help_text == argparse.SUPPRESS:
             return None
 
         # Format default if present and not suppressed
         if action.default is not None and action.default != argparse.SUPPRESS:
-            if action.default is not False and action.default != '':
+            if action.default is not False and action.default != "":
                 if isinstance(action.default, str):
                     help_text += f" (default: '{action.default}')"
                 else:
@@ -3433,7 +4200,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
         # Format choices if present
         if action.choices:
-            choices_str = ', '.join(str(c) for c in action.choices)
+            choices_str = ", ".join(str(c) for c in action.choices)
             help_text += f" [choices: {choices_str}]"
 
         return f"  {opts:30s} {help_text}"
@@ -3449,7 +4216,15 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Alternative Quantization Formats:")
         print("-" * 40)
 
-        format_args = ['int8', 'nf4', 'fp4', 'fallback', 'block_size', 'scaling_mode', 'kernel_backend']
+        format_args = [
+            "int8",
+            "nf4",
+            "fp4",
+            "fallback",
+            "block_size",
+            "scaling_mode",
+            "kernel_backend",
+        ]
         for action in self._all_actions:
             if self._get_dest_name(action) in format_args:
                 line = self._format_action_help(action)
@@ -3460,8 +4235,14 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Custom Layer Quantization:")
         print("-" * 40)
 
-        custom_args = ['custom_layers', 'custom_type', 'custom_block_size',
-                       'custom_scaling_mode', 'custom_simple', 'custom_heur']
+        custom_args = [
+            "custom_layers",
+            "custom_type",
+            "custom_block_size",
+            "custom_scaling_mode",
+            "custom_simple",
+            "custom_heur",
+        ]
         for action in self._all_actions:
             if self._get_dest_name(action) in custom_args:
                 line = self._format_action_help(action)
@@ -3472,7 +4253,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Fallback Layer Options:")
         print("-" * 40)
 
-        fallback_args = ['fallback_block_size', 'fallback_simple']
+        fallback_args = ["fallback_block_size", "fallback_simple"]
         for action in self._all_actions:
             if self._get_dest_name(action) in fallback_args:
                 line = self._format_action_help(action)
@@ -3483,7 +4264,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Performance Tuning:")
         print("-" * 40)
 
-        perf_args = ['heur']
+        perf_args = ["heur"]
         for action in self._all_actions:
             if self._get_dest_name(action) in perf_args:
                 line = self._format_action_help(action)
@@ -3503,7 +4284,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Text Encoders:")
         print("-" * 40)
 
-        text_args = ['t5xxl', 'mistral']
+        text_args = ["t5xxl", "mistral"]
         for action in self._all_actions:
             if self._get_dest_name(action) in text_args:
                 line = self._format_action_help(action)
@@ -3514,7 +4295,14 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Diffusion Models (Flux-style):")
         print("-" * 40)
 
-        diffusion_args = ['flux2', 'distillation_large', 'distillation_small', 'nerf_large', 'nerf_small', 'radiance']
+        diffusion_args = [
+            "flux2",
+            "distillation_large",
+            "distillation_small",
+            "nerf_large",
+            "nerf_small",
+            "radiance",
+        ]
         for action in self._all_actions:
             if self._get_dest_name(action) in diffusion_args:
                 line = self._format_action_help(action)
@@ -3525,7 +4313,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Video Models:")
         print("-" * 40)
 
-        video_args = ['wan', 'hunyuan']
+        video_args = ["wan", "hunyuan"]
         for action in self._all_actions:
             if self._get_dest_name(action) in video_args:
                 line = self._format_action_help(action)
@@ -3536,7 +4324,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Image Models:")
         print("-" * 40)
 
-        image_args = ['qwen', 'zimage', 'zimage_refiner']
+        image_args = ["qwen", "zimage", "zimage_refiner"]
         for action in self._all_actions:
             if self._get_dest_name(action) in image_args:
                 line = self._format_action_help(action)
@@ -3556,7 +4344,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Shape-Adaptive LR (Plateau Schedule):")
         print("-" * 40)
 
-        shape_args = ['lr_shape_influence', 'lr_threshold_mode']
+        shape_args = ["lr_shape_influence", "lr_threshold_mode"]
         for action in self._all_actions:
             if self._get_dest_name(action) in shape_args:
                 line = self._format_action_help(action)
@@ -3567,7 +4355,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Early Stopping Thresholds:")
         print("-" * 40)
 
-        early_args = ['early_stop_loss', 'early_stop_lr', 'early_stop_stall']
+        early_args = ["early_stop_loss", "early_stop_lr", "early_stop_stall"]
         for action in self._all_actions:
             if self._get_dest_name(action) in early_args:
                 line = self._format_action_help(action)
@@ -3585,29 +4373,47 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         standard_actions = []
         for action in self._actions:
             dest = self._get_dest_name(action)
-            if dest not in self._experimental_args and dest not in self._filter_args and dest not in self._advanced_args:
+            if (
+                dest not in self._experimental_args
+                and dest not in self._filter_args
+                and dest not in self._advanced_args
+            ):
                 standard_actions.append(action)
 
         # Add usage with only standard actions
-        formatter.add_usage(self.usage, standard_actions, self._mutually_exclusive_groups)
+        formatter.add_usage(
+            self.usage, standard_actions, self._mutually_exclusive_groups
+        )
 
         # Add description
         formatter.add_text(self.description)
 
         # Group standard actions
-        formatter.start_section('Standard Options')
+        formatter.start_section("Standard Options")
         formatter.add_arguments(standard_actions)
         formatter.end_section()
 
         # Add section hints
-        formatter.add_text('')
-        formatter.add_text('Additional Help Sections:')
-        formatter.add_text('  --help-experimental, -he    Show experimental quantization options')
-        formatter.add_text('                              (int8, nf4, fp4, custom-layers, scaling_mode, etc.)')
-        formatter.add_text('  --help-filters, -hf         Show model-specific exclusion filters')
-        formatter.add_text('                              (t5xxl, hunyuan, wan, qwen, etc.)')
-        formatter.add_text('  --help-advanced, -ha        Show advanced LR tuning and early stopping')
-        formatter.add_text('                              (lr-shape-influence, early-stop-*, etc.)')
+        formatter.add_text("")
+        formatter.add_text("Additional Help Sections:")
+        formatter.add_text(
+            "  --help-experimental, -he    Show experimental quantization options"
+        )
+        formatter.add_text(
+            "                              (int8, nf4, fp4, custom-layers, scaling_mode, etc.)"
+        )
+        formatter.add_text(
+            "  --help-filters, -hf         Show model-specific exclusion filters"
+        )
+        formatter.add_text(
+            "                              (t5xxl, hunyuan, wan, qwen, etc.)"
+        )
+        formatter.add_text(
+            "  --help-advanced, -ha        Show advanced LR tuning and early stopping"
+        )
+        formatter.add_text(
+            "                              (lr-shape-influence, early-stop-*, etc.)"
+        )
 
         # Add epilog
         formatter.add_text(self.epilog)
@@ -3616,132 +4422,406 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
 
 def main():
-
     parser = MultiHelpArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Convert safetensors weights to Scaled FP8 format.\n\n"
-                    "Default behavior: FP8 quantization with per-tensor scaling.\n"
-                    "For INT8/NF4/FP4 and other experimental options, see --help-experimental.\n"
-                    "For model-specific layer exclusions, see --help-filters.\n"
-                    "For advanced LR tuning and early stopping, see --help-advanced.",
+        "Default behavior: FP8 quantization with per-tensor scaling.\n"
+        "For INT8/NF4/FP4 and other experimental options, see --help-experimental.\n"
+        "For model-specific layer exclusions, see --help-filters.\n"
+        "For advanced LR tuning and early stopping, see --help-advanced.",
         experimental_args=EXPERIMENTAL_ARGS,
         filter_args=FILTER_ARGS,
-        advanced_args=ADVANCED_ARGS
+        advanced_args=ADVANCED_ARGS,
     )
-    parser.add_argument("-i", "--input", type=str, required=True, help="Input safetensors file path.")
-    parser.add_argument("-o", "--output", type=str, help="Output safetensors file path. Auto-generated if not provided.")
-    parser.add_argument("--comfy_quant", action='store_true', help="Use Comfy quantization method.")
-    parser.add_argument("--int8", action='store_true', help="Use INT8 block-wise quantization instead of FP8.")
-    parser.add_argument("--nf4", action='store_true', help="Use NF4 (4-bit Normal Float) quantization.")
-    parser.add_argument("--fp4", action='store_true', help="Use FP4 (4-bit Floating Point) quantization.")
-    parser.add_argument("--af4", action='store_true', help="Use AF4 (AbnormalFloat4) quantization. Optimized for block_size=64.")
-    parser.add_argument("--fallback", type=str, default=None, choices=["fp8", "int8", "nf4", "fp4", "af4"],
-                        help="Fallback quantization type for excluded layers (instead of keeping original precision).")
-    parser.add_argument("--custom-layers", type=str, default=None, dest="custom_layers",
-                        help="Regex pattern for layers to quantize with custom type. Takes priority over exclusions.")
-    parser.add_argument("--custom-type", type=str, default=None, dest="custom_type",
-                        choices=["fp8", "int8", "nf4", "fp4"],
-                        help="Quantization type for custom layer matches.")
+    parser.add_argument(
+        "-i", "--input", type=str, required=True, help="Input safetensors file path."
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        help="Output safetensors file path. Auto-generated if not provided.",
+    )
+    parser.add_argument(
+        "--comfy_quant", action="store_true", help="Use Comfy quantization method."
+    )
+    parser.add_argument(
+        "--int8",
+        action="store_true",
+        help="Use INT8 block-wise quantization instead of FP8.",
+    )
+    parser.add_argument(
+        "--nf4", action="store_true", help="Use NF4 (4-bit Normal Float) quantization."
+    )
+    parser.add_argument(
+        "--fp4",
+        action="store_true",
+        help="Use FP4 (4-bit Floating Point) quantization.",
+    )
+    parser.add_argument(
+        "--af4",
+        action="store_true",
+        help="Use AF4 (AbnormalFloat4) quantization. Optimized for block_size=64.",
+    )
+    parser.add_argument(
+        "--fallback",
+        type=str,
+        default=None,
+        choices=["fp8", "int8", "nf4", "fp4", "af4"],
+        help="Fallback quantization type for excluded layers (instead of keeping original precision).",
+    )
+    parser.add_argument(
+        "--custom-layers",
+        type=str,
+        default=None,
+        dest="custom_layers",
+        help="Regex pattern for layers to quantize with custom type. Takes priority over exclusions.",
+    )
+    parser.add_argument(
+        "--custom-type",
+        type=str,
+        default=None,
+        dest="custom_type",
+        choices=["fp8", "int8", "nf4", "fp4"],
+        help="Quantization type for custom layer matches.",
+    )
     # Custom-type parameter overrides
-    parser.add_argument("--custom-block-size", type=int, default=None, dest="custom_block_size",
-                        help="Block size for custom-type layers (default: inherit --block_size)")
-    parser.add_argument("--custom-scaling-mode", type=str, default=None, dest="custom_scaling_mode",
-                        choices=["tensor", "row", "block", "block2d", "block3d"],
-                        help="FP8 scaling mode for custom-type layers (default: inherit --scaling_mode)")
-    parser.add_argument("--custom-simple", action='store_true', dest="custom_simple",
-                        help="Use simple quantization for custom-type layers")
-    parser.add_argument("--custom-heur", action='store_true', dest="custom_heur",
-                        help="Apply performance heuristics to custom-type layers")
+    parser.add_argument(
+        "--custom-block-size",
+        type=int,
+        default=None,
+        dest="custom_block_size",
+        help="Block size for custom-type layers (default: inherit --block_size)",
+    )
+    parser.add_argument(
+        "--custom-scaling-mode",
+        type=str,
+        default=None,
+        dest="custom_scaling_mode",
+        choices=["tensor", "row", "block", "block2d", "block3d"],
+        help="FP8 scaling mode for custom-type layers (default: inherit --scaling_mode)",
+    )
+    parser.add_argument(
+        "--custom-simple",
+        action="store_true",
+        dest="custom_simple",
+        help="Use simple quantization for custom-type layers",
+    )
+    parser.add_argument(
+        "--custom-heur",
+        action="store_true",
+        dest="custom_heur",
+        help="Apply performance heuristics to custom-type layers",
+    )
     # Fallback-type parameter overrides
-    parser.add_argument("--fallback-block-size", type=int, default=None, dest="fallback_block_size",
-                        help="Block size for fallback-type layers (default: inherit --block_size)")
-    parser.add_argument("--fallback-simple", action='store_true', dest="fallback_simple",
-                        help="Use simple quantization for fallback-type layers")
-    parser.add_argument("--kernel_backend", type=str, default="blockwise", choices=["blockwise", "lodewise"],
-                        help="Kernel backend for INT8 quantization. 'blockwise' uses BlockWiseINT8Layout (2D tile-level scales), 'lodewise' uses Lode-Wise kernels (per-output-lane scales).")
-    parser.add_argument("--simple", action='store_true', help="Skip SVD optimization, use simple quantization.")
-    parser.add_argument("--full_precision_matrix_mult", action='store_true', help="Add full_precision_matrix_mult=True to .comfy_quant metadata.")
-    parser.add_argument("--heur", action='store_true', help="Skip layers with poor quantization characteristics (aspect ratio, size).")
-    parser.add_argument("--input_scale", action='store_true', help="Include input_scale tensor (fp32, 1.0) for quantized layers. Works with --convert-fp8-scaled and --convert-int8-scaled. Always enabled for T5XXL.")
-    parser.add_argument("--t5xxl", action='store_true', help="Apply exclusions for T5XXL Text Encoder models.")
-    parser.add_argument("--mistral", action='store_true', help="Apply exclusions for Mistral Text Encoder models.")
-    parser.add_argument("--flux2", action='store_true', help="Apply exclusions for Flux2 models.")
-    parser.add_argument("--distillation_large", action='store_true', help="Exclude known distillation layers and other sensitive.")
-    parser.add_argument("--distillation_small", action='store_true', help="Exclude known distillation layers.")
-    parser.add_argument("--nerf_large", action='store_true', help="Exclude known NeRF layers, distillation layers and txt_in.")
-    parser.add_argument("--nerf_small", action='store_true', help="Exclude known NeRF layers and distillation layers.")
-    parser.add_argument("--radiance", action='store_true', help="Exclude known Radiance Field layers.")
-    parser.add_argument("--wan", action='store_true', help="Exclude known WAN layers.")
-    parser.add_argument("--qwen", action='store_true', help="Exclude known Qwen Image layers.")
-    parser.add_argument("--hunyuan", action='store_true', help="Exclude known Hunyuan Video 1.5 layers.")
-    parser.add_argument("--zimage", action='store_true', help="Exclude known Z-Image layers.")
-    parser.add_argument("--zimage_refiner", action='store_true', help="Exclude known Z-Image refiner layers (context_refiner, noise_refiner).")
-    parser.add_argument("--full_matrix", action='store_true', help="If should use torch.linalg.svd with full matices instead of the torch.svd_lowrank.")
-    parser.add_argument("--scaling_mode", type=str, default="tensor", choices=["tensor", "row", "block", "block2d", "block3d"],
-                        help="FP8 scaling mode: 'tensor' (1 global scale), 'row' (per-row scale), 'block'/'block3d' (per-row-group 3D), 'block2d' (2D tiles like INT8).")
+    parser.add_argument(
+        "--fallback-block-size",
+        type=int,
+        default=None,
+        dest="fallback_block_size",
+        help="Block size for fallback-type layers (default: inherit --block_size)",
+    )
+    parser.add_argument(
+        "--fallback-simple",
+        action="store_true",
+        dest="fallback_simple",
+        help="Use simple quantization for fallback-type layers",
+    )
+    parser.add_argument(
+        "--kernel_backend",
+        type=str,
+        default="blockwise",
+        choices=["blockwise", "lodewise"],
+        help="Kernel backend for INT8 quantization. 'blockwise' uses BlockWiseINT8Layout (2D tile-level scales), 'lodewise' uses Lode-Wise kernels (per-output-lane scales).",
+    )
+    parser.add_argument(
+        "--simple",
+        action="store_true",
+        help="Skip SVD optimization, use simple quantization.",
+    )
+    parser.add_argument(
+        "--full_precision_matrix_mult",
+        action="store_true",
+        help="Add full_precision_matrix_mult=True to .comfy_quant metadata.",
+    )
+    parser.add_argument(
+        "--heur",
+        action="store_true",
+        help="Skip layers with poor quantization characteristics (aspect ratio, size).",
+    )
+    parser.add_argument(
+        "--input_scale",
+        action="store_true",
+        help="Include input_scale tensor (fp32, 1.0) for quantized layers. Works with --convert-fp8-scaled and --convert-int8-scaled. Always enabled for T5XXL.",
+    )
+    parser.add_argument(
+        "--t5xxl",
+        action="store_true",
+        help="Apply exclusions for T5XXL Text Encoder models.",
+    )
+    parser.add_argument(
+        "--mistral",
+        action="store_true",
+        help="Apply exclusions for Mistral Text Encoder models.",
+    )
+    parser.add_argument(
+        "--flux2", action="store_true", help="Apply exclusions for Flux2 models."
+    )
+    parser.add_argument(
+        "--distillation_large",
+        action="store_true",
+        help="Exclude known distillation layers and other sensitive.",
+    )
+    parser.add_argument(
+        "--distillation_small",
+        action="store_true",
+        help="Exclude known distillation layers.",
+    )
+    parser.add_argument(
+        "--nerf_large",
+        action="store_true",
+        help="Exclude known NeRF layers, distillation layers and txt_in.",
+    )
+    parser.add_argument(
+        "--nerf_small",
+        action="store_true",
+        help="Exclude known NeRF layers and distillation layers.",
+    )
+    parser.add_argument(
+        "--radiance", action="store_true", help="Exclude known Radiance Field layers."
+    )
+    parser.add_argument("--wan", action="store_true", help="Exclude known WAN layers.")
+    parser.add_argument(
+        "--qwen", action="store_true", help="Exclude known Qwen Image layers."
+    )
+    parser.add_argument(
+        "--hunyuan", action="store_true", help="Exclude known Hunyuan Video 1.5 layers."
+    )
+    parser.add_argument(
+        "--zimage", action="store_true", help="Exclude known Z-Image layers."
+    )
+    parser.add_argument(
+        "--zimage_refiner",
+        action="store_true",
+        help="Exclude known Z-Image refiner layers (context_refiner, noise_refiner).",
+    )
+    parser.add_argument(
+        "--full_matrix",
+        action="store_true",
+        help="If should use torch.linalg.svd with full matices instead of the torch.svd_lowrank.",
+    )
+    parser.add_argument(
+        "--scaling_mode",
+        type=str,
+        default="tensor",
+        choices=["tensor", "row", "block", "block2d", "block3d"],
+        help="FP8 scaling mode: 'tensor' (1 global scale), 'row' (per-row scale), 'block'/'block3d' (per-row-group 3D), 'block2d' (2D tiles like INT8).",
+    )
 
-    parser.add_argument("--block_size", type=int, default=None, help="Block size for block-wise quantization (REQUIRED for INT8, NF4, FP4). Common values: 64, 128.")
-    parser.add_argument("--calib_samples", type=int, default=6144, help="Number of random samples for bias correction.")
-    parser.add_argument("--manual_seed", type=int, default=-1, help="Set a manual seed for reproducibility. Use -1 for random.")
-    parser.add_argument("--optimizer", type=str, default="original", choices=["original", "adamw", "ppsf", "radam"], help="Optimization algorithm.")
-    parser.add_argument("--num_iter", type=int, default=1000, help="Total optimization iterations per tensor.")
-    parser.add_argument("--lr", type=float, default=8.077300000003e-3, help="[AdamW/RAdam/Original] Initial learning rate.")
-    parser.add_argument("--lr_schedule", type=str, default="adaptive", choices=["adaptive", "exponential", "plateau"],
-                        help="LR schedule for 'original' optimizer: 'adaptive' (default custom), 'exponential' (gamma decay), 'plateau' (reduce on stall)")
-    parser.add_argument("--lr_gamma", type=float, default=0.99, help="[exponential] Decay factor per step (default: 0.99)")
-    parser.add_argument("--lr_patience", type=int, default=9, help="[plateau] Steps before decay")
-    parser.add_argument("--lr_factor", type=float, default=0.92, help="[plateau] LR reduction factor")
-    parser.add_argument("--lr_min", type=float, default=1e-10, help="[plateau] Minimum LR bound")
-    parser.add_argument("--lr_cooldown", type=int, default=6, help="[plateau] Steps to wait after reduction")
-    parser.add_argument("--lr_threshold", type=float, default=0.0, help="[plateau] Min improvement to reset patience")
-    parser.add_argument("--lr_adaptive_mode", type=str, default="simple-reset", choices=["simple-reset", "no-reset"],
-                        help="[adaptive] Counter reset behavior (see MANUAL.md)")
+    parser.add_argument(
+        "--block_size",
+        type=int,
+        default=None,
+        help="Block size for block-wise quantization (REQUIRED for INT8, NF4, FP4). Common values: 64, 128.",
+    )
+    parser.add_argument(
+        "--calib_samples",
+        type=int,
+        default=6144,
+        help="Number of random samples for bias correction.",
+    )
+    parser.add_argument(
+        "--manual_seed",
+        type=int,
+        default=-1,
+        help="Set a manual seed for reproducibility. Use -1 for random.",
+    )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="original",
+        choices=["original", "adamw", "radam"],
+        help="Optimization algorithm.",
+    )
+    parser.add_argument(
+        "--num_iter",
+        type=int,
+        default=1000,
+        help="Total optimization iterations per tensor.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=8.077300000003e-3,
+        help="[AdamW/RAdam/Original] Initial learning rate.",
+    )
+    parser.add_argument(
+        "--lr_schedule",
+        type=str,
+        default="adaptive",
+        choices=["adaptive", "exponential", "plateau"],
+        help="LR schedule for 'original' optimizer: 'adaptive' (default custom), 'exponential' (gamma decay), 'plateau' (reduce on stall)",
+    )
+    parser.add_argument(
+        "--lr_gamma",
+        type=float,
+        default=0.99,
+        help="[exponential] Decay factor per step (default: 0.99)",
+    )
+    parser.add_argument(
+        "--lr_patience", type=int, default=9, help="[plateau] Steps before decay"
+    )
+    parser.add_argument(
+        "--lr_factor", type=float, default=0.92, help="[plateau] LR reduction factor"
+    )
+    parser.add_argument(
+        "--lr_min", type=float, default=1e-10, help="[plateau] Minimum LR bound"
+    )
+    parser.add_argument(
+        "--lr_cooldown",
+        type=int,
+        default=6,
+        help="[plateau] Steps to wait after reduction",
+    )
+    parser.add_argument(
+        "--lr_threshold",
+        type=float,
+        default=0.0,
+        help="[plateau] Min improvement to reset patience",
+    )
+    parser.add_argument(
+        "--lr_adaptive_mode",
+        type=str,
+        default="simple-reset",
+        choices=["simple-reset", "no-reset"],
+        help="[adaptive] Counter reset behavior (see MANUAL.md)",
+    )
     # Advanced LR tuning (--help-advanced)
-    parser.add_argument("--lr-shape-influence", type=float, default=1.0, dest="lr_shape_influence",
-                        help="[plateau] Scale factor based on tensor aspect ratio. 0.0=disabled, 1.0=full effect. Elongated tensors get more aggressive decay. (default: 1.0)")
-    parser.add_argument("--lr-threshold-mode", type=str, default="rel", choices=["rel", "abs"], dest="lr_threshold_mode",
-                        help="[plateau] How to interpret --lr_threshold: 'rel' (relative to best loss) or 'abs' (absolute). (default: rel)")
+    parser.add_argument(
+        "--lr-shape-influence",
+        type=float,
+        default=1.0,
+        dest="lr_shape_influence",
+        help="[plateau] Scale factor based on tensor aspect ratio. 0.0=disabled, 1.0=full effect. Elongated tensors get more aggressive decay. (default: 1.0)",
+    )
+    parser.add_argument(
+        "--lr-threshold-mode",
+        type=str,
+        default="rel",
+        choices=["rel", "abs"],
+        dest="lr_threshold_mode",
+        help="[plateau] How to interpret --lr_threshold: 'rel' (relative to best loss) or 'abs' (absolute). (default: rel)",
+    )
     # Early stopping thresholds (--help-advanced)
-    parser.add_argument("--early-stop-loss", type=float, default=1e-8, dest="early_stop_loss",
-                        help="Early stop when loss drops below this value. (default: 1e-8)")
-    parser.add_argument("--early-stop-lr", type=float, default=1e-10, dest="early_stop_lr",
-                        help="Early stop when LR drops below this value. (default: 1e-10)")
-    parser.add_argument("--early-stop-stall", type=int, default=1000, dest="early_stop_stall",
-                        help="Early stop when worse_loss_counter exceeds this. (default: 1000)")
-    parser.add_argument("--top_p", type=float, default=0.2, help="Proportion of principal components (SVD) to use.")
-    parser.add_argument("--min_k", type=int, default=64, help="Minimum number of principal components.")
-    parser.add_argument("--max_k", type=int, default=1024, help="Maximum number of principal components.")
+    parser.add_argument(
+        "--early-stop-loss",
+        type=float,
+        default=1e-8,
+        dest="early_stop_loss",
+        help="Early stop when loss drops below this value. (default: 1e-8)",
+    )
+    parser.add_argument(
+        "--early-stop-lr",
+        type=float,
+        default=1e-10,
+        dest="early_stop_lr",
+        help="Early stop when LR drops below this value. (default: 1e-10)",
+    )
+    parser.add_argument(
+        "--early-stop-stall",
+        type=int,
+        default=1000,
+        dest="early_stop_stall",
+        help="Early stop when worse_loss_counter exceeds this. (default: 1000)",
+    )
+    parser.add_argument(
+        "--top_p",
+        type=float,
+        default=0.2,
+        help="Proportion of principal components (SVD) to use.",
+    )
+    parser.add_argument(
+        "--min_k", type=int, default=64, help="Minimum number of principal components."
+    )
+    parser.add_argument(
+        "--max_k",
+        type=int,
+        default=1024,
+        help="Maximum number of principal components.",
+    )
 
     # FP8 scaled to comfy_quant conversion mode
-    parser.add_argument("--convert-fp8-scaled", action='store_true', dest="convert_fp8_scaled",
-                        help="Convert fp8_scaled model to comfy_quant format (no quantization, just format conversion)")
-    parser.add_argument("--hp-filter", type=str, default=None, dest="hp_filter",
-                        help="Regex pattern for high-precision layers to validate (error if they have FP8 weights)")
-    parser.add_argument("--full-precision-mm", action='store_true', dest="full_precision_mm",
-                        help="Set full_precision_matrix_mult=True in .comfy_quant metadata (for --convert-fp8-scaled)")
+    parser.add_argument(
+        "--convert-fp8-scaled",
+        action="store_true",
+        dest="convert_fp8_scaled",
+        help="Convert fp8_scaled model to comfy_quant format (no quantization, just format conversion)",
+    )
+    parser.add_argument(
+        "--hp-filter",
+        type=str,
+        default=None,
+        dest="hp_filter",
+        help="Regex pattern for high-precision layers to validate (error if they have FP8 weights)",
+    )
+    parser.add_argument(
+        "--full-precision-mm",
+        action="store_true",
+        dest="full_precision_mm",
+        help="Set full_precision_matrix_mult=True in .comfy_quant metadata (for --convert-fp8-scaled)",
+    )
 
     # INT8 to comfy_quant conversion mode
-    parser.add_argument("--convert-int8-scaled", action='store_true', dest="convert_int8_scaled",
-                        help="Convert legacy INT8 model (.scale_weight) to comfy_quant format (.weight_scale + metadata)")
+    parser.add_argument(
+        "--convert-int8-scaled",
+        action="store_true",
+        dest="convert_int8_scaled",
+        help="Convert legacy INT8 model (.scale_weight) to comfy_quant format (.weight_scale + metadata)",
+    )
 
     # Legacy input scale addition mode
-    parser.add_argument("--legacy_input_add", action='store_true',
-                        help="Add .scale_input tensors to legacy fp8_scaled models (keeps legacy format, adds missing input scales)")
+    parser.add_argument(
+        "--legacy_input_add",
+        action="store_true",
+        help="Add .scale_input tensors to legacy fp8_scaled models (keeps legacy format, adds missing input scales)",
+    )
 
     # ComfyQuant layer config editing mode
-    parser.add_argument("--edit-quant", action='store_true', dest="edit_quant",
-                        help="Edit .comfy_quant layer configurations (add/remove keys without re-quantizing)")
-    parser.add_argument("--remove-keys", type=str, default=None, dest="remove_keys",
-                        help="Comma-separated keys to remove from .comfy_quant (e.g., 'full_precision_matrix_mult,group_size')")
-    parser.add_argument("--add-keys", type=str, default=None, dest="add_keys",
-                        help="Python-like key:value pairs to add (e.g., \"'full_precision_matrix_mult': true, 'group_size': 64\")")
-    parser.add_argument("--quant-filter", type=str, default=None, dest="quant_filter",
-                        help="Regex pattern to filter which layers to edit (default: all .comfy_quant layers)")
-
+    parser.add_argument(
+        "--edit-quant",
+        action="store_true",
+        dest="edit_quant",
+        help="Edit .comfy_quant layer configurations (add/remove keys without re-quantizing)",
+    )
+    parser.add_argument(
+        "--remove-keys",
+        type=str,
+        default=None,
+        dest="remove_keys",
+        help="Comma-separated keys to remove from .comfy_quant (e.g., 'full_precision_matrix_mult,group_size')",
+    )
+    parser.add_argument(
+        "--add-keys",
+        type=str,
+        default=None,
+        dest="add_keys",
+        help="Python-like key:value pairs to add (e.g., \"'full_precision_matrix_mult': true, 'group_size': 64\")",
+    )
+    parser.add_argument(
+        "--quant-filter",
+        type=str,
+        default=None,
+        dest="quant_filter",
+        help="Regex pattern to filter which layers to edit (default: all .comfy_quant layers)",
+    )
 
     # Per-layer quantization config (JSON file)
-    parser.add_argument("--layer-config", type=str, default=None, dest="layer_config",
-                        help="""Path to JSON file with per-layer quantization settings (regex patterns).
+    parser.add_argument(
+        "--layer-config",
+        type=str,
+        default=None,
+        dest="layer_config",
+        help="""Path to JSON file with per-layer quantization settings (regex patterns).
 Example config:
 {
   "_default": {"format": "float8_e4m3fn"},
@@ -3749,26 +4829,40 @@ Example config:
   "\\\\.0\\\\.img_mod": {"skip": true}
 }
 By default, patterns use re.search (substring match). Use --fullmatch for full string matching.
-In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md for details.""")
-    parser.add_argument("--fullmatch", action='store_true', dest="layer_config_fullmatch",
-                        help="Use re.fullmatch instead of re.search for --layer-config patterns. "
-                             "With fullmatch, patterns must match the entire layer name (use .* for wildcards).")
+In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md for details.""",
+    )
+    parser.add_argument(
+        "--fullmatch",
+        action="store_true",
+        dest="layer_config_fullmatch",
+        help="Use re.fullmatch instead of re.search for --layer-config patterns. "
+        "With fullmatch, patterns must match the entire layer name (use .* for wildcards).",
+    )
 
     # Dry run / template generation
-    parser.add_argument("--dry-run", type=str, nargs='?', const='analyze', default=None, dest="dry_run",
-                        choices=['analyze', 'create-template'],
-                        help="Dry run mode: 'analyze' shows what would be processed, 'create-template' generates config template")
+    parser.add_argument(
+        "--dry-run",
+        type=str,
+        nargs="?",
+        const="analyze",
+        default=None,
+        dest="dry_run",
+        choices=["analyze", "create-template"],
+        help="Dry run mode: 'analyze' shows what would be processed, 'create-template' generates config template",
+    )
 
     args = parser.parse_args()
 
     # Handle dry-run create-template mode (separate workflow)
-    if args.dry_run == 'create-template':
+    if args.dry_run == "create-template":
         if not os.path.exists(args.input):
             print(f"Error: Input file not found: {args.input}")
             return
 
-        template_path = os.path.splitext(args.input)[0] + '_layer_config_template.json'
-        generate_config_template(args.input, template_path, block_size=args.block_size or 128)
+        template_path = os.path.splitext(args.input)[0] + "_layer_config_template.json"
+        generate_config_template(
+            args.input, template_path, block_size=args.block_size or 128
+        )
         return
 
     # Handle fp8_scaled conversion mode first (separate workflow)
@@ -3790,7 +4884,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             args.output,
             hp_filter=args.hp_filter,
             full_precision_mm=args.full_precision_mm,
-            include_input_scale=args.input_scale
+            include_input_scale=args.input_scale,
         )
         return
 
@@ -3810,14 +4904,16 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
 
         # Use block_size from args or default to 128
         int8_block_size = args.block_size if args.block_size else 128
-        int8_kernel_backend = args.kernel_backend if hasattr(args, 'kernel_backend') else "blockwise"
+        int8_kernel_backend = (
+            args.kernel_backend if hasattr(args, "kernel_backend") else "blockwise"
+        )
 
         convert_int8_to_comfy_quant(
             args.input,
             args.output,
             block_size=int8_block_size,
             kernel_backend=int8_kernel_backend,
-            include_input_scale=args.input_scale
+            include_input_scale=args.input_scale,
         )
         return
 
@@ -3853,44 +4949,54 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             return
 
         if not args.remove_keys and not args.add_keys:
-            print("Error: --edit-quant requires at least one of --remove-keys or --add-keys")
+            print(
+                "Error: --edit-quant requires at least one of --remove-keys or --add-keys"
+            )
             return
 
         # Parse remove_keys from comma-separated string
         remove_keys_list = None
         if args.remove_keys:
-            remove_keys_list = [k.strip() for k in args.remove_keys.split(',') if k.strip()]
+            remove_keys_list = [
+                k.strip() for k in args.remove_keys.split(",") if k.strip()
+            ]
 
         edit_comfy_quant(
             args.input,
             args.output,
             remove_keys=remove_keys_list,
             add_keys_str=args.add_keys,
-            layer_filter=args.quant_filter
+            layer_filter=args.quant_filter,
         )
         return
 
     # Determine which formats require block_size
     primary_needs_block_size = args.int8 or args.nf4 or args.fp4 or args.af4
-    custom_needs_block_size = args.custom_type in ('int8', 'nf4', 'fp4', 'af4')
-    fallback_needs_block_size = args.fallback in ('int8', 'nf4', 'fp4', 'af4')
+    custom_needs_block_size = args.custom_type in ("int8", "nf4", "fp4", "af4")
+    fallback_needs_block_size = args.fallback in ("int8", "nf4", "fp4", "af4")
 
     # Validate block_size for primary format
     if primary_needs_block_size and args.block_size is None:
-        format_name = "INT8" if args.int8 else "NF4" if args.nf4 else "FP4" if args.fp4 else "AF4"
+        format_name = (
+            "INT8" if args.int8 else "NF4" if args.nf4 else "FP4" if args.fp4 else "AF4"
+        )
         print(f"Error: --block_size is required when using {format_name} quantization.")
         print(f"       Example: --block_size 128")
         sys.exit(1)
 
     # Validate custom-block-size for custom format
     if args.custom_type and custom_needs_block_size and args.custom_block_size is None:
-        print(f"Error: --custom-block-size is required when using --custom-type {args.custom_type}.")
+        print(
+            f"Error: --custom-block-size is required when using --custom-type {args.custom_type}."
+        )
         print(f"       Example: --custom-block-size 128")
         sys.exit(1)
 
     # Validate fallback-block-size for fallback format
     if args.fallback and fallback_needs_block_size and args.fallback_block_size is None:
-        print(f"Error: --fallback-block-size is required when using --fallback {args.fallback}.")
+        print(
+            f"Error: --fallback-block-size is required when using --fallback {args.fallback}."
+        )
         print(f"       Example: --fallback-block-size 128")
         sys.exit(1)
 
@@ -3900,23 +5006,33 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
 
     # Auto-enable comfy_quant if custom-type is used (required for mixed precision)
     if args.custom_type and not args.comfy_quant:
-        print("Note: --comfy_quant auto-enabled (required for --custom-type mixed precision)")
+        print(
+            "Note: --comfy_quant auto-enabled (required for --custom-type mixed precision)"
+        )
         args.comfy_quant = True
 
     # Check lodewise kernel backend availability
-    if args.kernel_backend == 'lodewise' and not _HAS_LODEWISE:
+    if args.kernel_backend == "lodewise" and not _HAS_LODEWISE:
         print("ERROR: lodewise kernel backend requested but not available.")
         print("       The kernels/int8_matmul.py module could not be imported.")
         print("")
-        print("Fallback command: Remove '--kernel_backend lodewise' or use '--kernel_backend blockwise'")
+        print(
+            "Fallback command: Remove '--kernel_backend lodewise' or use '--kernel_backend blockwise'"
+        )
         sys.exit(1)
 
     # Only check FP8 support if not using INT8
     if not args.int8:
         try:
-            _ = torch.zeros(1, dtype=TARGET_FP8_DTYPE, device='cuda' if torch.cuda.is_available() else 'cpu')
+            _ = torch.zeros(
+                1,
+                dtype=TARGET_FP8_DTYPE,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            )
         except (RuntimeError, TypeError):
-            print("Error: This hardware/PyTorch version does not support the target FP8 dtype.")
+            print(
+                "Error: This hardware/PyTorch version does not support the target FP8 dtype."
+            )
             return
 
     if not args.output:
@@ -3931,9 +5047,20 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             format_str = "int8_blockwise"
             scaling_str = f"_bs{args.block_size}"
         else:
-            format_str = TARGET_FP8_DTYPE.__str__().split('.')[-1]
+            format_str = TARGET_FP8_DTYPE.__str__().split(".")[-1]
             scaling_str = f"_{args.scaling_mode}"
-        flags = "".join(["_t5" if args.t5xxl else "", "_mistral" if args.mistral else "", "_flux2" if args.flux2 else "", "_nodist_l" if args.distillation_large else "", "_nodist_s" if args.distillation_small else "", "_nonerf_l" if args.nerf_large else "", "_nonerf_s" if args.nerf_small else "", "_norad" if args.radiance else ""])
+        flags = "".join(
+            [
+                "_t5" if args.t5xxl else "",
+                "_mistral" if args.mistral else "",
+                "_flux2" if args.flux2 else "",
+                "_nodist_l" if args.distillation_large else "",
+                "_nodist_s" if args.distillation_small else "",
+                "_nonerf_l" if args.nerf_large else "",
+                "_nonerf_s" if args.nerf_small else "",
+                "_norad" if args.radiance else "",
+            ]
+        )
         output_file = f"{base}_{format_str}{scaling_str}{flags}_k{args.min_k}-{args.max_k}_p{args.top_p}_lr{args.lr}.safetensors"
     else:
         output_file = args.output
@@ -3942,15 +5069,53 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         print("Error: Output file cannot be same as input.")
         return
 
-    seed = int(torch.randint(0, 2**32 - 1, ()).item()) if args.manual_seed == -1 else args.manual_seed
+    seed = (
+        int(torch.randint(0, 2**32 - 1, ()).item())
+        if args.manual_seed == -1
+        else args.manual_seed
+    )
     print(f"Using seed: {seed}")
 
     # Separate converter kwargs from function kwargs
-    excluded_keys = ['input', 'output', 'comfy_quant', 't5xxl', 'mistral', 'flux2', 'distillation_large', 'distillation_small',
-                     'nerf_large', 'nerf_small', 'radiance', 'wan', 'qwen', 'hunyuan', 'zimage', 'zimage_refiner',
-                     'calib_samples', 'manual_seed', 'int8', 'nf4', 'fp4', 'af4', 'fallback', 'custom_layers', 'custom_type',
-                     'custom_block_size', 'custom_scaling_mode', 'custom_simple', 'custom_heur', 'fallback_block_size', 'fallback_simple',
-                     'full_precision_matrix_mult', 'heur', 'input_scale', 'simple', 'layer_config', 'layer_config_fullmatch']
+    excluded_keys = [
+        "input",
+        "output",
+        "comfy_quant",
+        "t5xxl",
+        "mistral",
+        "flux2",
+        "distillation_large",
+        "distillation_small",
+        "nerf_large",
+        "nerf_small",
+        "radiance",
+        "wan",
+        "qwen",
+        "hunyuan",
+        "zimage",
+        "zimage_refiner",
+        "calib_samples",
+        "manual_seed",
+        "int8",
+        "nf4",
+        "fp4",
+        "af4",
+        "fallback",
+        "custom_layers",
+        "custom_type",
+        "custom_block_size",
+        "custom_scaling_mode",
+        "custom_simple",
+        "custom_heur",
+        "fallback_block_size",
+        "fallback_simple",
+        "full_precision_matrix_mult",
+        "heur",
+        "input_scale",
+        "simple",
+        "layer_config",
+        "layer_config_fullmatch",
+    ]
     converter_kwargs = {k: v for k, v in vars(args).items() if k not in excluded_keys}
 
     # Load layer config if specified
@@ -3959,22 +5124,46 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         layer_config_data = load_layer_config(args.layer_config)
 
     convert_to_fp8_scaled(
-        args.input, output_file, args.comfy_quant, args.t5xxl, args.mistral, args.flux2, args.distillation_large,
-        args.distillation_small, args.nerf_large, args.nerf_small,
-        args.radiance, args.wan, args.qwen, args.hunyuan, args.zimage, args.zimage_refiner, args.calib_samples, seed,
-        int8=args.int8, nf4=args.nf4, fp4=args.fp4, af4=args.af4,
-        fallback=args.fallback, custom_layers=args.custom_layers, custom_type=args.custom_type,
-        custom_block_size=args.custom_block_size, custom_scaling_mode=args.custom_scaling_mode,
-        custom_simple=args.custom_simple, custom_heur=args.custom_heur,
-        fallback_block_size=args.fallback_block_size, fallback_simple=args.fallback_simple,
+        args.input,
+        output_file,
+        args.comfy_quant,
+        args.t5xxl,
+        args.mistral,
+        args.flux2,
+        args.distillation_large,
+        args.distillation_small,
+        args.nerf_large,
+        args.nerf_small,
+        args.radiance,
+        args.wan,
+        args.qwen,
+        args.hunyuan,
+        args.zimage,
+        args.zimage_refiner,
+        args.calib_samples,
+        seed,
+        int8=args.int8,
+        nf4=args.nf4,
+        fp4=args.fp4,
+        af4=args.af4,
+        fallback=args.fallback,
+        custom_layers=args.custom_layers,
+        custom_type=args.custom_type,
+        custom_block_size=args.custom_block_size,
+        custom_scaling_mode=args.custom_scaling_mode,
+        custom_simple=args.custom_simple,
+        custom_heur=args.custom_heur,
+        fallback_block_size=args.fallback_block_size,
+        fallback_simple=args.fallback_simple,
         full_precision_matrix_mult=args.full_precision_matrix_mult,
         skip_inefficient_layers=args.heur,
         include_input_scale=args.input_scale,
         no_learned_rounding=args.simple,
         layer_config=layer_config_data,
         layer_config_fullmatch=args.layer_config_fullmatch,
-        **converter_kwargs
+        **converter_kwargs,
     )
+
 
 if __name__ == "__main__":
     main()
