@@ -1283,7 +1283,6 @@ class LearnedRoundingConverter:
         Supports multiple optimizer choices: original, adamw, radam.
         """
         M, N = W_float32.shape
-        block_size = self.block_size
 
         # Compute SVD for the optimization
         max_rank = min(W_float32.shape)
