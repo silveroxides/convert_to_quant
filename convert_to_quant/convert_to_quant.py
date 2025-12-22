@@ -13,6 +13,7 @@ import gc
 import math
 import json
 from torch.optim import AdamW, RAdam
+from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau
 from .comfy.quant_ops import BlockWiseINT8Layout
 
 # --- Constants and Configuration ---
@@ -832,16 +833,36 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
+        """FP8 optimization using AdamW optimizer with LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
         lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = AdamW([delta], lr=lr)
+
+        # Setup LR scheduler based on schedule type
+        schedule_name = self.lr_schedule
+        scheduler = None
+        if schedule_name == "exponential":
+            scheduler = ExponentialLR(optimizer, gamma=self.lr_gamma)
+        elif schedule_name == "plateau":
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=self.lr_factor,
+                patience=self.lr_patience,
+                cooldown=self.lr_cooldown,
+                threshold=self.lr_threshold,
+                threshold_mode=self.lr_threshold_mode,
+                min_lr=self.lr_min,
+            )
+
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing (AdamW)",
+            desc=f"    Optimizing (AdamW-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -857,16 +878,43 @@ class LearnedRoundingConverter:
             loss.backward()
             optimizer.step()
 
+            # Step scheduler
+            if scheduler is not None:
+                if schedule_name == "plateau":
+                    scheduler.step(loss.item())
+                else:
+                    scheduler.step()
+
             current_loss_val = loss.item()
+            curr_lr = optimizer.param_groups[0]["lr"]
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+            else:
+                worse_loss_counter += 1
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -879,16 +927,36 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
+        """FP8 optimization using RAdam optimizer with LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
         lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = RAdam([delta], lr=lr)
+
+        # Setup LR scheduler based on schedule type
+        schedule_name = self.lr_schedule
+        scheduler = None
+        if schedule_name == "exponential":
+            scheduler = ExponentialLR(optimizer, gamma=self.lr_gamma)
+        elif schedule_name == "plateau":
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=self.lr_factor,
+                patience=self.lr_patience,
+                cooldown=self.lr_cooldown,
+                threshold=self.lr_threshold,
+                threshold_mode=self.lr_threshold_mode,
+                min_lr=self.lr_min,
+            )
+
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing (RAdam)",
+            desc=f"    Optimizing (RAdam-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -904,16 +972,43 @@ class LearnedRoundingConverter:
             loss.backward()
             optimizer.step()
 
+            # Step scheduler
+            if scheduler is not None:
+                if schedule_name == "plateau":
+                    scheduler.step(loss.item())
+                else:
+                    scheduler.step()
+
             current_loss_val = loss.item()
+            curr_lr = optimizer.param_groups[0]["lr"]
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+            else:
+                worse_loss_counter += 1
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1336,7 +1431,7 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
-        """INT8 optimization using AdamW optimizer."""
+        """INT8 optimization using AdamW optimizer with LR scheduling."""
         M, N = W_float32.shape
         block_size = self.block_size
 
@@ -1345,12 +1440,31 @@ class LearnedRoundingConverter:
 
         lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = AdamW([delta], lr=lr)
+
+        # Setup LR scheduler based on schedule type
+        schedule_name = self.lr_schedule
+        scheduler = None
+        if schedule_name == "exponential":
+            scheduler = ExponentialLR(optimizer, gamma=self.lr_gamma)
+        elif schedule_name == "plateau":
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=self.lr_factor,
+                patience=self.lr_patience,
+                cooldown=self.lr_cooldown,
+                threshold=self.lr_threshold,
+                threshold_mode=self.lr_threshold_mode,
+                min_lr=self.lr_min,
+            )
+
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing INT8 (AdamW)",
+            desc=f"    Optimizing INT8 (AdamW-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -1369,16 +1483,43 @@ class LearnedRoundingConverter:
             loss.backward()
             optimizer.step()
 
+            # Step scheduler
+            if scheduler is not None:
+                if schedule_name == "plateau":
+                    scheduler.step(loss.item())
+                else:
+                    scheduler.step()
+
             current_loss_val = loss.item()
+            curr_lr = optimizer.param_groups[0]["lr"]
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+            else:
+                worse_loss_counter += 1
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1400,7 +1541,7 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
-        """INT8 optimization using RAdam optimizer."""
+        """INT8 optimization using RAdam optimizer with LR scheduling."""
         M, N = W_float32.shape
         block_size = self.block_size
 
@@ -1409,12 +1550,31 @@ class LearnedRoundingConverter:
 
         lr = self.optimizer_kwargs.get("lr", 1e-2)
         optimizer = RAdam([delta], lr=lr)
+
+        # Setup LR scheduler based on schedule type
+        schedule_name = self.lr_schedule
+        scheduler = None
+        if schedule_name == "exponential":
+            scheduler = ExponentialLR(optimizer, gamma=self.lr_gamma)
+        elif schedule_name == "plateau":
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=self.lr_factor,
+                patience=self.lr_patience,
+                cooldown=self.lr_cooldown,
+                threshold=self.lr_threshold,
+                threshold_mode=self.lr_threshold_mode,
+                min_lr=self.lr_min,
+            )
+
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing INT8 (RAdam)",
+            desc=f"    Optimizing INT8 (RAdam-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -1433,16 +1593,43 @@ class LearnedRoundingConverter:
             loss.backward()
             optimizer.step()
 
+            # Step scheduler
+            if scheduler is not None:
+                if schedule_name == "plateau":
+                    scheduler.step(loss.item())
+                else:
+                    scheduler.step()
+
             current_loss_val = loss.item()
+            curr_lr = optimizer.param_groups[0]["lr"]
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+            else:
+                worse_loss_counter += 1
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()

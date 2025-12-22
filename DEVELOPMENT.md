@@ -1,5 +1,47 @@
 # Development Log
 
+## 2025-12-22: LR Schedules for AdamW/RAdam Optimizers
+
+### Session Summary
+Added plateau and exponential LR scheduling support to all four AdamW and RAdam optimizer functions, bringing them to feature parity with the "original" optimizer.
+
+---
+
+### Changes
+
+Previously, only `_optimize_original` and `_optimize_int8_original` supported LR schedules. Now all optimizers support:
+
+| Schedule | Description |
+|----------|-------------|
+| `adaptive` (default) | Fixed LR (AdamW/RAdam handle momentum internally) |
+| `exponential` | Decay by `gamma` each step via `ExponentialLR` |
+| `plateau` | Reduce on stall via `ReduceLROnPlateau` |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added `ExponentialLR`, `ReduceLROnPlateau` imports; updated `_optimize_int8_adamw`, `_optimize_int8_radam`, `_optimize_adamw`, `_optimize_radam` with scheduler support, LR tracking in progress bar, and early stopping |
+
+### Functions Updated
+
+- `_optimize_int8_adamw` - INT8 AdamW with LR scheduling
+- `_optimize_int8_radam` - INT8 RAdam with LR scheduling
+- `_optimize_adamw` - FP8 AdamW with LR scheduling
+- `_optimize_radam` - FP8 RAdam with LR scheduling
+
+### Usage
+
+```bash
+# FP8 AdamW with exponential schedule
+convert_to_quant -i model.safetensors --comfy_quant --optimizer adamw --lr_schedule exponential --lr_gamma 0.99
+
+# INT8 RAdam with plateau schedule
+convert_to_quant -i model.safetensors --comfy_quant --int8 --block_size 64 --optimizer radam --lr_schedule plateau --lr_patience 10
+```
+
+---
+
 ## 2025-12-22: Metadata Saving Option for Safetensors
 
 ### Session Summary
