@@ -2669,6 +2669,7 @@ def convert_fp8_scaled_to_comfy_quant(
     hp_filter: Optional[str] = None,
     full_precision_mm: bool = False,
     include_input_scale: bool = False,
+    save_quant_metadata: bool = False,
 ):
     """
     Convert legacy fp8_scaled format to comfy_quant format.
@@ -2699,6 +2700,9 @@ def convert_fp8_scaled_to_comfy_quant(
     except Exception as e:
         print(f"FATAL: Error loading '{input_file}': {e}")
         return
+
+    # Initialize metadata collection if enabled
+    quant_metadata_layers = {} if save_quant_metadata else None
 
     # Verify this is an fp8_scaled model
     if "scaled_fp8" not in tensors:
@@ -2901,6 +2905,17 @@ def convert_fp8_scaled_to_comfy_quant(
             )
             output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
+            # Collect metadata if enabled
+            if save_quant_metadata:
+                meta_entry = {"format": format_type}
+                block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise"}
+                if block_size is not None and format_type in block_based_formats:
+                    meta_entry["group_size"] = block_size
+                if full_precision_mm:
+                    meta_entry["full_precision_matrix_mult"] = True
+
+                quant_metadata_layers[base_name] = meta_entry
+
         else:
             # High-precision layer: keep weight, remove dummy scales
             hp_layers.append(base_name)
@@ -2973,7 +2988,19 @@ def convert_fp8_scaled_to_comfy_quant(
             os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
             exist_ok=True,
         )
-        save_file(output_tensors, output_file)
+
+        # Prepare metadata args
+        save_kwargs = {}
+        if save_quant_metadata and quant_metadata_layers:
+            full_metadata = {"format_version": "1.0", "layers": quant_metadata_layers}
+            save_kwargs["metadata"] = {
+                "_quantization_metadata": json.dumps(full_metadata)
+            }
+            print(
+                f"  Adding quantization metadata for {len(quant_metadata_layers)} layers"
+            )
+
+        save_file(output_tensors, output_file, **save_kwargs)
         print("Conversion complete!")
     except Exception as e:
         print(f"FATAL: Error saving file '{output_file}': {e}")
@@ -3097,6 +3124,7 @@ def convert_int8_to_comfy_quant(
     output_file: str,
     block_size: int = 128,
     include_input_scale: bool = False,
+    save_quant_metadata: bool = False,
 ):
     """
     Convert legacy INT8 quantized models to comfy_quant format.
@@ -3126,6 +3154,9 @@ def convert_int8_to_comfy_quant(
     except Exception as e:
         print(f"FATAL: Error loading '{input_file}': {e}")
         return
+
+    # Initialize metadata collection if enabled
+    quant_metadata_layers = {} if save_quant_metadata else None
 
     # Group tensors by layer base name
     layer_info: Dict[str, Dict[str, torch.Tensor]] = {}
@@ -3253,6 +3284,15 @@ def convert_int8_to_comfy_quant(
                         full_precision_matrix_mult=None,
                     )
                     output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
+
+                    # Collect metadata if enabled
+                    if save_quant_metadata:
+                        meta_entry = {"format": detected_format}
+                        # int8 is always blockwise in this context, so check is simple or implicit
+                        if detected_block_size is not None:
+                            meta_entry["group_size"] = detected_block_size
+
+                        quant_metadata_layers[base_name] = meta_entry
             else:
                 # Convert old format to new format
                 if scale_weight is not None:
@@ -3311,6 +3351,14 @@ def convert_int8_to_comfy_quant(
                     full_precision_matrix_mult=None,
                 )
                 output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
+
+                # Collect metadata if enabled
+                if save_quant_metadata:
+                    meta_entry = {"format": detected_format}
+                    if detected_block_size is not None:
+                        meta_entry["group_size"] = detected_block_size
+
+                    quant_metadata_layers[base_name] = meta_entry
 
         else:
             # High-precision layer: keep weight, remove dummy scales
@@ -4178,6 +4226,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             args.output,
             block_size=int8_block_size,
             include_input_scale=args.input_scale,
+            save_quant_metadata=args.save_quant_metadata,
         )
         return
 
