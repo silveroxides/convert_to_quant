@@ -205,9 +205,17 @@ convert_to_quant -i model.safetensors --int8 --block_size 128 --comfy_quant --he
 
 ---
 
-## Citation & References
+## Acknowledgements
 
-- DeepSeek FP8 matmul: https://github.com/deepseek-ai/DeepSeek-V3
+Special thanks to:
+- [Clybius](https://github.com/Clybius) – For inspiring me to take on quantization and his [Learned-Rounding](https://github.com/Clybius/Learned-Rounding) repository
+- [lyogavin](https://github.com/lyogavin) – For ComfyUI PR [#10864](https://github.com/comfyanonymous/ComfyUI/pull/10864) adding `comfy_quant` format support
+
+---
+
+## References
+
+- DeepSeek scaled FP8 matmul: https://github.com/deepseek-ai/DeepSeek-V3
 - JetFire paper: https://arxiv.org/abs/2403.12422
 
 ---
