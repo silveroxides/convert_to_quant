@@ -836,7 +836,7 @@ class LearnedRoundingConverter:
         """FP8 optimization using AdamW optimizer with LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         optimizer = AdamW([delta], lr=lr)
 
         # Setup LR scheduler based on schedule type
@@ -847,7 +847,6 @@ class LearnedRoundingConverter:
         elif schedule_name == "plateau":
             scheduler = ReduceLROnPlateau(
                 optimizer,
-                mode="min",
                 factor=self.lr_factor,
                 patience=self.lr_patience,
                 cooldown=self.lr_cooldown,
@@ -930,7 +929,7 @@ class LearnedRoundingConverter:
         """FP8 optimization using RAdam optimizer with LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         optimizer = RAdam([delta], lr=lr)
 
         # Setup LR scheduler based on schedule type
@@ -941,7 +940,6 @@ class LearnedRoundingConverter:
         elif schedule_name == "plateau":
             scheduler = ReduceLROnPlateau(
                 optimizer,
-                mode="min",
                 factor=self.lr_factor,
                 patience=self.lr_patience,
                 cooldown=self.lr_cooldown,
@@ -1438,7 +1436,7 @@ class LearnedRoundingConverter:
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         optimizer = AdamW([delta], lr=lr)
 
         # Setup LR scheduler based on schedule type
@@ -1449,7 +1447,6 @@ class LearnedRoundingConverter:
         elif schedule_name == "plateau":
             scheduler = ReduceLROnPlateau(
                 optimizer,
-                mode="min",
                 factor=self.lr_factor,
                 patience=self.lr_patience,
                 cooldown=self.lr_cooldown,
@@ -1548,7 +1545,7 @@ class LearnedRoundingConverter:
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
+        lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         optimizer = RAdam([delta], lr=lr)
 
         # Setup LR scheduler based on schedule type
@@ -1559,7 +1556,6 @@ class LearnedRoundingConverter:
         elif schedule_name == "plateau":
             scheduler = ReduceLROnPlateau(
                 optimizer,
-                mode="min",
                 factor=self.lr_factor,
                 patience=self.lr_patience,
                 cooldown=self.lr_cooldown,
