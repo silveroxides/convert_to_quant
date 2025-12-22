@@ -1,5 +1,34 @@
 # Development Log
 
+## 2025-12-22: Metadata Saving Option for Safetensors
+
+### Session Summary
+Added `--save-quant-metadata` CLI argument to save layer quantization configuration as a JSON string in the safetensors header under the `_quantization_metadata` key.
+
+---
+
+### New CLI Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--save-quant-metadata` | Save quantization metadata in safetensors header (key: `_quantization_metadata`) |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added argument, `quant_metadata_layers` collection, and metadata saving logic |
+
+### Usage
+
+```bash
+# Quantize and save metadata in header
+convert_to_quant -i model.safetensors --save-quant-metadata
+```
+
+---
+
+
 ## 2025-12-19: ComfyQuant Layer Config Editor
 
 ### Session Summary
