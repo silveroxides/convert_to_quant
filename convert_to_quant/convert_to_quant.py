@@ -1915,7 +1915,7 @@ class LearnedRoundingConverter:
                     if current_scaling_mode == "block":
                         dequant_scale = compact_scale.reciprocal()
                     else:
-                        dequant_scale = compact_scale.reciprocal().reshape(1)
+                        dequant_scale = compact_scale.reciprocal()
                     dequant_scale = dequant_scale.to(
                         device=self.device, dtype=SCALE_DTYPE
                     )
@@ -1976,7 +1976,7 @@ class LearnedRoundingConverter:
                 if current_scaling_mode == "block":
                     dequant_scale = compact_scale.reciprocal()
                 else:
-                    dequant_scale = compact_scale.reciprocal().reshape(1)
+                    dequant_scale = compact_scale.reciprocal()
                 dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
             dequantized_weight_tensor = (
                 W_f8.to(self.device, dtype=COMPUTE_DTYPE) / scale
@@ -2610,11 +2610,10 @@ def convert_to_fp8_scaled(
                     if layer_full_precision_mm
                     else None,
                 )
-                # Add input_scale for INT8 if requested
-                if include_input_scale:
-                    new_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        [1.0], dtype=torch.float32, device="cpu"
-                    )
+                # Always add input_scale for INT8 (matches reference behavior)
+                new_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                    1.0, dtype=torch.float32, device="cpu"
+                )
             else:
                 # FP8 format - determine format based on scaling_mode or layer_config
                 new_tensors[f"{base_name}.weight_scale"] = (
@@ -2657,7 +2656,7 @@ def convert_to_fp8_scaled(
                         )
                     else:
                         new_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                            [1.0], dtype=torch.float32, device="cpu"
+                            1.0, dtype=torch.float32, device="cpu"
                         )
             new_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor.to(
                 device="cpu"
@@ -2962,9 +2961,9 @@ def convert_fp8_scaled_to_comfy_quant(
             if scale_input is not None:
                 output_tensors[f"{base_name}.input_scale"] = scale_input
             elif include_input_scale:
-                # No scale_input but flag is set - add default input_scale
+                # No scale_input but flag is set - add default input_scale (scalar)
                 output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                    [1.0], dtype=torch.float32
+                    1.0, dtype=torch.float32
                 )
 
             # Detect format and block_size from scale_weight tensor shape
@@ -3263,8 +3262,8 @@ def add_legacy_input_scale(
             skipped_non_fp8 += 1
             continue
 
-        # Add .scale_input = [1.0] fp32
-        output_tensors[scale_input_key] = torch.tensor([1.0], dtype=torch.float32)
+        # Add .scale_input = 1.0 fp32 (scalar format)
+        output_tensors[scale_input_key] = torch.tensor(1.0, dtype=torch.float32)
         added_scale_input += 1
 
     # Summary
@@ -3411,9 +3410,9 @@ def convert_int8_to_comfy_quant(
                 if input_scale is not None:
                     output_tensors[f"{base_name}.input_scale"] = input_scale
                 elif include_input_scale:
-                    # No input_scale but flag is set - add default (fp32, 1.0)
+                    # No input_scale but flag is set - add default (fp32, 1.0 scalar)
                     output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        [1.0], dtype=torch.float32
+                        1.0, dtype=torch.float32
                     )
                 # Detect INT8 format and block_size from weight_scale shape
                 # Scale shape conventions from quant_ops.py layouts:
@@ -3478,9 +3477,9 @@ def convert_int8_to_comfy_quant(
                 if scale_input is not None:
                     output_tensors[f"{base_name}.input_scale"] = scale_input
                 elif include_input_scale:
-                    # No scale_input but flag is set - add default input_scale (fp32, 1.0)
+                    # No scale_input but flag is set - add default input_scale (fp32, 1.0 scalar)
                     output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        [1.0], dtype=torch.float32
+                        1.0, dtype=torch.float32
                     )
 
                 # Detect INT8 format and block_size from scale_weight shape

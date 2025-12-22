@@ -1,11 +1,37 @@
 # Development Log
 
-## 2025-12-22: Metadata Saving Option for Safetensors
+## 2025-12-22: INT8 input_scale Fix & Scalar Format Consistency
 
 ### Session Summary
-Added `--save-quant-metadata` CLI argument to save layer quantization configuration as a JSON string in the safetensors header under the `_quantization_metadata` key.
+Fixed `convert_to_quant.py` to always add `.input_scale` for INT8 blockwise (matching reference), and changed all single-value input_scale tensors from 1-element array `[1.0]` to scalar `1.0`.
 
 ---
+
+### Changes
+
+| Location | Before | After |
+|----------|--------|-------|
+| INT8 comfy_quant | Optional (`--input_scale` flag) | Always adds `.input_scale` |
+| Tensor format | `torch.tensor([1.0])` (shape `(1,)`) | `torch.tensor(1.0)` (scalar) |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | 6 locations fixed: lines 2612-2616, 2658-2660, 2962-2967, 3265-3266, 3413-3417, 3480-3484 |
+
+### Verification
+
+Cross-compared with reference files in `int8_blockwise_references/`:
+- Triton kernels: ✅ IDENTICAL
+- BlockWiseINT8Layout: ✅ IDENTICAL
+- Runtime dispatch: ✅ Correct
+- Converter layer saving: ✅ Fixed (was 2 discrepancies)
+
+---
+
+
+## 2025-12-22: Metadata Saving Option for Safetensors
 
 ### New CLI Arguments
 
