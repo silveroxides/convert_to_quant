@@ -832,16 +832,22 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
+        """FP8 optimization using AdamW optimizer with manual LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
-        optimizer = AdamW([delta], lr=lr)
+        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        optimizer = AdamW([delta], lr=curr_lr)
+
+        schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing (AdamW)",
+            desc=f"    Optimizing (AdamW-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -858,15 +864,53 @@ class LearnedRoundingConverter:
             optimizer.step()
 
             current_loss_val = loss.item()
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # Manual LR update based on schedule (matching _optimize_original)
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= self.lr_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
+                        cooldown_counter = self.lr_cooldown
+                    plateau_counter = 0
+            # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -879,16 +923,22 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
+        """FP8 optimization using RAdam optimizer with manual LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
-        optimizer = RAdam([delta], lr=lr)
+        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        optimizer = RAdam([delta], lr=curr_lr)
+
+        schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing (RAdam)",
+            desc=f"    Optimizing (RAdam-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -905,15 +955,53 @@ class LearnedRoundingConverter:
             optimizer.step()
 
             current_loss_val = loss.item()
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # Manual LR update based on schedule (matching _optimize_original)
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= self.lr_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
+                        cooldown_counter = self.lr_cooldown
+                    plateau_counter = 0
+            # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1336,21 +1424,26 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
-        """INT8 optimization using AdamW optimizer."""
+        """INT8 optimization using AdamW optimizer with manual LR scheduling."""
         M, N = W_float32.shape
         block_size = self.block_size
 
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
-        optimizer = AdamW([delta], lr=lr)
+        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        optimizer = AdamW([delta], lr=curr_lr)
+
+        schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing INT8 (AdamW)",
+            desc=f"    Optimizing INT8 (AdamW-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -1370,15 +1463,53 @@ class LearnedRoundingConverter:
             optimizer.step()
 
             current_loss_val = loss.item()
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # Manual LR update based on schedule (matching _optimize_int8_original)
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= self.lr_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
+                        cooldown_counter = self.lr_cooldown
+                    plateau_counter = 0
+            # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1400,21 +1531,26 @@ class LearnedRoundingConverter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
-        """INT8 optimization using RAdam optimizer."""
+        """INT8 optimization using RAdam optimizer with manual LR scheduling."""
         M, N = W_float32.shape
         block_size = self.block_size
 
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        lr = self.optimizer_kwargs.get("lr", 1e-2)
-        optimizer = RAdam([delta], lr=lr)
+        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        optimizer = RAdam([delta], lr=curr_lr)
+
+        schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
 
         pbar = tqdm(
             range(self.num_iter),
-            desc="    Optimizing INT8 (RAdam)",
+            desc=f"    Optimizing INT8 (RAdam-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -1434,15 +1570,53 @@ class LearnedRoundingConverter:
             optimizer.step()
 
             current_loss_val = loss.item()
+
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # Manual LR update based on schedule (matching _optimize_int8_original)
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= self.lr_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
+                        cooldown_counter = self.lr_cooldown
+                    plateau_counter = 0
+            # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
 
             pbar.set_postfix(
-                {"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}"}
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
             )
-            if best_loss < 1e-8:
-                print("      - Loss is negligible. Stopping early.")
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1741,7 +1915,7 @@ class LearnedRoundingConverter:
                     if current_scaling_mode == "block":
                         dequant_scale = compact_scale.reciprocal()
                     else:
-                        dequant_scale = compact_scale.reciprocal().reshape(1)
+                        dequant_scale = compact_scale.reciprocal()
                     dequant_scale = dequant_scale.to(
                         device=self.device, dtype=SCALE_DTYPE
                     )
@@ -1802,7 +1976,7 @@ class LearnedRoundingConverter:
                 if current_scaling_mode == "block":
                     dequant_scale = compact_scale.reciprocal()
                 else:
-                    dequant_scale = compact_scale.reciprocal().reshape(1)
+                    dequant_scale = compact_scale.reciprocal()
                 dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
             dequantized_weight_tensor = (
                 W_f8.to(self.device, dtype=COMPUTE_DTYPE) / scale
@@ -2436,11 +2610,10 @@ def convert_to_fp8_scaled(
                     if layer_full_precision_mm
                     else None,
                 )
-                # Add input_scale for INT8 if requested
-                if include_input_scale:
-                    new_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        [1.0], dtype=torch.float32, device="cpu"
-                    )
+                # Always add input_scale for INT8 (matches reference behavior)
+                new_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                    1.0, dtype=torch.float32, device="cpu"
+                )
             else:
                 # FP8 format - determine format based on scaling_mode or layer_config
                 new_tensors[f"{base_name}.weight_scale"] = (
@@ -2483,7 +2656,7 @@ def convert_to_fp8_scaled(
                         )
                     else:
                         new_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                            [1.0], dtype=torch.float32, device="cpu"
+                            1.0, dtype=torch.float32, device="cpu"
                         )
             new_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor.to(
                 device="cpu"
@@ -2788,9 +2961,9 @@ def convert_fp8_scaled_to_comfy_quant(
             if scale_input is not None:
                 output_tensors[f"{base_name}.input_scale"] = scale_input
             elif include_input_scale:
-                # No scale_input but flag is set - add default input_scale
+                # No scale_input but flag is set - add default input_scale (scalar)
                 output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                    [1.0], dtype=torch.float32
+                    1.0, dtype=torch.float32
                 )
 
             # Detect format and block_size from scale_weight tensor shape
@@ -3089,8 +3262,8 @@ def add_legacy_input_scale(
             skipped_non_fp8 += 1
             continue
 
-        # Add .scale_input = [1.0] fp32
-        output_tensors[scale_input_key] = torch.tensor([1.0], dtype=torch.float32)
+        # Add .scale_input = 1.0 fp32 (scalar format)
+        output_tensors[scale_input_key] = torch.tensor(1.0, dtype=torch.float32)
         added_scale_input += 1
 
     # Summary
@@ -3237,9 +3410,9 @@ def convert_int8_to_comfy_quant(
                 if input_scale is not None:
                     output_tensors[f"{base_name}.input_scale"] = input_scale
                 elif include_input_scale:
-                    # No input_scale but flag is set - add default (fp32, 1.0)
+                    # No input_scale but flag is set - add default (fp32, 1.0 scalar)
                     output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        [1.0], dtype=torch.float32
+                        1.0, dtype=torch.float32
                     )
                 # Detect INT8 format and block_size from weight_scale shape
                 # Scale shape conventions from quant_ops.py layouts:
@@ -3304,9 +3477,9 @@ def convert_int8_to_comfy_quant(
                 if scale_input is not None:
                     output_tensors[f"{base_name}.input_scale"] = scale_input
                 elif include_input_scale:
-                    # No scale_input but flag is set - add default input_scale (fp32, 1.0)
+                    # No scale_input but flag is set - add default input_scale (fp32, 1.0 scalar)
                     output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        [1.0], dtype=torch.float32
+                        1.0, dtype=torch.float32
                     )
 
                 # Detect INT8 format and block_size from scale_weight shape
