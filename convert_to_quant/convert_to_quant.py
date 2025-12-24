@@ -547,22 +547,25 @@ def edit_comfy_quant(
     layer_filter: Optional[str] = None,
 ):
     """
-    Edit comfy_quant layer configurations in a model.
+    Edit comfy_quant layer configurations and _quantization_metadata in a model.
 
-    This loads a safetensors model and modifies the .comfy_quant metadata
-    tensors by adding or removing keys. Useful for batch editing layer
+    This loads a safetensors model and modifies both:
+    1. The .comfy_quant metadata tensors (per-layer JSON configs)
+    2. The _quantization_metadata header entry (aggregated layer configs)
+
+    Both are edited in sync when present. Useful for batch editing layer
     configurations without re-quantizing.
 
     Args:
         input_file: Path to input safetensors file
         output_file: Path to output safetensors file
-        remove_keys: List of key names to remove from .comfy_quant configs
+        remove_keys: List of key names to remove from configs
         add_keys_str: Python-like string of key:value pairs to add
         layer_filter: Regex pattern to filter which layers to edit (None = all)
     """
     from safetensors import safe_open
 
-    print("ComfyQuant Layer Editor")
+    print("ComfyQuant Layer & Metadata Editor")
     print("=" * 60)
     print(f"Input:  {input_file}")
     print(f"Output: {output_file}")
@@ -576,8 +579,6 @@ def edit_comfy_quant(
         print(f"Keys to add: {add_keys}")
     if layer_filter:
         print(f"Layer filter: {layer_filter}")
-        import re
-
         try:
             layer_regex = re.compile(layer_filter)
         except re.error as e:
@@ -588,19 +589,40 @@ def edit_comfy_quant(
 
     print("-" * 60)
 
-    # Load all tensors
+    # Load all tensors and existing header metadata
     tensors = {}
+    existing_metadata: Optional[Dict[str, str]] = None
     with safe_open(input_file, framework="pt", device="cpu") as f:
+        existing_metadata = f.metadata()
         for key in f.keys():
             tensors[key] = f.get_tensor(key)
 
-    # Track statistics
+    # Parse _quantization_metadata from header if present
+    quant_metadata: Optional[Dict[str, Any]] = None
+    quant_metadata_modified = False
+    if existing_metadata and "_quantization_metadata" in existing_metadata:
+        try:
+            quant_metadata = json.loads(existing_metadata["_quantization_metadata"])
+            print(
+                f"Found _quantization_metadata header with "
+                f"{len(quant_metadata.get('layers', {}))} layer entries"
+            )
+        except json.JSONDecodeError as e:
+            print(f"  WARNING: Failed to parse _quantization_metadata: {e}")
+            quant_metadata = None
+
+    # Track statistics for .comfy_quant tensors
     edited_count = 0
     skipped_filter = 0
     skipped_no_change = 0
     total_comfy_quant = 0
-    keys_removed = {}
-    keys_added = {}
+    keys_removed: Dict[str, int] = {}
+    keys_added: Dict[str, int] = {}
+
+    # Track statistics for metadata entries
+    metadata_edited_count = 0
+    metadata_keys_removed: Dict[str, int] = {}
+    metadata_keys_added: Dict[str, int] = {}
 
     # Process .comfy_quant tensors
     for key in list(tensors.keys()):
@@ -615,7 +637,7 @@ def edit_comfy_quant(
             skipped_filter += 1
             continue
 
-        # Decode existing config
+        # Decode existing config from tensor
         try:
             config = tensor_to_dict(tensors[key])
         except Exception as e:
@@ -624,33 +646,64 @@ def edit_comfy_quant(
 
         original_config = config.copy()
 
-        # Remove keys
+        # Remove keys from tensor config
         if remove_keys:
             for k in remove_keys:
                 if k in config:
                     del config[k]
                     keys_removed[k] = keys_removed.get(k, 0) + 1
 
-        # Add keys
+        # Add keys to tensor config
         if add_keys:
             for k, v in add_keys.items():
                 if k not in config or config[k] != v:
                     config[k] = v
                     keys_added[k] = keys_added.get(k, 0) + 1
 
-        # Check if changed
-        if config == original_config:
+        # Check if tensor config changed
+        tensor_changed = config != original_config
+
+        # Also edit corresponding metadata entry if present
+        if quant_metadata and "layers" in quant_metadata:
+            meta_layers = quant_metadata["layers"]
+            if base_name in meta_layers:
+                meta_entry = meta_layers[base_name]
+                original_meta = meta_entry.copy()
+
+                # Remove keys from metadata entry
+                if remove_keys:
+                    for k in remove_keys:
+                        if k in meta_entry:
+                            del meta_entry[k]
+                            metadata_keys_removed[k] = (
+                                metadata_keys_removed.get(k, 0) + 1
+                            )
+
+                # Add keys to metadata entry
+                if add_keys:
+                    for k, v in add_keys.items():
+                        if k not in meta_entry or meta_entry[k] != v:
+                            meta_entry[k] = v
+                            metadata_keys_added[k] = metadata_keys_added.get(k, 0) + 1
+
+                # Track if metadata changed
+                if meta_entry != original_meta:
+                    quant_metadata_modified = True
+                    metadata_edited_count += 1
+
+        # If tensor config didn't change, skip re-encoding
+        if not tensor_changed:
             skipped_no_change += 1
             continue
 
-        # Re-encode and store
+        # Re-encode and store updated tensor
         tensors[key] = dict_to_tensor(config)
         edited_count += 1
 
-    # Summary
+    # Summary for .comfy_quant tensors
     print("-" * 60)
-    print("Edit Summary:")
-    print(f"  Total .comfy_quant tensors: {total_comfy_quant}")
+    print("Edit Summary (.comfy_quant tensors):")
+    print(f"  Total tensors:              {total_comfy_quant}")
     print(f"  Edited:                     {edited_count}")
     if skipped_filter > 0:
         print(f"  Skipped (filter):           {skipped_filter}")
@@ -664,7 +717,43 @@ def edit_comfy_quant(
         print("  Keys added:")
         for k, count in sorted(keys_added.items()):
             print(f"    {k}: {count} layers")
+
+    # Summary for _quantization_metadata header
+    if quant_metadata:
+        print("-" * 60)
+        print("Edit Summary (_quantization_metadata header):")
+        total_meta_layers = len(quant_metadata.get("layers", {}))
+        print(f"  Total layer entries:        {total_meta_layers}")
+        print(f"  Edited:                     {metadata_edited_count}")
+        if metadata_keys_removed:
+            print("  Keys removed:")
+            for k, count in sorted(metadata_keys_removed.items()):
+                print(f"    {k}: {count} entries")
+        if metadata_keys_added:
+            print("  Keys added:")
+            for k, count in sorted(metadata_keys_added.items()):
+                print(f"    {k}: {count} entries")
+    else:
+        print("-" * 60)
+        print("Note: No _quantization_metadata header found in input file")
+
     print("-" * 60)
+
+    # Prepare save kwargs with updated metadata
+    save_kwargs: Dict[str, Any] = {}
+    if quant_metadata and quant_metadata_modified:
+        # Preserve any other existing metadata keys and update quant metadata
+        output_metadata: Dict[str, str] = {}
+        if existing_metadata:
+            # Copy all existing metadata
+            output_metadata = dict(existing_metadata)
+        # Update the quantization metadata with our edits
+        output_metadata["_quantization_metadata"] = json.dumps(quant_metadata)
+        save_kwargs["metadata"] = output_metadata
+        print("  Updated _quantization_metadata in output file")
+    elif existing_metadata:
+        # No quant_metadata changes but preserve existing metadata as-is
+        save_kwargs["metadata"] = existing_metadata
 
     # Save output
     print(f"\nSaving to {output_file}...")
@@ -673,7 +762,7 @@ def edit_comfy_quant(
             os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
             exist_ok=True,
         )
-        save_file(tensors, output_file)
+        save_file(tensors, output_file, **save_kwargs)
         print("Edit complete!")
     except Exception as e:
         print(f"FATAL: Error saving file '{output_file}': {e}")
@@ -4280,14 +4369,14 @@ def main():
         "--edit-quant",
         action="store_true",
         dest="edit_quant",
-        help="Edit .comfy_quant layer configurations (add/remove keys without re-quantizing)",
+        help="Edit .comfy_quant tensors and _quantization_metadata header (add/remove keys)",
     )
     parser.add_argument(
         "--remove-keys",
         type=str,
         default=None,
         dest="remove_keys",
-        help="Comma-separated keys to remove from .comfy_quant (e.g., 'full_precision_matrix_mult,group_size')",
+        help="Comma-separated keys to remove (e.g., 'full_precision_matrix_mult,group_size')",
     )
     parser.add_argument(
         "--add-keys",
@@ -4301,7 +4390,7 @@ def main():
         type=str,
         default=None,
         dest="quant_filter",
-        help="Regex pattern to filter which layers to edit (default: all .comfy_quant layers)",
+        help="Regex pattern to filter which layers to edit (default: all layers)",
     )
 
     # Per-layer quantization config (JSON file)

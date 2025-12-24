@@ -1,5 +1,38 @@
 # Development Log
 
+## 2025-12-24: Edit-Quant Metadata Sync
+
+### Session Summary
+Extended `--edit-quant` to also modify `_quantization_metadata` header entries in sync with `.comfy_quant` tensor edits. Previously only tensor configs were updated.
+
+---
+
+### Changes
+
+| Location | Before | After |
+|----------|--------|-------|
+| `edit_comfy_quant()` | Only edited `.comfy_quant` tensors | Edits both tensors AND `_quantization_metadata` header |
+| Header preservation | Did not read/write header metadata | Preserves all existing metadata keys |
+| Summary output | Single summary section | Separate reports for tensors and metadata |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Extended `edit_comfy_quant()` (lines 542-720) with metadata parsing, sync editing, and preservation; updated CLI help text |
+
+### Usage
+
+```bash
+# Edit a model with both .comfy_quant tensors and _quantization_metadata header
+convert_to_quant -i model.safetensors --edit-quant --add-keys "'full_precision_matrix_mult': true"
+
+# Both formats are now updated in sync
+```
+
+---
+
+
 ## 2025-12-22: INT8 input_scale Fix & Scalar Format Consistency
 
 ### Session Summary
