@@ -21,6 +21,7 @@ AVOID_KEY_NAMES = [
     "norm",
     "bias",
     "embed_tokens",
+    "lm_head",
     "shared",
     "patch_embedding",
     "audio_model.patch_embedding",
