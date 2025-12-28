@@ -986,7 +986,7 @@ class LearnedRoundingConverter:
         if self.optimizer_choice == "original":
             print(f"  - LR schedule: {self.lr_schedule}")
         print(f"  - Scaling mode: {self.scaling_mode}")
-        if self.scaling_mode in ("block", "block2d"):
+        if self.scaling_mode in ("block", "block2d", "block3d"):
             print(f"    - Block size: {self.block_size}")
 
     def _optimize_adamw(
@@ -1399,11 +1399,11 @@ class LearnedRoundingConverter:
                         out_features, device=self.device, dtype=SCALE_DTYPE
                     )
                 elif (
-                    self.scaling_mode == "block2d"
+                    self.scaling_mode in ("block", "block2d")
                     and out_features % self.block_size == 0
                     and in_features % self.block_size == 0
                 ):
-                    # 2D block-wise: (M//bs, N//bs)
+                    # 2D block-wise: (M//bs, N//bs) - 'block' is primary, 'block2d' deprecated alias
                     num_blocks_m = out_features // self.block_size
                     num_blocks_n = in_features // self.block_size
                     dequant_scale = torch.ones(
@@ -1413,11 +1413,11 @@ class LearnedRoundingConverter:
                         dtype=SCALE_DTYPE,
                     )
                 elif (
-                    self.scaling_mode == "block"
+                    self.scaling_mode == "block3d"
                     and in_features > 0
                     and in_features % self.block_size == 0
                 ):
-                    # Per-row-group: (out_features, num_blocks, 1)
+                    # Per-row-group 3D: (out_features, num_blocks, 1)
                     num_blocks = in_features // self.block_size
                     dequant_scale = torch.ones(
                         out_features,
@@ -1441,10 +1441,14 @@ class LearnedRoundingConverter:
         # FP8 quantization path - route based on scaling_mode
         if self.scaling_mode == "row":
             return self._convert_fp8_rowwise(W_float32)
-        elif self.scaling_mode == "block2d":
+        elif self.scaling_mode in ("block", "block2d"):
+            # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
             return self._convert_fp8_block2d(W_float32)
+        elif self.scaling_mode == "block3d":
+            # 3D per-row-group mode (legacy)
+            return self._convert_fp8(W_float32)
         else:
-            # 'tensor' or 'block' (original per-row-group) mode
+            # 'tensor' mode
             return self._convert_fp8(W_float32)
 
     def _convert_int8(
@@ -2795,11 +2799,16 @@ def convert_to_fp8_scaled(
                 elif converter.scaling_mode == "row":
                     fp8_format = "float8_e4m3fn_rowwise"
                     fp8_block_size = None
-                elif converter.scaling_mode == "block2d":
+                elif converter.scaling_mode in ("block", "block2d"):
+                    # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
                     fp8_format = "float8_e4m3fn_blockwise"
                     fp8_block_size = layer_block_size
+                elif converter.scaling_mode == "block3d":
+                    # 3D per-row-group uses base format (not recommended)
+                    fp8_format = "float8_e4m3fn"
+                    fp8_block_size = None
                 else:
-                    # 'tensor' or 'block' (original per-row-group) use base format
+                    # 'tensor' mode
                     fp8_format = "float8_e4m3fn"
                     fp8_block_size = None
 
@@ -4314,8 +4323,8 @@ def main():
         type=str,
         default=None,
         dest="custom_scaling_mode",
-        choices=["tensor", "row", "block", "block2d", "block3d"],
-        help="FP8 scaling mode for custom-type layers (default: inherit --scaling_mode)",
+        choices=["tensor", "row", "block", "block3d", "block2d"],
+        help="FP8 scaling mode for custom-type layers (default: inherit --scaling_mode). 'block2d' is deprecated alias for 'block'.",
     )
     parser.add_argument(
         "--custom-simple",
@@ -4428,8 +4437,8 @@ def main():
         "--scaling_mode",
         type=str,
         default="tensor",
-        choices=["tensor", "row", "block", "block2d", "block3d"],
-        help="FP8 scaling mode: 'tensor' (1 global scale), 'row' (per-row scale), 'block'/'block3d' (per-row-group 3D), 'block2d' (2D tiles like INT8).",
+        choices=["tensor", "row", "block", "block3d", "block2d"],
+        help="FP8 scaling mode: 'tensor' (1 global scale), 'row' (per-row scale), 'block' (2D tiles like INT8), 'block3d' (per-row-group 3D, legacy). 'block2d' is deprecated alias for 'block'.",
     )
 
     parser.add_argument(
