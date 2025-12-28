@@ -176,9 +176,13 @@ VALID_QUANT_FORMATS = {
     "int8_blockwise",
 }
 
+# Global config: normalize 1-element scale arrays to scalars (set from CLI)
+NORMALIZE_SCALES_ENABLED = True
+
 
 def normalize_tensorwise_scales(
     tensors: Dict[str, torch.Tensor],
+    enabled: bool = True,
 ) -> Tuple[Dict[str, torch.Tensor], int]:
     """
     Normalize 1-element scale tensors to scalars in-place.
@@ -188,10 +192,14 @@ def normalize_tensorwise_scales(
 
     Args:
         tensors: Dictionary of tensors to normalize (modified in-place)
+        enabled: If False, skip normalization and return immediately
 
     Returns:
         Tuple of (tensors dict, count of normalized tensors)
     """
+    if not enabled:
+        return tensors, 0
+
     normalized_count = 0
     scale_suffixes = (".input_scale", ".weight_scale", ".scale_input", ".scale_weight")
 
@@ -204,6 +212,7 @@ def normalize_tensorwise_scales(
                 normalized_count += 1
 
     return tensors, normalized_count
+
 
 
 
@@ -824,7 +833,7 @@ def edit_comfy_quant(
             exist_ok=True,
         )
         # Normalize any 1-element scale tensors to scalars
-        tensors, normalized_count = normalize_tensorwise_scales(tensors)
+        tensors, normalized_count = normalize_tensorwise_scales(tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
             print(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(tensors, output_file, **save_kwargs)
@@ -2969,7 +2978,7 @@ def convert_to_fp8_scaled(
             )
 
         # Normalize any 1-element scale tensors to scalars
-        new_tensors, normalized_count = normalize_tensorwise_scales(new_tensors)
+        new_tensors, normalized_count = normalize_tensorwise_scales(new_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
             print(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(new_tensors, output_file, **save_kwargs)
@@ -3337,7 +3346,7 @@ def convert_fp8_scaled_to_comfy_quant(
             )
 
         # Normalize any 1-element scale tensors to scalars
-        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors)
+        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
             print(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(output_tensors, output_file, **save_kwargs)
@@ -3454,7 +3463,7 @@ def add_legacy_input_scale(
             exist_ok=True,
         )
         # Normalize any 1-element scale tensors to scalars
-        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors)
+        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
             print(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(output_tensors, output_file)
@@ -3594,7 +3603,7 @@ def cleanup_fp8_scaled(
             exist_ok=True,
         )
         # Normalize any 1-element scale tensors to scalars
-        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors)
+        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
             print(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(output_tensors, output_file)
@@ -3901,7 +3910,7 @@ def convert_int8_to_comfy_quant(
             exist_ok=True,
         )
         # Normalize any 1-element scale tensors to scalars
-        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors)
+        output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
             print(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(output_tensors, output_file)
@@ -4615,6 +4624,15 @@ def main():
         help="Save quantization metadata in safetensors header (under _quantization_metadata key)",
     )
 
+    # Scale normalization toggle (for testing)
+    parser.add_argument(
+        "--no-normalize-scales",
+        action="store_true",
+        dest="no_normalize_scales",
+        help="Disable normalization of 1-element scale arrays to scalars (for testing/compatibility)",
+    )
+
+
     # ComfyQuant layer config editing mode
     parser.add_argument(
         "--edit-quant",
@@ -4681,6 +4699,10 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     )
 
     args = parser.parse_args()
+
+    # Set global scale normalization flag from CLI
+    global NORMALIZE_SCALES_ENABLED
+    NORMALIZE_SCALES_ENABLED = not args.no_normalize_scales
 
     # Handle dry-run create-template mode (separate workflow)
     if args.dry_run == "create-template":

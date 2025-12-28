@@ -13,6 +13,8 @@ Added `--cleanup-fp8-scaled` mode to clean up legacy fp8_scaled models without c
 |----------|-------------|
 | `--cleanup-fp8-scaled` | Enable cleanup mode |
 | `--scaled-fp8-marker {0,2}` | Set `scaled_fp8` to `empty((0))` or `empty((2))` |
+| `--no-normalize-scales` | Disable normalization of 1-element scale arrays to scalars (testing) |
+
 
 ### Features
 
