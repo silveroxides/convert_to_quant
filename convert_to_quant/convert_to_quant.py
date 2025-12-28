@@ -50,6 +50,7 @@ AVOID_KEY_NAMES = [
     "post_attention_layernorm",
 ]
 T5XXL_REMOVE_KEY_NAMES = ["decoder", "lm_head"]
+VISUAL_AVOID_KEY_NAMES = ["mlp.down_proj", "mlp.up_proj", "mlp.gate_proj"]
 QWEN_AVOID_KEY_NAMES = ["norm_added_k", "norm_added_q", "norm_k", "norm_q", "txt_norm"]
 HUNYUAN_AVOID_KEY_NAMES = [
     "layernorm",
@@ -2365,6 +2366,7 @@ def convert_to_fp8_scaled(
     comfy_quant: bool,
     t5xxl: bool,
     mistral: bool,
+    visual: bool,
     flux2: bool,
     distillation_large: bool,
     distillation_small: bool,
@@ -2601,6 +2603,8 @@ def convert_to_fp8_scaled(
         if not use_custom and not use_layer_config:
             if (t5xxl or mistral) and any(n in key for n in AVOID_KEY_NAMES):
                 exclusion_reason = "T5XXL/Mistral exclusion"
+            elif visual and any(n in key for n in VISUAL_AVOID_KEY_NAMES):
+                exclusion_reason = "Visual exclusion"
             elif radiance and any(n in key for n in RADIANCE_LAYER_KEYNAMES):
                 exclusion_reason = "Radiance exclusion"
             elif wan and any(n in key for n in AVOID_KEY_NAMES):
@@ -2801,8 +2805,8 @@ def convert_to_fp8_scaled(
                     else None,
                 )
                 # Add input_scale for FP8: use weight_scale for t5xxl/mistral, 1.0 otherwise
-                if include_input_scale or t5xxl or mistral:
-                    if t5xxl or mistral:
+                if include_input_scale or t5xxl or mistral or visual:
+                    if t5xxl or mistral or visual:
                         new_tensors[f"{base_name}.input_scale"] = (
                             dequant_s.to(device="cpu", dtype=SCALE_DTYPE)
                             .detach()
@@ -2837,8 +2841,8 @@ def convert_to_fp8_scaled(
                 dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
             )
             # Add scale_input for non-comfy mode: use dequant_s for t5xxl/mistral, ones for others
-            if include_input_scale or t5xxl or mistral:
-                if t5xxl or mistral:
+            if include_input_scale or t5xxl or mistral or visual:
+                if t5xxl or mistral or visual:
                     new_tensors[f"{base_name}.scale_input"] = (
                         dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                     )
@@ -2903,7 +2907,7 @@ def convert_to_fp8_scaled(
                             torch.cuda.empty_cache()
 
         # T5XXL/Mistral fallback: ensure input scale exists with correct key format
-        if t5xxl or mistral:
+        if t5xxl or mistral or visual:
             if comfy_quant and f"{base_name}.input_scale" not in new_tensors:
                 new_tensors[f"{base_name}.input_scale"] = (
                     dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
@@ -2945,7 +2949,7 @@ def convert_to_fp8_scaled(
     ):
         new_tensors["scaled_fp8"] = (
             torch.empty((0), dtype=TARGET_FP8_DTYPE)
-            if (t5xxl or mistral or include_input_scale)
+            if (t5xxl or mistral or visual or include_input_scale)
             else torch.empty((2), dtype=TARGET_FP8_DTYPE)
         )
 
@@ -3790,6 +3794,7 @@ EXPERIMENTAL_ARGS = {
 FILTER_ARGS = {
     "t5xxl",
     "mistral",
+    "visual",
     "flux2",
     "distillation_large",
     "distillation_small",
@@ -3959,7 +3964,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Text Encoders:")
         print("-" * 40)
 
-        text_args = ["t5xxl", "mistral"]
+        text_args = ["t5xxl", "mistral", "visual"]
         for action in self._all_actions:
             if self._get_dest_name(action) in text_args:
                 line = self._format_action_help(action)
@@ -4218,6 +4223,11 @@ def main():
         "--mistral",
         action="store_true",
         help="Apply exclusions for Mistral Text Encoder models.",
+    )
+    parser.add_argument(
+        "--visual",
+        action="store_true",
+        help="Apply exclusions for Visual Text Encoder models.",
     )
     parser.add_argument(
         "--flux2", action="store_true", help="Apply exclusions for Flux2 models."
@@ -4695,6 +4705,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             [
                 "_t5" if args.t5xxl else "",
                 "_mistral" if args.mistral else "",
+                "_visual" if args.visual else "",
                 "_flux2" if args.flux2 else "",
                 "_nodist_l" if args.distillation_large else "",
                 "_nodist_s" if args.distillation_small else "",
@@ -4725,6 +4736,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         "comfy_quant",
         "t5xxl",
         "mistral",
+        "visual",
         "flux2",
         "distillation_large",
         "distillation_small",
@@ -4769,6 +4781,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         args.comfy_quant,
         args.t5xxl,
         args.mistral,
+        args.visual,
         args.flux2,
         args.distillation_large,
         args.distillation_small,
