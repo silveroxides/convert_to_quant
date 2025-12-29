@@ -1,5 +1,70 @@
 # Development Log
 
+## 2025-12-29: BNB 4-bit (NF4/FP4) Quantization Support
+
+### Session Summary
+Added bitsandbytes-compatible 4-bit quantization (NF4/FP4) with extensive documentation for inference implementation.
+
+---
+
+### New CLI Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--bnb-4bit` | - | Enable 4-bit bitsandbytes format |
+| `--bnb-quant-type` | `nf4` | Quantization type: `nf4` or `fp4` |
+| `--bnb-blocksize` | `64` | Block size (64, 128, 256) |
+
+### Output Format
+
+For each quantized weight `layer.weight`:
+
+| Key | Shape | Dtype | Content |
+|-----|-------|-------|---------|
+| `layer.weight` | `[N*K/2, 1]` | uint8 | Packed 4-bit indices |
+| `layer.weight.absmax` | `[num_blocks]` | float32 | Per-block scales |
+| `layer.weight.quant_map` | `[16]` | float32 | NF4/FP4 codebook |
+| `layer.weight.quant_state.bitsandbytes__nf4` | `[~80]` | uint8 | JSON metadata |
+
+### New Functions
+
+| Function | Purpose |
+|----------|---------|
+| `quantize_bnb_4bit()` | Core quantization: blockwise absmax, bin lookup, nibble packing |
+| `dequantize_bnb_4bit()` | Reference dequantization for inference |
+| `create_bnb_quant_state_tensor()` | Creates JSON metadata tensor |
+| `convert_to_bnb_4bit()` | Main CLI entry point |
+| `get_bnb_4bit_quant_map()` | Returns NF4/FP4 codebook |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Added ~480 lines: NF4/FP4 constants, 5 new functions, CLI args, main handler |
+
+### Usage
+
+```bash
+# NF4 quantization (default, better quality)
+convert_to_quant -i model.safetensors --bnb-4bit -o model_nf4.safetensors
+
+# FP4 with custom blocksize
+convert_to_quant -i model.safetensors --bnb-4bit --bnb-quant-type fp4 --bnb-blocksize 128
+```
+
+### Verification
+
+```python
+# End-to-end test results
+test_weight = torch.randn(64, 128, dtype=torch.bfloat16)
+packed, absmax, quant_map = quantize_bnb_4bit(test_weight.cuda())
+# packed: [4096, 1] uint8, absmax: [128], quant_map: [16]
+dequantized = dequantize_bnb_4bit(packed, absmax, quant_map, quant_state_dict)
+# dequantized: [64, 128] bfloat16 ✅
+```
+
+---
+
 ## 2025-12-28: Legacy FP8 Cleanup Mode
 
 ### Session Summary

@@ -2370,6 +2370,482 @@ class LearnedRoundingConverter:
         return W_f8, dequant_scale, dequantized
 
 
+# --- BNB 4-bit Quantization (NF4/FP4) ---
+#
+# This section implements bitsandbytes-compatible 4-bit quantization for use with
+# ComfyUI's bitsandbytes integration. The format matches the safetensors structure
+# produced by bitsandbytes' Linear4bit.
+#
+# OUTPUT FORMAT:
+# For each quantized weight tensor `layer.weight`, the output contains:
+#   - `layer.weight`: Packed 4-bit weights, shape [N*K/2, 1], dtype uint8
+#   - `layer.weight.absmax`: Per-block absolute maximum, shape [num_blocks], dtype float32
+#   - `layer.weight.quant_map`: 16-element NF4/FP4 code table, dtype float32
+#   - `layer.weight.quant_state.bitsandbytes__nf4`: JSON metadata as uint8 tensor
+#
+# QUANT_STATE FORMAT (JSON inside uint8 tensor):
+# {
+#     "dtype": "bfloat16",       # Original weight dtype (for dequantization target)
+#     "shape": [3072, 3072],     # Original weight shape (before flattening/packing)
+#     "blocksize": 64,           # Number of elements per quantization block
+#     "quant_type": "nf4"        # Quantization type: "nf4" or "fp4"
+# }
+#
+# INFERENCE DEQUANTIZATION:
+# To dequantize during inference:
+#   1. Parse quant_state JSON from `.quant_state.bitsandbytes__nf4` tensor
+#   2. Unpack 4-bit indices: each uint8 byte contains 2 indices (low 4 bits, high 4 bits)
+#   3. Look up values in quant_map using indices
+#   4. Reshape to (num_blocks, blocksize)
+#   5. Multiply by absmax (per-block scaling)
+#   6. Reshape to original shape
+#   7. Cast to original dtype
+#
+
+# NF4 (Normal Float 4-bit) quantization table
+# These are 16 values derived from the normal distribution, normalized to [-1, 1].
+# Source: QLoRA paper (https://arxiv.org/abs/2305.14314)
+# The values are positioned such that each bin has equal area under N(0,1).
+NF4_QUANT_MAP = torch.tensor([
+    -1.0,
+    -0.6961928009986877,
+    -0.5250730514526367,
+    -0.39491748809814453,
+    -0.28444138169288635,
+    -0.18477343022823334,
+    -0.09105003625154495,
+    0.0,
+    0.07958029955625534,
+    0.16093020141124725,
+    0.24611230194568634,
+    0.33791524171829224,
+    0.44070982933044434,
+    0.5626170039176941,
+    0.7229568362236023,
+    1.0,
+], dtype=torch.float32)
+
+# FP4 (Floating Point 4-bit) quantization table
+# Normalized E2M1 floating point representation.
+# Values: 0, 0.0625, 2, 3, 4, 6, 8, 12 (and their negatives)
+FP4_QUANT_MAP = torch.tensor([
+    0.0,
+    0.00520833,  # 0.0625/12
+    0.16666667,  # 2/12
+    0.25,        # 3/12
+    0.33333333,  # 4/12
+    0.5,         # 6/12
+    0.66666667,  # 8/12
+    1.0,         # 12/12
+    -0.0,
+    -0.00520833,
+    -0.16666667,
+    -0.25,
+    -0.33333333,
+    -0.5,
+    -0.66666667,
+    -1.0,
+], dtype=torch.float32)
+
+# Valid 4-bit quantization types
+VALID_BNB_4BIT_TYPES = {"nf4", "fp4"}
+
+
+def get_bnb_4bit_quant_map(quant_type: str, device: str = "cpu") -> torch.Tensor:
+    """
+    Get the quantization map (code table) for a given 4-bit type.
+
+    The quant_map is used for both quantization (finding nearest bin) and
+    dequantization (looking up the float value from bin index).
+
+    Args:
+        quant_type: Either "nf4" (Normal Float 4) or "fp4" (Float Point 4)
+        device: Target device for the tensor
+
+    Returns:
+        torch.Tensor: 16-element float32 tensor with quantization levels
+
+    For INFERENCE:
+        Use quant_map[index] to get the normalized value for a 4-bit index.
+        Then multiply by absmax to get the actual value.
+    """
+    if quant_type == "nf4":
+        return NF4_QUANT_MAP.clone().to(device)
+    elif quant_type == "fp4":
+        return FP4_QUANT_MAP.clone().to(device)
+    else:
+        raise ValueError(f"Unknown quant_type: {quant_type}. Must be 'nf4' or 'fp4'")
+
+
+def quantize_bnb_4bit(
+    weight: torch.Tensor,
+    blocksize: int = 64,
+    quant_type: str = "nf4",
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Quantize a weight tensor to 4-bit using bitsandbytes-compatible NF4/FP4 format.
+
+    This function performs block-wise absmax quantization:
+    1. Reshape weight to blocks of size `blocksize`
+    2. Compute absmax per block
+    3. Normalize values to [-1, 1] using absmax
+    4. Find nearest bin in quantization table
+    5. Pack two 4-bit indices into one uint8 byte
+
+    Args:
+        weight: Input weight tensor, shape (out_features, in_features)
+        blocksize: Number of elements per quantization block (default 64)
+        quant_type: "nf4" (default) or "fp4"
+
+    Returns:
+        Tuple[packed_weights, absmax, quant_map]:
+            - packed_weights: uint8 tensor, shape [numel/2, 1] containing packed 4-bit indices
+            - absmax: float32 tensor, shape [num_blocks] with per-block max values
+            - quant_map: float32 tensor, shape [16] with quantization levels
+
+    PACKING FORMAT:
+        Each uint8 byte contains two 4-bit indices:
+        - Lower 4 bits (& 0x0F): First element's quantization index
+        - Upper 4 bits (>> 4):   Second element's quantization index
+
+    EXAMPLE (INFERENCE UNPACKING):
+        ```python
+        # Unpack to indices
+        low_indices = packed_weights & 0x0F
+        high_indices = packed_weights >> 4
+        indices = torch.stack([low_indices, high_indices], dim=-1).flatten()
+
+        # Look up values and scale
+        values = quant_map[indices].reshape(num_blocks, blocksize)
+        dequantized = values * absmax.unsqueeze(-1)
+        dequantized = dequantized.reshape(original_shape)
+        ```
+    """
+    device = weight.device
+    dtype = weight.dtype
+
+    # Get quantization map
+    quant_map = get_bnb_4bit_quant_map(quant_type, device)
+
+    # Store original shape for metadata
+    original_shape = weight.shape
+
+    # Flatten weight
+    weight_flat = weight.flatten().to(torch.float32)
+    n_elements = weight_flat.numel()
+
+    # Pad to multiple of blocksize if needed
+    remainder = n_elements % blocksize
+    if remainder != 0:
+        pad_size = blocksize - remainder
+        weight_flat = torch.cat([weight_flat, torch.zeros(pad_size, device=device, dtype=torch.float32)])
+        n_elements = weight_flat.numel()
+
+    # Reshape to blocks
+    n_blocks = n_elements // blocksize
+    weight_blocked = weight_flat.view(n_blocks, blocksize)
+
+    # Compute absmax per block
+    absmax = weight_blocked.abs().max(dim=1)[0].clamp(min=1e-12)
+
+    # Normalize to [-1, 1]
+    weight_normalized = weight_blocked / absmax.unsqueeze(1)
+
+    # Find nearest quantization bin
+    # For NF4, quant_map is sorted, so we can use searchsorted-like approach
+    # But for simplicity and accuracy, compute distances to all 16 bins
+    # Shape: (n_blocks, blocksize, 16)
+    distances = (weight_normalized.unsqueeze(-1) - quant_map.unsqueeze(0).unsqueeze(0)).abs()
+    indices = distances.argmin(dim=-1)  # Shape: (n_blocks, blocksize)
+
+    # Flatten indices for packing
+    indices_flat = indices.flatten().to(torch.uint8)
+
+    # Ensure even number of elements for packing
+    if indices_flat.numel() % 2 != 0:
+        indices_flat = torch.cat([indices_flat, torch.zeros(1, device=device, dtype=torch.uint8)])
+
+    # Pack two 4-bit values into one uint8
+    # First element in low bits, second in high bits
+    indices_pairs = indices_flat.view(-1, 2)
+    packed = (indices_pairs[:, 0] & 0x0F) | ((indices_pairs[:, 1] & 0x0F) << 4)
+
+    # Reshape to [N, 1] format expected by bitsandbytes
+    packed = packed.view(-1, 1)
+
+    return packed, absmax.to(torch.float32), quant_map
+
+
+def create_bnb_quant_state_tensor(
+    quant_type: str,
+    blocksize: int,
+    original_dtype: torch.dtype,
+    original_shape: Tuple[int, ...],
+) -> torch.Tensor:
+    """
+    Create the quant_state tensor containing JSON metadata for bitsandbytes 4-bit.
+
+    This tensor is stored as `weight.quant_state.bitsandbytes__nf4` (or __fp4).
+    It contains non-tensor quantization parameters needed for dequantization.
+
+    Args:
+        quant_type: "nf4" or "fp4"
+        blocksize: Block size used for quantization
+        original_dtype: Original weight dtype (e.g., torch.bfloat16)
+        original_shape: Original weight shape tuple
+
+    Returns:
+        torch.Tensor: uint8 tensor containing JSON-encoded metadata
+
+    JSON STRUCTURE:
+        {
+            "dtype": "bfloat16",        # String representation of original dtype
+            "shape": [3072, 3072],      # Original shape as list
+            "blocksize": 64,            # Block size integer
+            "quant_type": "nf4"         # Quantization type string
+        }
+
+    FOR INFERENCE:
+        ```python
+        # Decode quant_state
+        json_bytes = bytes(quant_state_tensor.cpu().numpy())
+        quant_state = json.loads(json_bytes.decode('utf-8'))
+
+        original_shape = tuple(quant_state['shape'])
+        blocksize = quant_state['blocksize']
+        target_dtype = getattr(torch, quant_state['dtype'])
+        ```
+    """
+    # Convert dtype to string (strip "torch." prefix)
+    dtype_str = str(original_dtype).replace("torch.", "")
+
+    # Build metadata dict
+    metadata = {
+        "dtype": dtype_str,
+        "shape": list(original_shape),
+        "blocksize": blocksize,
+        "quant_type": quant_type,
+    }
+
+    # Serialize to JSON and encode as uint8 tensor
+    return dict_to_tensor(metadata)
+
+
+def convert_to_bnb_4bit(
+    input_file: str,
+    output_file: str,
+    quant_type: str = "nf4",
+    blocksize: int = 64,
+    exclude_layers: Optional[List[str]] = None,
+):
+    """
+    Convert a model to bitsandbytes-compatible 4-bit (NF4/FP4) format.
+
+    This creates a safetensors file that can be loaded by ComfyUI's bitsandbytes
+    integration or any bitsandbytes-compatible loader.
+
+    Args:
+        input_file: Path to input safetensors file
+        output_file: Path to output safetensors file
+        quant_type: "nf4" (default, better quality) or "fp4"
+        blocksize: Block size for quantization (default 64). Valid: 64, 128, 256, 512, 1024
+        exclude_layers: List of layer name substrings to exclude from quantization
+
+    OUTPUT KEY STRUCTURE (for each weight):
+        - `{layer}.weight`: Packed 4-bit weights [numel/2, 1] uint8
+        - `{layer}.weight.absmax`: Per-block max values [num_blocks] float32
+        - `{layer}.weight.quant_map`: Code table [16] float32
+        - `{layer}.weight.quant_state.bitsandbytes__{quant_type}`: JSON metadata uint8
+
+    INFERENCE LOADING EXAMPLE:
+        ```python
+        from safetensors import safe_open
+        import torch
+        import json
+
+        with safe_open("model_bnb4bit.safetensors", framework="pt") as f:
+            for key in f.keys():
+                if key.endswith(".weight") and not any(x in key for x in [".absmax", ".quant_map", ".quant_state"]):
+                    base = key
+
+                    # Load quantized data
+                    packed = f.get_tensor(base)
+                    absmax = f.get_tensor(f"{base}.absmax")
+                    quant_map = f.get_tensor(f"{base}.quant_map")
+                    quant_state_tensor = f.get_tensor(f"{base}.quant_state.bitsandbytes__nf4")
+
+                    # Parse metadata
+                    quant_state = json.loads(bytes(quant_state_tensor.numpy()).decode('utf-8'))
+
+                    # Dequantize
+                    weight = dequantize_bnb_4bit(packed, absmax, quant_map, quant_state)
+        ```
+    """
+    if exclude_layers is None:
+        exclude_layers = AVOID_KEY_NAMES.copy()
+
+    print(f"BitsAndBytes 4-bit Quantization ({quant_type.upper()})")
+    print("=" * 60)
+    print(f"Input:     {input_file}")
+    print(f"Output:    {output_file}")
+    print(f"Type:      {quant_type}")
+    print(f"Blocksize: {blocksize}")
+    print("-" * 60)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Load input tensors
+    tensors: Dict[str, torch.Tensor] = {}
+    try:
+        with safe_open(input_file, framework="pt", device="cpu") as f:
+            print(f"Loading {len(f.keys())} tensors...")
+            for key in tqdm(f.keys(), desc="Loading"):
+                tensors[key] = f.get_tensor(key)
+    except Exception as e:
+        print(f"FATAL: Error loading '{input_file}': {e}")
+        return
+
+    output_tensors: Dict[str, torch.Tensor] = {}
+    quantized_count = 0
+    skipped_count = 0
+
+    # Process each tensor
+    for key in tqdm(tensors.keys(), desc="Quantizing"):
+        tensor = tensors[key]
+
+        # Only quantize weight tensors
+        if not key.endswith(".weight"):
+            output_tensors[key] = tensor
+            continue
+
+        # Check exclusions
+        skip_reason = None
+        for excl in exclude_layers:
+            if excl in key:
+                skip_reason = f"excluded ({excl})"
+                break
+
+        if tensor.ndim != 2:
+            skip_reason = f"non-2D tensor ({tensor.ndim}D)"
+
+        if tensor.numel() < blocksize:
+            skip_reason = f"too small ({tensor.numel()} < {blocksize})"
+
+        if skip_reason:
+            output_tensors[key] = tensor
+            skipped_count += 1
+            continue
+
+        # Quantize
+        try:
+            original_dtype = tensor.dtype
+            original_shape = tensor.shape
+
+            packed, absmax, quant_map = quantize_bnb_4bit(
+                tensor.to(device),
+                blocksize=blocksize,
+                quant_type=quant_type,
+            )
+
+            # Store quantized tensors
+            base_key = key  # key already ends with .weight
+            output_tensors[base_key] = packed.cpu()
+            output_tensors[f"{base_key}.absmax"] = absmax.cpu()
+            output_tensors[f"{base_key}.quant_map"] = quant_map.cpu()
+
+            # Create quant_state key based on quant_type
+            quant_state_key = f"{base_key}.quant_state.bitsandbytes__{quant_type}"
+            output_tensors[quant_state_key] = create_bnb_quant_state_tensor(
+                quant_type, blocksize, original_dtype, original_shape
+            )
+
+            quantized_count += 1
+
+        except Exception as e:
+            print(f"  WARNING: Failed to quantize {key}: {e}")
+            output_tensors[key] = tensor
+            skipped_count += 1
+
+    # Save output
+    print("-" * 60)
+    print(f"Quantized: {quantized_count} layers")
+    print(f"Skipped:   {skipped_count} layers")
+    print(f"Saving to: {output_file}")
+
+    save_file(output_tensors, output_file)
+    print("Done!")
+
+
+def dequantize_bnb_4bit(
+    packed: torch.Tensor,
+    absmax: torch.Tensor,
+    quant_map: torch.Tensor,
+    quant_state: Dict[str, Any],
+) -> torch.Tensor:
+    """
+    Dequantize a BNB 4-bit tensor back to full precision.
+
+    This is the REFERENCE IMPLEMENTATION for inference dequantization.
+    Use this to understand the format or for verification.
+
+    Args:
+        packed: Packed 4-bit weights, shape [numel/2, 1], dtype uint8
+        absmax: Per-block absolute maximum, shape [num_blocks], dtype float32
+        quant_map: 16-element quantization table, dtype float32
+        quant_state: Dict with 'dtype', 'shape', 'blocksize', 'quant_type'
+
+    Returns:
+        Dequantized weight tensor with original shape and dtype
+
+    ALGORITHM:
+        1. Unpack 4-bit indices from uint8 bytes
+        2. Look up normalized values in quant_map
+        3. Reshape to blocks and multiply by absmax
+        4. Reshape to original shape
+        5. Cast to original dtype
+    """
+    device = packed.device
+    blocksize = quant_state["blocksize"]
+    original_shape = tuple(quant_state["shape"])
+    target_dtype = getattr(torch, quant_state["dtype"])
+
+    # Flatten packed tensor
+    packed_flat = packed.flatten()
+
+    # Unpack: each byte has 2 indices
+    low_indices = packed_flat & 0x0F
+    high_indices = packed_flat >> 4
+
+    # Interleave to get original order
+    indices = torch.stack([low_indices, high_indices], dim=-1).flatten().to(torch.long)
+
+    # Look up values in quant_map
+    values = quant_map[indices]
+
+    # Calculate number of blocks
+    n_elements = values.numel()
+    n_blocks = absmax.numel()
+
+    # Truncate to actual data size (remove padding)
+    original_numel = 1
+    for s in original_shape:
+        original_numel *= s
+
+    # Reshape to blocks and scale
+    # Pad absmax to match blocks if needed
+    values_per_block = n_elements // n_blocks
+    values_blocked = values[:n_blocks * values_per_block].view(n_blocks, values_per_block)
+
+    # Apply absmax scaling
+    dequantized = values_blocked * absmax.view(-1, 1)
+
+    # Flatten and truncate to original size
+    dequantized = dequantized.flatten()[:original_numel]
+
+    # Reshape and cast
+    return dequantized.view(original_shape).to(target_dtype)
+
+
 # --- Main script execution functions ---
 
 
@@ -4288,6 +4764,28 @@ def main():
         action="store_true",
         help="Use INT8 block-wise quantization instead of FP8.",
     )
+    # BNB 4-bit quantization arguments
+    parser.add_argument(
+        "--bnb-4bit",
+        action="store_true",
+        dest="bnb_4bit",
+        help="Quantize to bitsandbytes-compatible 4-bit (NF4/FP4) format.",
+    )
+    parser.add_argument(
+        "--bnb-quant-type",
+        type=str,
+        default="nf4",
+        dest="bnb_quant_type",
+        choices=["nf4", "fp4"],
+        help="4-bit quantization type: 'nf4' (default, better quality) or 'fp4'.",
+    )
+    parser.add_argument(
+        "--bnb-blocksize",
+        type=int,
+        default=64,
+        dest="bnb_blocksize",
+        help="Block size for BNB 4-bit quantization (default 64). Valid: 64, 128, 256.",
+    )
     parser.add_argument(
         "--fallback",
         type=str,
@@ -4810,6 +5308,28 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             args.output,
             marker_size=args.scaled_fp8_marker,
             add_scale_input=args.input_scale,
+        )
+        return
+
+    # Handle BNB 4-bit quantization mode (separate workflow)
+    if args.bnb_4bit:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_{args.bnb_quant_type}_4bit.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        convert_to_bnb_4bit(
+            args.input,
+            args.output,
+            quant_type=args.bnb_quant_type,
+            blocksize=args.bnb_blocksize,
         )
         return
 
