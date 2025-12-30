@@ -1,5 +1,63 @@
 # Development Log
 
+## 2025-12-30: Mixed Format Support for BNB 4-bit
+
+### Session Summary
+Added `--custom-layers` support to BNB 4-bit mode, enabling FP8/INT8 quantization for specific layers using LearnedRoundingConverter.
+
+---
+
+### New Parameters for `convert_to_bnb_4bit()`
+
+| Parameter | Description |
+|-----------|-------------|
+| `custom_layers` | Regex pattern for layers to use FP8/INT8 instead of BNB 4-bit |
+| `custom_type` | Format for matched layers: `fp8` or `int8` |
+| `custom_block_size` | Block size for FP8/INT8 (default 128) |
+| `custom_scaling_mode` | FP8 scaling: `tensor`, `row`, or `block2d` |
+| `custom_simple` | Skip learned rounding optimization |
+| `comfy_quant` | Add `.comfy_quant` metadata for custom layers |
+| `save_quant_metadata` | Save `_quantization_metadata` header |
+| `**converter_kwargs` | Pass-through to LearnedRoundingConverter |
+
+### Implementation Details
+
+1. **Regex pattern matching**: Custom layers are matched using `re.compile(custom_layers).search(key)`
+2. **LearnedRoundingConverter integration**: Unless `--custom-simple`, uses learned rounding optimization
+3. **Fallback behavior**: If custom quantization fails, falls back to BNB 4-bit
+4. **Metadata**: Custom FP8/INT8 layers get `.comfy_quant` metadata when `--comfy_quant` is used
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/convert_to_quant.py` | Extended `convert_to_bnb_4bit()` signature; added converter setup, custom layer processing loop, metadata saving; updated main() CLI wiring |
+
+### Usage
+
+```bash
+# Mixed: BNB 4-bit default + FP8 for sensitive layers
+python -m convert_to_quant -i model.safetensors -o mixed.safetensors \
+    --bnb-4bit --flux2 \
+    --custom-layers "img_in|txt_in|final_layer" \
+    --custom-type fp8 \
+    --comfy_quant
+
+# With learned rounding optimization disabled
+python -m convert_to_quant -i model.safetensors -o mixed.safetensors \
+    --bnb-4bit \
+    --custom-layers "sensitive_layer" \
+    --custom-type fp8 \
+    --custom-simple
+```
+
+### Verification
+
+- Syntax check: ✅ Passed
+- Import verification: ✅ Passed
+
+---
+
 ## 2025-12-29: BNB 4-bit (NF4/FP4) Quantization Support
 
 ### Session Summary

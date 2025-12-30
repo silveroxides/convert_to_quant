@@ -2637,6 +2637,14 @@ def convert_to_bnb_4bit(
     quant_type: str = "nf4",
     blocksize: int = 64,
     exclude_layers: Optional[List[str]] = None,
+    custom_layers: Optional[str] = None,
+    custom_type: Optional[str] = None,
+    custom_block_size: Optional[int] = None,
+    custom_scaling_mode: Optional[str] = None,
+    custom_simple: bool = False,
+    comfy_quant: bool = False,
+    save_quant_metadata: bool = False,
+    **converter_kwargs,
 ):
     """
     Convert a model to bitsandbytes-compatible 4-bit (NF4/FP4) format.
@@ -2644,18 +2652,35 @@ def convert_to_bnb_4bit(
     This creates a safetensors file that can be loaded by ComfyUI's bitsandbytes
     integration or any bitsandbytes-compatible loader.
 
+    Supports mixed-format quantization: specific layers can use FP8/INT8 instead
+    of BNB 4-bit when custom_layers pattern matches.
+
     Args:
         input_file: Path to input safetensors file
         output_file: Path to output safetensors file
         quant_type: "nf4" (default, better quality) or "fp4"
         blocksize: Block size for quantization (default 64). Valid: 64, 128, 256, 512, 1024
         exclude_layers: List of layer name substrings to exclude from quantization
+        custom_layers: Regex pattern for layers to quantize with custom_type instead of BNB 4-bit
+        custom_type: Format for custom_layers matches ("fp8" or "int8")
+        custom_block_size: Block size for custom_type layers (default 128)
+        custom_scaling_mode: FP8 scaling mode for custom layers ("tensor", "row", "block2d")
+        custom_simple: If True, skip learned rounding optimization for custom layers
+        comfy_quant: If True, add .comfy_quant metadata for custom layers
+        save_quant_metadata: If True, save _quantization_metadata header
+        **converter_kwargs: Additional kwargs passed to LearnedRoundingConverter
 
-    OUTPUT KEY STRUCTURE (for each weight):
+
+    OUTPUT KEY STRUCTURE (for BNB 4-bit weights):
         - `{layer}.weight`: Packed 4-bit weights [numel/2, 1] uint8
         - `{layer}.weight.absmax`: Per-block max values [num_blocks] float32
         - `{layer}.weight.quant_map`: Code table [16] float32
         - `{layer}.weight.quant_state.bitsandbytes__{quant_type}`: JSON metadata uint8
+
+    OUTPUT KEY STRUCTURE (for FP8/INT8 custom layers with comfy_quant):
+        - `{layer}.weight`: Quantized weight tensor
+        - `{layer}.scale_weight`: Scale tensor
+        - `{layer}.weight.comfy_quant`: JSON metadata uint8
 
     INFERENCE LOADING EXAMPLE:
         ```python
@@ -2694,6 +2719,43 @@ def convert_to_bnb_4bit(
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # Set up custom layer converter if pattern specified
+    custom_pattern = None
+    converter = None
+    custom_block_size_actual = custom_block_size or 128  # Default block size for FP8/INT8
+
+    if custom_layers and custom_type:
+        try:
+            custom_pattern = re.compile(custom_layers)
+        except re.error as e:
+            print(f"ERROR: Invalid regex pattern '{custom_layers}': {e}")
+            return
+
+        # Build converter kwargs with custom overrides
+        conv_kwargs = converter_kwargs.copy()
+        conv_kwargs["target_format"] = custom_type
+        conv_kwargs["block_size"] = custom_block_size_actual
+        if custom_scaling_mode:
+            conv_kwargs["scaling_mode"] = custom_scaling_mode
+        if custom_simple:
+            conv_kwargs["no_learned_rounding"] = True
+        
+        # Set defaults for converter if not provided
+        conv_kwargs.setdefault("device", device)
+        conv_kwargs.setdefault("num_iter", 500)
+        conv_kwargs.setdefault("optimizer", "original")
+
+        converter = LearnedRoundingConverter(**conv_kwargs)
+
+        custom_mode = "simple" if custom_simple else "learned rounding"
+        print(f"Custom layers: {custom_type.upper()} ({custom_mode}) for pattern '{custom_layers}'")
+        if custom_scaling_mode:
+            print(f"  Scaling mode: {custom_scaling_mode}")
+        print(f"  Block size: {custom_block_size_actual}")
+
+    # Initialize metadata collection if enabled
+    quant_metadata_layers = {} if save_quant_metadata else None
+
     # Load input tensors
     tensors: Dict[str, torch.Tensor] = {}
     try:
@@ -2708,6 +2770,7 @@ def convert_to_bnb_4bit(
     output_tensors: Dict[str, torch.Tensor] = {}
     quantized_count = 0
     skipped_count = 0
+    custom_count = 0
 
     # Process each tensor
     for key in tqdm(tensors.keys(), desc="Quantizing"):
@@ -2736,7 +2799,49 @@ def convert_to_bnb_4bit(
             skipped_count += 1
             continue
 
-        # Quantize
+        # Check if this layer matches custom pattern for FP8/INT8
+        use_custom = custom_pattern and custom_pattern.search(key)
+
+        if use_custom and converter:
+            # FP8/INT8 quantization path using LearnedRoundingConverter
+            try:
+                W_q, scale, _ = converter.convert(tensor.to(device))
+                
+                # Get layer base name (without .weight suffix for scale key)
+                layer_base = key[:-7] if key.endswith(".weight") else key
+                
+                output_tensors[key] = W_q.cpu()
+                output_tensors[f"{layer_base}.scale_weight"] = scale.cpu()
+                
+                if comfy_quant:
+                    # Determine format name based on custom_type and scaling mode
+                    if custom_type == "int8":
+                        format_name = "int8_blockwise"
+                    else:
+                        # FP8 format depends on scaling mode
+                        if custom_scaling_mode == "row":
+                            format_name = "float8_e4m3fn_rowwise"
+                        elif custom_scaling_mode == "block2d":
+                            format_name = "float8_e4m3fn_blockwise"
+                        else:
+                            format_name = "float8_e4m3fn"  # tensor-wise
+                    
+                    output_tensors[f"{key}.comfy_quant"] = create_comfy_quant_tensor(
+                        format_name, custom_block_size_actual if "block" in format_name else None
+                    )
+                    
+                    # Collect metadata if enabled
+                    if quant_metadata_layers is not None:
+                        quant_metadata_layers[layer_base] = format_name
+
+                custom_count += 1
+                continue
+                
+            except Exception as e:
+                print(f"  WARNING: Custom quantization failed for {key}, falling back to BNB 4-bit: {e}")
+                # Fall through to BNB 4-bit path
+
+        # BNB 4-bit quantization path (default)
         try:
             original_dtype = tensor.dtype
             original_shape = tensor.shape
@@ -2768,11 +2873,26 @@ def convert_to_bnb_4bit(
 
     # Save output
     print("-" * 60)
-    print(f"Quantized: {quantized_count} layers")
-    print(f"Skipped:   {skipped_count} layers")
-    print(f"Saving to: {output_file}")
+    print(f"BNB 4-bit:  {quantized_count} layers")
+    if custom_count > 0:
+        print(f"Custom:     {custom_count} layers ({custom_type.upper()})")
+    print(f"Skipped:    {skipped_count} layers")
+    print(f"Saving to:  {output_file}")
 
-    save_file(output_tensors, output_file)
+    # Add quantization metadata to header if enabled
+    metadata = None
+    if save_quant_metadata and quant_metadata_layers:
+        import json
+        metadata_dict = {
+            "_quantization_metadata": json.dumps({
+                "formats": quant_metadata_layers,
+                "bnb_quant_type": quant_type,
+                "bnb_blocksize": blocksize,
+            })
+        }
+        metadata = metadata_dict
+
+    save_file(output_tensors, output_file, metadata=metadata)
     print("Done!")
 
 
@@ -5348,6 +5468,21 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             quant_type=args.bnb_quant_type,
             blocksize=args.bnb_blocksize,
             exclude_layers=exclude_list,
+            # Custom layer options for FP8/INT8
+            custom_layers=args.custom_layers,
+            custom_type=args.custom_type,
+            custom_block_size=args.custom_block_size,
+            custom_scaling_mode=args.custom_scaling_mode,
+            custom_simple=args.custom_simple,
+            comfy_quant=args.comfy_quant,
+            save_quant_metadata=args.save_quant_metadata,
+            # LearnedRoundingConverter kwargs
+            optimizer=args.optimizer,
+            num_iter=args.num_iter,
+            top_p=args.top_p,
+            min_k=args.min_k,
+            max_k=args.max_k,
+            full_matrix=args.full_matrix,
         )
         return
 
