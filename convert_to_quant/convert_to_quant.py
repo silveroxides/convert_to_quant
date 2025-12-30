@@ -5325,13 +5325,32 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             print("Error: Output file cannot be same as input.")
             return
 
+        # Build exclude list from model-specific filters
+        exclude_list = AVOID_KEY_NAMES.copy()
+        if args.flux2:
+            exclude_list.extend(FLUX2_LAYER_KEYNAMES)
+        if args.visual:
+            exclude_list.extend(VISUAL_AVOID_KEY_NAMES)
+        if args.hunyuan:
+            exclude_list.extend(HUNYUAN_AVOID_KEY_NAMES)
+        if args.qwen:
+            exclude_list.extend(QWEN_AVOID_KEY_NAMES)
+        if hasattr(args, 'zimage') and args.zimage:
+            exclude_list.extend(ZIMAGE_AVOID_KEY_NAMES)
+        if args.distillation_large:
+            exclude_list.extend(DISTILL_LAYER_KEYNAMES_LARGE)
+        if args.distillation_small:
+            exclude_list.extend(DISTILL_LAYER_KEYNAMES_SMALL)
+
         convert_to_bnb_4bit(
             args.input,
             args.output,
             quant_type=args.bnb_quant_type,
             blocksize=args.bnb_blocksize,
+            exclude_layers=exclude_list,
         )
         return
+
 
     # Handle comfy_quant editing mode (separate workflow)
     if args.edit_quant:
