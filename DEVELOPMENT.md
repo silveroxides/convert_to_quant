@@ -1,5 +1,58 @@
 # Development Log
 
+## 2026-01-02: Activation Scale Calibration - Systematic Review Complete
+
+> **STATUS: REVIEWED - Ready for Testing**
+
+### Session Summary
+Completed systematic review of `calibrate_activation_scales.py`. Fixed 5 issues identified during review:
+
+1. **FP8 Dequantization**: Added proper handling for tensor-wise, row-wise, and block-wise weight scales
+2. **Block Size Detection**: Added `infer_block_size()` to determine block size from scale shape
+3. **LoRA Key Matching**: Replaced fuzzy matching with explicit key normalization (strips `model.diffusion_model.`, `lora_unet_`, etc.)
+4. **CLI Seed Bug**: Added `--actcal-seed` argument (was referencing undefined `args.seed`)
+5. **Metadata Sync**: `patch_model_with_scales()` now updates `.comfy_quant` metadata for comfy_quant models
+
+---
+
+### New CLI Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--actcal` | Calibrate input_scale values using simulated PTQ |
+| `--actcal-samples` | Number of calibration samples (default: 64) |
+| `--actcal-percentile` | Percentile for absmax (default: 99.9) |
+| `--actcal-lora` | LoRA file for informed calibration (uses LoRA_A as input directions) |
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `calibrate_activation_scales.py` | Standalone calibration module |
+
+### Usage
+
+```bash
+# Calibrate existing FP8 model
+convert_to_quant -i model_fp8.safetensors --actcal -o model_calibrated.safetensors
+
+# With more samples for accuracy
+convert_to_quant -i model.safetensors --actcal --actcal-samples 256
+
+# LoRA-informed calibration (uses RL-extracted LoRA directions)
+convert_to_quant -i model.safetensors --actcal --actcal-lora rl_lora_rank1.safetensors -o calibrated.safetensors
+
+# Standalone script
+python calibrate_activation_scales.py model.safetensors -o calibrated.safetensors
+python calibrate_activation_scales.py model.safetensors --lora rl_lora.safetensors -o calibrated.safetensors
+```
+
+### Background
+
+ComfyUI's [QUANTIZATION.md](file:///f:/convert_to_quant/ComfyUI/QUANTIZATION.md) specifies PTQ calibration for activation quantization. The default `input_scale=1.0` causes overflow/underflow in diffusion models with dynamic activation magnitudes.
+
+---
+
 ## 2025-12-28: Legacy FP8 Cleanup Mode
 
 ### Session Summary

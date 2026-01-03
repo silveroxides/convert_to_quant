@@ -4625,6 +4625,47 @@ def main():
         help="Size for scaled_fp8 marker tensor: 0=empty((0)), 2=empty((2)). (default: 0)",
     )
 
+    # Activation scale calibration mode
+    parser.add_argument(
+        "--actcal",
+        action="store_true",
+        dest="actcal",
+        help="Calibrate input_scale values using simulated PTQ. Patches existing FP8 model with computed scales.",
+    )
+    parser.add_argument(
+        "--actcal-samples",
+        type=int,
+        default=64,
+        dest="actcal_samples",
+        help="Number of calibration samples for --actcal (default: 64)",
+    )
+    parser.add_argument(
+        "--actcal-percentile",
+        type=float,
+        default=99.9,
+        dest="actcal_percentile",
+        help="Percentile for absmax in calibration (default: 99.9, use 100 for true max)",
+    )
+    parser.add_argument(
+        "--actcal-lora",
+        dest="actcal_lora",
+        help="LoRA file for informed calibration (uses LoRA_A as input directions)",
+    )
+    parser.add_argument(
+        "--actcal-seed",
+        type=int,
+        default=42,
+        dest="actcal_seed",
+        help="Random seed for calibration (default: 42). Use for reproducible results.",
+    )
+    parser.add_argument(
+        "--actcal-device",
+        type=str,
+        default=None,
+        dest="actcal_device",
+        help="Device for calibration: 'cpu', 'cuda', 'cuda:0', etc. (default: auto-detect CUDA)",
+    )
+
     # Metadata saving option
     parser.add_argument(
         "--save-quant-metadata",
@@ -4811,6 +4852,61 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             marker_size=args.scaled_fp8_marker,
             add_scale_input=args.input_scale,
         )
+        return
+
+    # Handle activation scale calibration mode (separate workflow)
+    if args.actcal:
+        try:
+            from .calibrate_activation_scales import calibrate_model, patch_model_with_scales, load_lora_tensors
+        except ImportError:
+            from calibrate_activation_scales import calibrate_model, patch_model_with_scales, load_lora_tensors
+        
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_calibrated.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        print(f"Loading model: {args.input}")
+        tensors = load_file(args.input)
+        print(f"  Total tensors: {len(tensors)}")
+
+        # Load LoRA if specified
+        lora_tensors = None
+        if args.actcal_lora:
+            if not os.path.exists(args.actcal_lora):
+                print(f"Error: LoRA file not found: {args.actcal_lora}")
+                return
+            print(f"\nLoading LoRA: {args.actcal_lora}")
+            lora_tensors = load_lora_tensors(args.actcal_lora)
+            print(f"  LoRA layers found: {len(lora_tensors)}")
+
+        mode = "LoRA-informed" if lora_tensors else "random"
+        print(f"\nCalibrating input_scale using {mode} PTQ ({args.actcal_samples} samples)...")
+        scales = calibrate_model(
+            tensors,
+            calib_samples=args.actcal_samples,
+            seed=args.actcal_seed,
+            percentile=args.actcal_percentile,
+            verbose=True,
+            lora_tensors=lora_tensors,
+            device=args.actcal_device,
+        )
+        print(f"\nCalibrated {len(scales)} layers")
+
+        print(f"\nPatching model with calibrated scales...")
+        patched = patch_model_with_scales(tensors, scales)
+
+        print(f"Saving to: {args.output}")
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        save_file(patched, args.output)
+        print("Done!")
         return
 
     # Handle comfy_quant editing mode (separate workflow)
