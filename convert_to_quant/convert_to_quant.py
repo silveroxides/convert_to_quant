@@ -14,6 +14,7 @@ import math
 import json
 from torch.optim import AdamW, RAdam
 from .comfy.quant_ops import BlockWiseINT8Layout
+from .pinned_transfer import transfer_to_gpu_pinned, get_pinned_transfer_stats, set_verbose as set_pinned_verbose
 
 # --- Constants and Configuration ---
 torch.set_printoptions(precision=8)
@@ -1373,7 +1374,7 @@ class LearnedRoundingConverter:
     def convert(
         self, W_orig: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        W_float32 = W_orig.to(self.device, dtype=COMPUTE_DTYPE)
+        W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
         if torch.all(W_float32 == 0):
             print("  - Tensor is all zeros, skipping optimization.")
@@ -4748,11 +4749,22 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         help="Dry run mode: 'analyze' shows what would be processed, 'create-template' generates config template",
     )
 
+    # Verbose output for pinned memory transfers
+    parser.add_argument(
+        "--verbose-pinned",
+        action="store_true",
+        dest="verbose_pinned",
+        help="Print per-tensor pinned memory transfer details",
+    )
+
     args = parser.parse_args()
 
     # Set global scale normalization flag from CLI
     global NORMALIZE_SCALES_ENABLED
     NORMALIZE_SCALES_ENABLED = not args.no_normalize_scales
+
+    # Set pinned memory verbosity
+    set_pinned_verbose(args.verbose_pinned)
 
     # Handle dry-run create-template mode (separate workflow)
     if args.dry_run == "create-template":

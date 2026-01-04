@@ -1,5 +1,32 @@
 # Development Log
 
+## 2026-01-04: Pinned Memory GPU Transfers
+
+### Session Summary
+Added pinned memory for faster CPU→GPU tensor transfers during quantization.
+
+---
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `pinned_transfer.py` | Utility for pinned memory transfers with fallback |
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant.py` | Import + use `transfer_to_gpu_pinned()` at line 1377 |
+
+### Technical Details
+
+- Uses PyTorch's `tensor.pin_memory()` for page-locked memory
+- `non_blocking=True` transfer with stream sync
+- Falls back to regular `.to()` if pinning fails
+
+---
+
 ## 2026-01-02: Activation Scale Calibration - Systematic Review Complete
 
 > **STATUS: REVIEWED - Ready for Testing**
