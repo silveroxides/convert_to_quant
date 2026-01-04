@@ -13,6 +13,7 @@ import sys
 
 EXPERIMENTAL_ARGS = {
     "int8",
+    "nvfp4",
     "fallback",
     "custom_layers",
     "custom_type",

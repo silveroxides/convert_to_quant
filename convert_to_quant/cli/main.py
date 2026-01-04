@@ -15,12 +15,13 @@ from .argument_parser import (
     FILTER_ARGS,
     ADVANCED_ARGS,
 )
-from ..constants import NORMALIZE_SCALES_ENABLED, TARGET_FP8_DTYPE
+from ..constants import NORMALIZE_SCALES_ENABLED, TARGET_FP8_DTYPE, AVOID_KEY_NAMES
 from ..config.layer_config import load_layer_config, generate_config_template
 from ..formats.fp8_conversion import convert_to_fp8_scaled
 from ..formats.format_migration import convert_fp8_scaled_to_comfy_quant
 from ..formats.int8_conversion import convert_int8_to_comfy_quant
 from ..formats.legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
+from ..formats.nvfp4_conversion import convert_to_nvfp4
 from ..utils.comfy_quant import edit_comfy_quant
 from ..pinned_transfer import set_verbose as set_pinned_verbose
 
@@ -53,6 +54,11 @@ def main():
         "--int8",
         action="store_true",
         help="Use INT8 block-wise quantization instead of FP8.",
+    )
+    parser.add_argument(
+        "--nvfp4",
+        action="store_true",
+        help="Use NVFP4 (FP4 E2M1) block quantization. Requires Blackwell GPU (SM >= 10.0/12.0) for inference.",
     )
     parser.add_argument(
         "--fallback",
@@ -588,6 +594,32 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             args.output,
             block_size=int8_block_size,
             include_input_scale=args.input_scale,
+            save_quant_metadata=args.save_quant_metadata,
+        )
+        return
+
+    # Handle NVFP4 quantization mode (separate workflow)
+    if args.nvfp4:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_nvfp4.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        convert_to_nvfp4(
+            args.input,
+            args.output,
+            comfy_quant=args.comfy_quant,
+            simple=args.simple,
+            num_iter=args.num_iter,
+            avoid_key_names=AVOID_KEY_NAMES,
+            heur=args.heur,
             save_quant_metadata=args.save_quant_metadata,
         )
         return

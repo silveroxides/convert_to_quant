@@ -2,6 +2,9 @@
 
 This document explains how quantized models from `convert_to_quant` are used at inference time in ComfyUI and other frameworks.
 
+> [!NOTE]
+> On Windows, comfy-kitchen requires CUDA 13.0+ due to a kernel compilation bug in CUDA 12.9.
+
 ## Hardware-Accelerated FP8 Matmul
 
 For FP8 E4M3 quantized models, PyTorch provides `torch._scaled_mm` for hardware-accelerated matrix multiplication on compatible GPUs.
