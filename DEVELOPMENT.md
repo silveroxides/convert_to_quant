@@ -1,6 +1,60 @@
 # Development Log
 
+## 2026-01-04: Modular Refactoring of convert_to_quant.py
+
+### Session Summary
+Refactored 5138-line `convert_to_quant.py` into modular subdirectory structure to enable focused editing and prevent context window exhaustion.
+
+---
+
+### New Module Structure
+
+```
+convert_to_quant/
+├── __init__.py                  # Package entry (dynamic version from importlib.metadata)
+├── convert_to_quant.py          # Slim entry point (~125 lines, re-exports for backward compat)
+├── constants.py                 # All *_AVOID_KEY_NAMES, dtype constants (~150 lines)
+├── converters/
+│   └── learned_rounding.py      # LearnedRoundingConverter class (~1473 lines)
+├── cli/
+│   ├── argument_parser.py       # MultiHelpArgumentParser (~280 lines)
+│   └── main.py                  # main() function (~870 lines)
+├── formats/
+│   ├── fp8_conversion.py        # convert_to_fp8_scaled (~640 lines)
+│   ├── format_migration.py      # convert_fp8_scaled_to_comfy_quant (~346 lines)
+│   ├── int8_conversion.py       # convert_int8_to_comfy_quant (~304 lines)
+│   └── legacy_utils.py          # add_legacy_input_scale, cleanup_fp8_scaled (~250 lines)
+├── config/
+│   └── layer_config.py          # load_layer_config, get_layer_settings (~220 lines)
+└── utils/
+    ├── tensor_utils.py          # dict_to_tensor, normalize_tensorwise_scales (~70 lines)
+    └── comfy_quant.py           # create_comfy_quant_tensor, edit_comfy_quant (~350 lines)
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant.py` | Reduced from 5138 to ~125 lines (re-exports only) |
+| `__init__.py` | Uses `importlib.metadata.version()` with fallback |
+
+### Verification
+
+- All modules import successfully
+- CLI `--help` output works correctly
+- pyproject.toml entry point unchanged
+
+### Git
+
+```bash
+git checkout feature/modular-refactor
+git push origin feature/modular-refactor  # PR available
+```
+
+---
+
 ## 2026-01-04: Pinned Memory GPU Transfers
+
 
 ### Session Summary
 Added pinned memory for faster CPU→GPU tensor transfers during quantization.
