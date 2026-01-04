@@ -1,5 +1,41 @@
 # Development Log
 
+## 2026-01-04: NVFP4 (E2M1) Quantization Support
+
+### Session Summary
+Added NVIDIA FP4 E2M1 block quantization support based on comfy-kitchen. Requires Blackwell GPUs (SM ≥ 10.0 datacenter or SM ≥ 12.0 consumer).
+
+---
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `utils/float_utils.py` | FP4 encode/decode, uint4 packing, cuBLAS tiled layout (~240 lines) |
+| `converters/nvfp4_converter.py` | NVFP4Converter class with quantize/dequantize (~215 lines) |
+| `INFERENCE.md` | Documentation for `torch._scaled_mm` and comfy-kitchen reference |
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `FP4_E2M1_MAX`, `FP4_BLOCK_SIZE`, `nvfp4` to `VALID_QUANT_FORMATS` |
+| `converters/__init__.py` | Export `NVFP4Converter`, `quantize_nvfp4`, `dequantize_nvfp4` |
+
+### Technical Details
+
+- Uses 16-element blocks with per-block FP8 scales
+- cuBLAS tiled layout for block scales (128×4 tile pattern)
+- Hardware matmul via `torch._scaled_mm` with `torch.float4_e2m1fn_x2`
+
+### Git
+
+```bash
+git checkout feature/nvfp4-support  # Branches from feature/modular-refactor
+```
+
+---
+
 ## 2026-01-04: Modular Refactoring of convert_to_quant.py
 
 ### Session Summary
