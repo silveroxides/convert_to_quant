@@ -612,34 +612,33 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             print("Error: Output file cannot be same as input.")
             return
 
+        # Build converter kwargs (exclude non-converter args)
+        nvfp4_excluded = [
+            "input", "output", "comfy_quant", "heur", "save_quant_metadata",
+            "t5xxl", "mistral", "visual", "flux2", "distillation_large",
+            "distillation_small", "nerf_large", "nerf_small", "radiance",
+            "wan", "qwen", "hunyuan", "zimage", "zimage_refiner",
+            "int8", "nvfp4", "fallback", "custom_layers", "custom_type",
+            "custom_block_size", "custom_scaling_mode", "custom_simple",
+            "custom_heur", "fallback_block_size", "fallback_simple",
+            "convert_fp8_scaled", "convert_int8_scaled", "legacy_input_add",
+            "cleanup_fp8_scaled", "edit_quant", "actcal", "dry_run",
+            "calib_samples", "manual_seed", "input_scale", "layer_config",
+            "layer_config_fullmatch", "hp_filter", "full_precision_mm",
+            "scaled_fp8_marker", "actcal_samples", "actcal_percentile",
+            "actcal_lora", "actcal_seed", "actcal_device", "remove_keys",
+            "add_keys", "quant_filter", "no_normalize_scales", "verbose_pinned",
+        ]
+        nvfp4_kwargs = {k: v for k, v in vars(args).items() if k not in nvfp4_excluded}
+
         convert_to_nvfp4(
             args.input,
             args.output,
             comfy_quant=args.comfy_quant,
-            simple=args.simple,
-            num_iter=args.num_iter,
             avoid_key_names=AVOID_KEY_NAMES,
             heur=args.heur,
             save_quant_metadata=args.save_quant_metadata,
-            optimizer=args.optimizer,
-            lr=args.lr,
-            lr_schedule=args.lr_schedule,
-            top_p=args.top_p,
-            min_k=args.min_k,
-            max_k=args.max_k,
-            full_matrix=args.full_matrix,
-            lr_gamma=args.lr_gamma,
-            lr_patience=args.lr_patience,
-            lr_factor=args.lr_factor,
-            lr_min=args.lr_min,
-            lr_cooldown=args.lr_cooldown,
-            lr_threshold=args.lr_threshold,
-            lr_adaptive_mode=args.lr_adaptive_mode,
-            lr_shape_influence=args.lr_shape_influence,
-            lr_threshold_mode=args.lr_threshold_mode,
-            early_stop_loss=args.early_stop_loss,
-            early_stop_lr=args.early_stop_lr,
-            early_stop_stall=args.early_stop_stall,
+            **nvfp4_kwargs,
         )
         return
 
