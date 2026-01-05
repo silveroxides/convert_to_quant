@@ -93,10 +93,11 @@ class NVFP4Converter:
                 orig_shape = tensor.shape
         
         # Compute per-tensor scale if not provided
+        # Formula: scale = amax / (F8_E4M3_MAX * F4_E2M1_MAX)
+        # This ensures block_scales fit in FP8 range when divided by per_tensor_scale
         if per_tensor_scale is None:
             amax = torch.amax(torch.abs(tensor))
-            # Scale so that amax maps to FP4_E2M1_MAX
-            per_tensor_scale = amax / FP4_E2M1_MAX
+            per_tensor_scale = amax / (F8_E4M3_MAX * FP4_E2M1_MAX)
         
         per_tensor_scale = per_tensor_scale.to(device=device, dtype=torch.float32)
         

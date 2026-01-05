@@ -184,8 +184,9 @@ class LearnedNVFP4Converter:
             )
         
         # Compute per-tensor scale
+        # Formula: scale = amax / (F8_E4M3_MAX * FP4_E2M1_MAX) to match comfy-kitchen
         amax = torch.amax(torch.abs(W_float32))
-        per_tensor_scale = (amax / FP4_E2M1_MAX).to(dtype=torch.float32)
+        per_tensor_scale = (amax / (F8_E4M3_MAX * FP4_E2M1_MAX)).to(dtype=torch.float32)
         
         # Compute per-block scales
         tensor_blocks = W_float32.reshape(M, -1, self.block_size)
