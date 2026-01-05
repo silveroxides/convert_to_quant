@@ -451,13 +451,12 @@ class LearnedNVFP4Converter:
             if self._check_early_stop(current_loss, curr_lr, worse_loss_counter):
                 break
             
-            # Gradient step (in FP4 value space)
+            # Gradient step
             with torch.no_grad():
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-                # Convert gradient to FP4 value space (divide by scale since qdata = data / scale)
-                grad_blocks = grad_direction.reshape(M, -1, self.block_size)
-                scaled_grad = grad_blocks / total_scale.unsqueeze(-1)
-                W_q_refined -= curr_lr * scaled_grad.view(M, N)
+                # Apply gradient directly (W_q_refined is in FP4 value space)
+                # Scale converts: error = W_q * scale - W_orig, so d(error)/d(W_q) = scale
+                W_q_refined -= curr_lr * grad_direction
                 # Clamp to FP4 range
                 W_q_refined = torch.clamp(W_q_refined, -FP4_E2M1_MAX, FP4_E2M1_MAX)
         
