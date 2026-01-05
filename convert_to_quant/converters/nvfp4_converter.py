@@ -139,8 +139,8 @@ class NVFP4Converter:
     def dequantize(
         self,
         qdata: torch.Tensor,
-        block_scales: torch.Tensor,
         per_tensor_scale: torch.Tensor,
+        block_scales: torch.Tensor,
         output_dtype: torch.dtype = torch.bfloat16,
     ) -> torch.Tensor:
         """
@@ -148,8 +148,8 @@ class NVFP4Converter:
         
         Args:
             qdata: Quantized FP4 tensor (packed as uint8)
-            block_scales: Block scales in cuBLAS tiled layout (float8_e4m3fn)
             per_tensor_scale: Global scale factor
+            block_scales: Block scales in cuBLAS tiled layout (float8_e4m3fn)
             output_dtype: Target output dtype
         
         Returns:
