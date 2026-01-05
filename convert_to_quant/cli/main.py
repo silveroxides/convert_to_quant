@@ -629,42 +629,10 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             print("Error: Output file cannot be same as input.")
             return
 
-        # Build combined avoid_key_names list from filter flags
-        avoid_key_names = list(AVOID_KEY_NAMES)  # Start with base list
-        
-        if args.visual:
-            avoid_key_names.extend(VISUAL_AVOID_KEY_NAMES)
-        if args.qwen:
-            avoid_key_names.extend(QWEN_AVOID_KEY_NAMES)
-        if args.hunyuan:
-            avoid_key_names.extend(HUNYUAN_AVOID_KEY_NAMES)
-        if args.zimage or args.zimage_refiner:
-            avoid_key_names.extend(ZIMAGE_AVOID_KEY_NAMES)
-        if args.flux2:
-            avoid_key_names.extend(FLUX2_LAYER_KEYNAMES)
-        if args.distillation_large:
-            avoid_key_names.extend(DISTILL_LAYER_KEYNAMES_LARGE)
-        if args.distillation_small:
-            avoid_key_names.extend(DISTILL_LAYER_KEYNAMES_SMALL)
-        if args.nerf_large:
-            avoid_key_names.extend(NERF_LAYER_KEYNAMES_LARGE)
-        if args.nerf_small:
-            avoid_key_names.extend(NERF_LAYER_KEYNAMES_SMALL)
-        if args.radiance:
-            avoid_key_names.extend(RADIANCE_LAYER_KEYNAMES)
-        if args.wan:
-            avoid_key_names.extend(WAN_LAYER_KEYNAMES)
-        if args.zimage:
-            avoid_key_names.extend(ZIMAGE_LAYER_KEYNAMES)
-        if args.zimage_refiner:
-            avoid_key_names.extend(ZIMAGE_REFINER_LAYER_KEYNAMES)
-        
-        # Build converter kwargs (exclude non-converter args)
+        # Build converter kwargs - filter flags are now passed directly
+        # and converted to exclude_patterns inside convert_to_nvfp4
         nvfp4_excluded = [
-            "input", "output", "comfy_quant", "heur", "save_quant_metadata",
-            "t5xxl", "mistral", "visual", "flux2", "distillation_large",
-            "distillation_small", "nerf_large", "nerf_small", "radiance",
-            "wan", "qwen", "hunyuan", "zimage", "zimage_refiner",
+            "input", "output", "comfy_quant", "save_quant_metadata",
             "int8", "nvfp4", "fallback", "custom_layers", "custom_type",
             "custom_block_size", "custom_scaling_mode", "custom_simple",
             "custom_heur", "fallback_block_size", "fallback_simple",
@@ -682,8 +650,6 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         convert_to_nvfp4(
             args.input,
             args.output,
-            avoid_key_names=avoid_key_names,
-            heur=args.heur,
             **nvfp4_kwargs,
         )
         return

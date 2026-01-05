@@ -17,6 +17,19 @@ from tqdm import tqdm
 
 from ..constants import (
     AVOID_KEY_NAMES,
+    VISUAL_AVOID_KEY_NAMES,
+    QWEN_AVOID_KEY_NAMES,
+    HUNYUAN_AVOID_KEY_NAMES,
+    ZIMAGE_AVOID_KEY_NAMES,
+    FLUX2_LAYER_KEYNAMES,
+    DISTILL_LAYER_KEYNAMES_LARGE,
+    DISTILL_LAYER_KEYNAMES_SMALL,
+    NERF_LAYER_KEYNAMES_LARGE,
+    NERF_LAYER_KEYNAMES_SMALL,
+    RADIANCE_LAYER_KEYNAMES,
+    WAN_LAYER_KEYNAMES,
+    ZIMAGE_LAYER_KEYNAMES,
+    ZIMAGE_REFINER_LAYER_KEYNAMES,
     FP4_BLOCK_SIZE,
     NORMALIZE_SCALES_ENABLED,
 )
@@ -29,9 +42,24 @@ from ..utils.comfy_quant import should_skip_layer_for_performance
 def convert_to_nvfp4(
     input_file: str,
     output_file: str,
+    # Filter flags (matching FP8 convention)
+    t5xxl: bool = False,
+    mistral: bool = False,
+    visual: bool = False,
+    flux2: bool = False,
+    distillation_large: bool = False,
+    distillation_small: bool = False,
+    nerf_large: bool = False,
+    nerf_small: bool = False,
+    radiance: bool = False,
+    wan: bool = False,
+    qwen: bool = False,
+    hunyuan: bool = False,
+    zimage: bool = False,
+    zimage_refiner: bool = False,
+    # Quantization options
     simple: bool = False,
     num_iter: int = 500,
-    avoid_key_names: Optional[list] = None,
     heur: bool = False,
     verbose: bool = True,
     # Optimizer/LR options (passed to LearnedNVFP4Converter)
@@ -63,37 +91,37 @@ def convert_to_nvfp4(
     Uses LearnedNVFP4Converter with SVD optimization by default.
     Pass simple=True for raw quantization without optimization.
     
-    Args:
-        input_file: Path to input safetensors file
-        output_file: Path to output safetensors file
-        comfy_quant: If True, add .comfy_quant metadata tensors
-        simple: If True, skip learned rounding optimization (use raw converter)
-        num_iter: Optimization iterations (if not simple)
-        avoid_key_names: Layer name patterns to skip quantization
-        heur: If True, skip layers with poor quantization characteristics
-        verbose: Print progress
-        optimizer: Optimization algorithm ("original", "adamw", "radam")
-        lr: Initial learning rate
-        lr_schedule: LR schedule ("adaptive", "exponential", "plateau")
-        top_p: Proportion of SVD components to use
-        min_k: Minimum SVD components
-        max_k: Maximum SVD components
-        full_matrix: Use full SVD instead of lowrank
-        lr_gamma: Decay factor for exponential schedule
-        lr_patience: Steps before decay for plateau
-        lr_factor: LR reduction factor for plateau
-        lr_min: Minimum learning rate floor
-        lr_cooldown: Cooldown steps after reduction
-        lr_threshold: Minimum improvement threshold
-        lr_adaptive_mode: Counter reset mode ("simple-reset", "no-reset")
-        lr_shape_influence: Shape-aware LR scaling (0.0-1.0)
-        lr_threshold_mode: Threshold mode ("rel", "abs")
-        early_stop_loss: Stop when loss drops below this
-        early_stop_lr: Stop when LR drops below this
-        early_stop_stall: Stop after this many steps without improvement
+    Always creates .comfy_quant metadata tensors and _quantization_metadata header.
     """
-    if avoid_key_names is None:
-        avoid_key_names = AVOID_KEY_NAMES
+    # Build exclusion list from filter flags (matching FP8 convention)
+    exclude_patterns = list(AVOID_KEY_NAMES)  # Base exclusions
+    
+    if visual:
+        exclude_patterns.extend(VISUAL_AVOID_KEY_NAMES)
+    if qwen:
+        exclude_patterns.extend(QWEN_AVOID_KEY_NAMES)
+    if hunyuan:
+        exclude_patterns.extend(HUNYUAN_AVOID_KEY_NAMES)
+    if zimage or zimage_refiner:
+        exclude_patterns.extend(ZIMAGE_AVOID_KEY_NAMES)
+    if flux2:
+        exclude_patterns.extend(FLUX2_LAYER_KEYNAMES)
+    if distillation_large:
+        exclude_patterns.extend(DISTILL_LAYER_KEYNAMES_LARGE)
+    if distillation_small:
+        exclude_patterns.extend(DISTILL_LAYER_KEYNAMES_SMALL)
+    if nerf_large:
+        exclude_patterns.extend(NERF_LAYER_KEYNAMES_LARGE)
+    if nerf_small:
+        exclude_patterns.extend(NERF_LAYER_KEYNAMES_SMALL)
+    if radiance:
+        exclude_patterns.extend(RADIANCE_LAYER_KEYNAMES)
+    if wan:
+        exclude_patterns.extend(WAN_LAYER_KEYNAMES)
+    if zimage:
+        exclude_patterns.extend(ZIMAGE_LAYER_KEYNAMES)
+    if zimage_refiner:
+        exclude_patterns.extend(ZIMAGE_REFINER_LAYER_KEYNAMES)
     
     # Select converter based on --simple flag
     if simple:
@@ -140,7 +168,7 @@ def convert_to_nvfp4(
         # Filter to only weight tensors
         weight_keys = [
             k for k in keys 
-            if k.endswith(".weight") and not any(avoid in k for avoid in avoid_key_names)
+            if k.endswith(".weight") and not any(pattern in k for pattern in exclude_patterns)
         ]
         
         if verbose:
@@ -157,8 +185,8 @@ def convert_to_nvfp4(
                 output_tensors[key] = tensor
                 continue
             
-            # Skip avoided layers
-            if any(avoid in key for avoid in avoid_key_names):
+            # Skip excluded layers (based on filter flags)
+            if any(pattern in key for pattern in exclude_patterns):
                 output_tensors[key] = tensor
                 continue
             
