@@ -682,10 +682,8 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         convert_to_nvfp4(
             args.input,
             args.output,
-            comfy_quant=args.comfy_quant,
             avoid_key_names=avoid_key_names,
             heur=args.heur,
-            save_quant_metadata=args.save_quant_metadata,
             **nvfp4_kwargs,
         )
         return

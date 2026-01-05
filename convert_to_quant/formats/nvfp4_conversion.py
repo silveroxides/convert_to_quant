@@ -29,12 +29,10 @@ from ..utils.comfy_quant import should_skip_layer_for_performance
 def convert_to_nvfp4(
     input_file: str,
     output_file: str,
-    comfy_quant: bool = True,
     simple: bool = False,
     num_iter: int = 500,
     avoid_key_names: Optional[list] = None,
     heur: bool = False,
-    save_quant_metadata: bool = False,
     verbose: bool = True,
     # Optimizer/LR options (passed to LearnedNVFP4Converter)
     optimizer: str = "original",
@@ -73,7 +71,6 @@ def convert_to_nvfp4(
         num_iter: Optimization iterations (if not simple)
         avoid_key_names: Layer name patterns to skip quantization
         heur: If True, skip layers with poor quantization characteristics
-        save_quant_metadata: If True, save _quantization_metadata header
         verbose: Print progress
         optimizer: Optimization algorithm ("original", "adamw", "radam")
         lr: Initial learning rate
@@ -196,16 +193,15 @@ def convert_to_nvfp4(
             output_tensors[f"{base_key}.weight_scale"] = per_tensor_scale.cpu().to(torch.float32)
             output_tensors[f"{base_key}.block_scale"] = block_scales.cpu()  # FP8 in cuBLAS layout
             
-            if comfy_quant:
-                # Create .comfy_quant metadata tensor
-                metadata = {
-                    "format": "nvfp4",
-                    "group_size": FP4_BLOCK_SIZE,
-                    "orig_dtype": str(tensor.dtype),
-                    "orig_shape": list(tensor.shape),
-                }
-                output_tensors[f"{base_key}.comfy_quant"] = dict_to_tensor(metadata)
-                quant_metadata[base_key] = metadata
+            # Always create .comfy_quant metadata tensor (required for NVFP4)
+            metadata = {
+                "format": "nvfp4",
+                "group_size": FP4_BLOCK_SIZE,
+                "orig_dtype": str(tensor.dtype),
+                "orig_shape": list(tensor.shape),
+            }
+            output_tensors[f"{base_key}.comfy_quant"] = dict_to_tensor(metadata)
+            quant_metadata[base_key] = metadata
             
             quantized_count += 1
             
@@ -217,9 +213,9 @@ def convert_to_nvfp4(
     if NORMALIZE_SCALES_ENABLED:
         output_tensors, _ = normalize_tensorwise_scales(output_tensors)
     
-    # Save output
+    # Save output - always include quantization metadata for NVFP4
     metadata_dict = {}
-    if save_quant_metadata and quant_metadata:
+    if quant_metadata:
         import json
         metadata_dict["_quantization_metadata"] = json.dumps(quant_metadata)
     
