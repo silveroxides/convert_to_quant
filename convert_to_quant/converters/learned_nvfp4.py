@@ -490,8 +490,11 @@ class LearnedNVFP4Converter:
         """NVFP4 optimization using AdamW optimizer."""
         M, N = W_float32.shape
         
-        qdata_initial = self._simple_quantize(W_float32, total_scale)
-        qdata_f32 = _floatx_unpacked_to_f32(qdata_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        # Start with continuous pre-scaled values (like _optimize_original)
+        tensor_blocks = W_float32.reshape(M, -1, self.block_size)
+        W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
+        W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        qdata_f32 = W_q_initial.view(M, N)
         
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
         curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
@@ -576,8 +579,11 @@ class LearnedNVFP4Converter:
         """NVFP4 optimization using RAdam optimizer."""
         M, N = W_float32.shape
         
-        qdata_initial = self._simple_quantize(W_float32, total_scale)
-        qdata_f32 = _floatx_unpacked_to_f32(qdata_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        # Start with continuous pre-scaled values (like _optimize_original)
+        tensor_blocks = W_float32.reshape(M, -1, self.block_size)
+        W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
+        W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        qdata_f32 = W_q_initial.view(M, N)
         
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
         curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
