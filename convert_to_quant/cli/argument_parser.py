@@ -137,6 +137,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
         format_args = [
             "int8",
+            "nvfp4",
             "fallback",
             "block_size",
             "scaling_mode",

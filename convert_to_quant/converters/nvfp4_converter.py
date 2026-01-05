@@ -95,8 +95,8 @@ class NVFP4Converter:
         # Compute per-tensor scale if not provided
         if per_tensor_scale is None:
             amax = torch.amax(torch.abs(tensor))
-            # Scale so that amax maps to F4_E2M1_MAX
-            per_tensor_scale = amax / F4_E2M1_MAX
+            # Scale so that amax maps to FP4_E2M1_MAX
+            per_tensor_scale = amax / FP4_E2M1_MAX
         
         per_tensor_scale = per_tensor_scale.to(device=device, dtype=torch.float32)
         
@@ -105,7 +105,7 @@ class NVFP4Converter:
         
         # Compute per-block scales
         block_max = torch.amax(torch.abs(tensor_blocks), dim=-1)
-        block_scale = block_max / F4_E2M1_MAX
+        block_scale = block_max / FP4_E2M1_MAX
         block_scale_fp32 = block_scale.to(torch.float32)
         
         # Scale block scales by per-tensor scale (so total_scale = per_tensor * block_scale)
@@ -118,7 +118,7 @@ class NVFP4Converter:
         
         # Scale and quantize data
         data_scaled = tensor_blocks / total_scale.unsqueeze(-1)
-        data_scaled = torch.clamp(data_scaled, -F4_E2M1_MAX, F4_E2M1_MAX)
+        data_scaled = torch.clamp(data_scaled, -FP4_E2M1_MAX, FP4_E2M1_MAX)
         data_scaled = data_scaled.view(orig_shape)
         
         # Convert to FP4 E2M1 format

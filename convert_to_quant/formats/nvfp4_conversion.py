@@ -185,13 +185,16 @@ def convert_to_nvfp4(
                 # LearnedNVFP4Converter returns (qdata, block_scales, per_tensor_scale, dequantized)
                 qdata, block_scales, per_tensor_scale, _ = converter.convert(tensor)
             else:
-                # NVFP4Converter.quantize returns (qdata, block_scales, per_tensor_scale)
-                qdata, block_scales, per_tensor_scale = converter.quantize(tensor.float())
+                # Transfer to GPU for simple quantization
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                tensor_gpu = tensor.to(device=device, dtype=torch.float32)
+                qdata, block_scales, per_tensor_scale = converter.quantize(tensor_gpu)
+                del tensor_gpu
             
-            # Store quantized data and scales
-            output_tensors[key] = qdata  # Packed uint8
-            output_tensors[f"{base_key}.weight_scale"] = per_tensor_scale.to(torch.float32)
-            output_tensors[f"{base_key}.block_scale"] = block_scales  # FP8 in cuBLAS layout
+            # Store quantized data and scales (move to CPU for saving)
+            output_tensors[key] = qdata.cpu()  # Packed uint8
+            output_tensors[f"{base_key}.weight_scale"] = per_tensor_scale.cpu().to(torch.float32)
+            output_tensors[f"{base_key}.block_scale"] = block_scales.cpu()  # FP8 in cuBLAS layout
             
             if comfy_quant:
                 # Create .comfy_quant metadata tensor
@@ -212,7 +215,7 @@ def convert_to_nvfp4(
     
     # Normalize scales if enabled
     if NORMALIZE_SCALES_ENABLED:
-        output_tensors = normalize_tensorwise_scales(output_tensors)
+        output_tensors, _ = normalize_tensorwise_scales(output_tensors)
     
     # Save output
     metadata_dict = {}

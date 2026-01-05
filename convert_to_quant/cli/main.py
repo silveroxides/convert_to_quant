@@ -625,6 +625,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             "cleanup_fp8_scaled", "edit_quant", "actcal", "dry_run",
             "calib_samples", "manual_seed", "input_scale", "layer_config",
             "layer_config_fullmatch", "hp_filter", "full_precision_mm",
+            "full_precision_matrix_mult", "scaling_mode", "block_size",
             "scaled_fp8_marker", "actcal_samples", "actcal_percentile",
             "actcal_lora", "actcal_seed", "actcal_device", "remove_keys",
             "add_keys", "quant_filter", "no_normalize_scales", "verbose_pinned",
