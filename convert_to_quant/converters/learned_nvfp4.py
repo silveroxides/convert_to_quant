@@ -343,14 +343,23 @@ class LearnedNVFP4Converter:
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
-        """NVFP4 optimization using original gradient descent with tier-based LR."""
+        """NVFP4 optimization using original gradient descent with tier-based LR.
+        
+        Works in the pre-scaled continuous float space (like FP8):
+        - W_q = W_float32 / scale (continuous, clamped to [-6, 6])
+        - Dequant: W_dq = W_q * scale
+        - Gradient descent on W_q directly
+        - Final: encode to FP4
+        """
         M, N = W_float32.shape
         
-        # Initial quantization
-        qdata_initial = self._simple_quantize(W_float32, total_scale)
-        # Work with float representation for optimization
-        qdata_f32 = _floatx_unpacked_to_f32(qdata_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
-        W_q_refined = qdata_f32.clone()
+        # Start with initial scaled values (continuous, not discretized yet)
+        # This matches FP8: W_rounded = (W_float32 * scale).to(FP8).to(float)
+        # For NVFP4: W_q = W_float32 / total_scale, clamped to FP4 range
+        tensor_blocks = W_float32.reshape(M, -1, self.block_size)
+        W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
+        W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        W_q_refined = W_q_initial.view(M, N).clone()
         
         best_loss = float("inf")
         best_qdata = None
@@ -391,6 +400,7 @@ class LearnedNVFP4Converter:
         
         for i in pbar:
             with torch.no_grad():
+                # Dequantize: W_dq = W_q * scale (block-wise)
                 current_dq = self._nvfp4_dequantize_blockwise(W_q_refined, total_scale, M, N)
                 error = current_dq - W_float32
                 projected_error = U_k.T @ error @ Vh_k.T
@@ -451,20 +461,22 @@ class LearnedNVFP4Converter:
             if self._check_early_stop(current_loss, curr_lr, worse_loss_counter):
                 break
             
-            # Gradient step
+            # Gradient step in pre-scaled space
+            # d(loss)/d(W_q) = d(loss)/d(dequant) * d(dequant)/d(W_q)
+            # Since dequant = W_q * scale, d(dequant)/d(W_q) = scale
+            # But we want to update W_q, so: W_q -= lr * grad_direction * scale
+            # However, this is applying gradient in dequant space then converting.
+            # FP8 does: W_q_refined -= curr_lr * (grad_direction * scale)
+            # For NVFP4 (opposite convention), we do the same
             with torch.no_grad():
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-                # Chain rule: d(loss)/d(W_q) = d(loss)/d(dequant) * d(dequant)/d(W_q)
-                #           = grad_direction * scale (block-wise)
-                grad_blocks = grad_direction.reshape(M, -1, self.block_size)
-                scaled_grad = (grad_blocks * total_scale.unsqueeze(-1)).view(M, N)
-                W_q_refined -= curr_lr * scaled_grad
+                W_q_refined -= curr_lr * grad_direction
                 # Clamp to FP4 range
                 W_q_refined = torch.clamp(W_q_refined, -FP4_E2M1_MAX, FP4_E2M1_MAX)
         
         pbar.close()
         
-        # Convert best float values back to FP4 encoding
+        # Convert best continuous values to FP4 encoding
         best_qdata = best_qdata if best_qdata is not None else W_q_refined
         return _f32_to_floatx_unpacked(best_qdata.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
     
