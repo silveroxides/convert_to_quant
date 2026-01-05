@@ -15,7 +15,24 @@ from .argument_parser import (
     FILTER_ARGS,
     ADVANCED_ARGS,
 )
-from ..constants import NORMALIZE_SCALES_ENABLED, TARGET_FP8_DTYPE, AVOID_KEY_NAMES
+from ..constants import (
+    NORMALIZE_SCALES_ENABLED,
+    TARGET_FP8_DTYPE,
+    AVOID_KEY_NAMES,
+    VISUAL_AVOID_KEY_NAMES,
+    QWEN_AVOID_KEY_NAMES,
+    HUNYUAN_AVOID_KEY_NAMES,
+    ZIMAGE_AVOID_KEY_NAMES,
+    FLUX2_LAYER_KEYNAMES,
+    DISTILL_LAYER_KEYNAMES_LARGE,
+    DISTILL_LAYER_KEYNAMES_SMALL,
+    NERF_LAYER_KEYNAMES_LARGE,
+    NERF_LAYER_KEYNAMES_SMALL,
+    RADIANCE_LAYER_KEYNAMES,
+    WAN_LAYER_KEYNAMES,
+    ZIMAGE_LAYER_KEYNAMES,
+    ZIMAGE_REFINER_LAYER_KEYNAMES,
+)
 from ..config.layer_config import load_layer_config, generate_config_template
 from ..formats.fp8_conversion import convert_to_fp8_scaled
 from ..formats.format_migration import convert_fp8_scaled_to_comfy_quant
@@ -612,6 +629,36 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             print("Error: Output file cannot be same as input.")
             return
 
+        # Build combined avoid_key_names list from filter flags
+        avoid_key_names = list(AVOID_KEY_NAMES)  # Start with base list
+        
+        if args.visual:
+            avoid_key_names.extend(VISUAL_AVOID_KEY_NAMES)
+        if args.qwen:
+            avoid_key_names.extend(QWEN_AVOID_KEY_NAMES)
+        if args.hunyuan:
+            avoid_key_names.extend(HUNYUAN_AVOID_KEY_NAMES)
+        if args.zimage or args.zimage_refiner:
+            avoid_key_names.extend(ZIMAGE_AVOID_KEY_NAMES)
+        if args.flux2:
+            avoid_key_names.extend(FLUX2_LAYER_KEYNAMES)
+        if args.distillation_large:
+            avoid_key_names.extend(DISTILL_LAYER_KEYNAMES_LARGE)
+        if args.distillation_small:
+            avoid_key_names.extend(DISTILL_LAYER_KEYNAMES_SMALL)
+        if args.nerf_large:
+            avoid_key_names.extend(NERF_LAYER_KEYNAMES_LARGE)
+        if args.nerf_small:
+            avoid_key_names.extend(NERF_LAYER_KEYNAMES_SMALL)
+        if args.radiance:
+            avoid_key_names.extend(RADIANCE_LAYER_KEYNAMES)
+        if args.wan:
+            avoid_key_names.extend(WAN_LAYER_KEYNAMES)
+        if args.zimage:
+            avoid_key_names.extend(ZIMAGE_LAYER_KEYNAMES)
+        if args.zimage_refiner:
+            avoid_key_names.extend(ZIMAGE_REFINER_LAYER_KEYNAMES)
+        
         # Build converter kwargs (exclude non-converter args)
         nvfp4_excluded = [
             "input", "output", "comfy_quant", "heur", "save_quant_metadata",
@@ -636,7 +683,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             args.input,
             args.output,
             comfy_quant=args.comfy_quant,
-            avoid_key_names=AVOID_KEY_NAMES,
+            avoid_key_names=avoid_key_names,
             heur=args.heur,
             save_quant_metadata=args.save_quant_metadata,
             **nvfp4_kwargs,
