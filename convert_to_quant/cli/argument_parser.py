@@ -13,6 +13,7 @@ import sys
 
 EXPERIMENTAL_ARGS = {
     "int8",
+    "nvfp4",
     "fallback",
     "custom_layers",
     "custom_type",
@@ -136,6 +137,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
         format_args = [
             "int8",
+            "nvfp4",
             "fallback",
             "block_size",
             "scaling_mode",

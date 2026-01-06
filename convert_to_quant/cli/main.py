@@ -15,14 +15,58 @@ from .argument_parser import (
     FILTER_ARGS,
     ADVANCED_ARGS,
 )
-from ..constants import NORMALIZE_SCALES_ENABLED, TARGET_FP8_DTYPE
+from ..constants import (
+    NORMALIZE_SCALES_ENABLED,
+    TARGET_FP8_DTYPE,
+    AVOID_KEY_NAMES,
+    VISUAL_AVOID_KEY_NAMES,
+    QWEN_AVOID_KEY_NAMES,
+    HUNYUAN_AVOID_KEY_NAMES,
+    ZIMAGE_AVOID_KEY_NAMES,
+    FLUX2_LAYER_KEYNAMES,
+    DISTILL_LAYER_KEYNAMES_LARGE,
+    DISTILL_LAYER_KEYNAMES_SMALL,
+    NERF_LAYER_KEYNAMES_LARGE,
+    NERF_LAYER_KEYNAMES_SMALL,
+    RADIANCE_LAYER_KEYNAMES,
+    WAN_LAYER_KEYNAMES,
+    ZIMAGE_LAYER_KEYNAMES,
+    ZIMAGE_REFINER_LAYER_KEYNAMES,
+)
 from ..config.layer_config import load_layer_config, generate_config_template
 from ..formats.fp8_conversion import convert_to_fp8_scaled
 from ..formats.format_migration import convert_fp8_scaled_to_comfy_quant
 from ..formats.int8_conversion import convert_int8_to_comfy_quant
 from ..formats.legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
+from ..formats.nvfp4_conversion import convert_to_nvfp4
 from ..utils.comfy_quant import edit_comfy_quant
 from ..pinned_transfer import set_verbose as set_pinned_verbose
+import json
+from safetensors import safe_open
+
+
+def load_input_scales(path: str) -> dict:
+    """Load input scales from JSON or safetensors file.
+    
+    Args:
+        path: Path to JSON file or safetensors model with .input_scale tensors
+        
+    Returns:
+        Dict mapping layer base names to input_scale values (float)
+    """
+    if path.endswith('.json'):
+        with open(path) as f:
+            return json.load(f)
+    elif path.endswith('.safetensors'):
+        scales = {}
+        with safe_open(path, framework="pt") as f:
+            for key in f.keys():
+                if key.endswith('.input_scale'):
+                    base = key.rsplit('.input_scale', 1)[0]
+                    scales[base] = f.get_tensor(key).item()
+        return scales
+    else:
+        raise ValueError(f"Unsupported input scales format: {path}. Use .json or .safetensors")
 
 
 def main():
@@ -53,6 +97,11 @@ def main():
         "--int8",
         action="store_true",
         help="Use INT8 block-wise quantization instead of FP8.",
+    )
+    parser.add_argument(
+        "--nvfp4",
+        action="store_true",
+        help="Use NVFP4 (FP4 E2M1) block quantization. Requires Blackwell GPU (SM >= 10.0/12.0) for inference.",
     )
     parser.add_argument(
         "--fallback",
@@ -448,6 +497,17 @@ def main():
         help="Disable normalization of 1-element scale arrays to scalars (for testing/compatibility)",
     )
 
+    # NVFP4 input scales (from calibration or another NVFP4 model)
+    parser.add_argument(
+        "--input-scales",
+        type=str,
+        default=None,
+        dest="input_scales_path",
+        help="Path to input scales file (.json or .safetensors). "
+             "JSON format: {'layer.name': 0.015, ...}. "
+             "Safetensors: extracts .input_scale tensors from an existing NVFP4 model.",
+    )
+
 
     # ComfyQuant layer config editing mode
     parser.add_argument(
@@ -589,6 +649,56 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             block_size=int8_block_size,
             include_input_scale=args.input_scale,
             save_quant_metadata=args.save_quant_metadata,
+        )
+        return
+
+    # Handle NVFP4 quantization mode (separate workflow)
+    if args.nvfp4:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_nvfp4.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        # Build converter kwargs - filter flags are now passed directly
+        # and converted to exclude_patterns inside convert_to_nvfp4
+        nvfp4_excluded = [
+            "input", "output", "comfy_quant", "save_quant_metadata",
+            "int8", "nvfp4", "fallback", "custom_layers", "custom_type",
+            "custom_block_size", "custom_scaling_mode", "custom_simple",
+            "custom_heur", "fallback_block_size", "fallback_simple",
+            "convert_fp8_scaled", "convert_int8_scaled", "legacy_input_add",
+            "cleanup_fp8_scaled", "edit_quant", "actcal", "dry_run",
+            "calib_samples", "manual_seed", "input_scale", "layer_config",
+            "layer_config_fullmatch", "hp_filter", "full_precision_mm",
+            "full_precision_matrix_mult", "scaling_mode", "block_size",
+            "scaled_fp8_marker", "actcal_samples", "actcal_percentile",
+            "actcal_lora", "actcal_seed", "actcal_device", "remove_keys",
+            "add_keys", "quant_filter", "no_normalize_scales", "verbose_pinned",
+            "input_scales_path",  # Handle separately
+        ]
+        nvfp4_kwargs = {k: v for k, v in vars(args).items() if k not in nvfp4_excluded}
+
+        # Load input scales if provided
+        input_scales = None
+        if args.input_scales_path:
+            if not os.path.exists(args.input_scales_path):
+                print(f"Error: Input scales file not found: {args.input_scales_path}")
+                return
+            input_scales = load_input_scales(args.input_scales_path)
+            print(f"Loaded {len(input_scales)} input scales from: {args.input_scales_path}")
+
+        convert_to_nvfp4(
+            args.input,
+            args.output,
+            input_scales=input_scales,
+            **nvfp4_kwargs,
         )
         return
 

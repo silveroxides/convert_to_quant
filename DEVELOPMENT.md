@@ -1,5 +1,135 @@
 # Development Log
 
+## 2026-01-06: NVFP4 Console Output & Bias Correction
+
+### Session Summary
+Rewrote `nvfp4_conversion.py` to add legacy-style console outputs and bias correction. Now matches FP8 conversion flow with calibration scanning, layer progress, bias correction, and final shapes.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `formats/nvfp4_conversion.py` | Complete rewrite: added `calib_samples`/`seed` params, calibration data generation, `(i+1)/(total)` layer progress, bias correction using dequantized weights, final shape outputs |
+
+### New Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `calib_samples` | 3072 | Number of random samples for bias correction |
+| `seed` | 42 | Seed for reproducibility |
+
+### Verification
+
+- Syntax check: ✅ Passed
+
+---
+
+## 2026-01-06: Fix Console Output Formatting in Converters
+
+### Session Summary
+Fixed SVD print statement formatting in `learned_rounding.py` to match the legacy reference script. Added `    - ` indentation prefix to 6 print statements.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/learned_rounding.py` | Added `    - ` prefix to SVD print statements at lines 1236, 1240, 1336, 1340, 1448, 1453 |
+
+### Before/After
+
+```diff
+-print("Using torch.linalg.svd with full_matrices=True")
++print("    - Using torch.linalg.svd with full_matrices=True")
+
+-print("Trying svd_lowrank")
++print("    - Trying svd_lowrank")
+```
+
+### Verification
+
+- Syntax check: ✅ Passed
+
+---
+
+## 2026-01-06: NVFP4 Format Fixes (Match NVIDIA Official)
+
+### Session Summary
+Fixed NVFP4 output format to match NVIDIA FLUX.2-dev-NVFP4 structure. Added `--input-scales` CLI option for calibrated activation scales.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `formats/nvfp4_conversion.py` | Block scale as `float8_e4m3fn` (not uint8), per-tensor scale as scalar `[]` (not `[1]`), added `input_scales` param |
+| `cli/main.py` | Added `load_input_scales()` helper, `--input-scales` CLI arg (loads JSON or safetensors) |
+| `repair_nvfp4_metadata.py` | Squeeze `weight_scale_2` from `[1]` to `[]`, added dtype warning |
+
+### Usage
+
+```bash
+# Quantize with calibrated input scales
+python -m convert_to_quant -i model.safetensors --nvfp4 --input-scales scales.json
+
+# Or from another NVFP4 model
+python -m convert_to_quant -i model.safetensors --nvfp4 --input-scales reference_nvfp4.safetensors
+```
+
+### Format Comparison
+
+| Tensor | Before | After (NVIDIA-compatible) |
+|--------|--------|--------------------------|
+| `.weight_scale` | uint8 | float8_e4m3fn |
+| `.weight_scale_2` | `[1]` | `[]` (scalar) |
+| `.input_scale` | missing | `[]` (scalar, optional) |
+
+---
+
+## 2026-01-05: NVFP4 (E2M1) Quantization Support
+
+### Session Summary
+Added NVIDIA FP4 E2M1 block quantization with two converters: raw (`NVFP4Converter`) and optimized (`LearnedNVFP4Converter` with SVD). Full CLI integration with `--nvfp4` flag.
+
+---
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `utils/float_utils.py` | FP4 encode/decode, uint4 packing, cuBLAS tiled layout |
+| `converters/nvfp4_converter.py` | Raw NVFP4Converter (simple quantization) |
+| `converters/learned_nvfp4.py` | LearnedNVFP4Converter (SVD optimization, LR schedules) |
+| `formats/nvfp4_conversion.py` | File conversion using converter_kwargs pattern |
+| `INFERENCE.md` | Runtime/comfy-kitchen reference |
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `FP4_E2M1_MAX`, `FP4_BLOCK_SIZE`, `nvfp4` format |
+| `cli/argument_parser.py` | Added `nvfp4` to EXPERIMENTAL_ARGS |
+| `cli/main.py` | Added `--nvfp4` dispatcher with `nvfp4_kwargs` pattern |
+
+### Usage
+
+```bash
+python -m convert_to_quant -i model.safetensors --nvfp4 --comfy_quant  # Optimized
+python -m convert_to_quant -i model.safetensors --nvfp4 --simple       # Raw
+```
+
+### Git
+
+```bash
+git checkout feature/nvfp4-support
+```
+
+---
+
 ## 2026-01-04: Modular Refactoring of convert_to_quant.py
 
 ### Session Summary

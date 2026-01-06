@@ -145,6 +145,12 @@ INT8_MIN = int(torch.iinfo(TARGET_INT8_DTYPE).min)  # -128
 INT8_MAX = int(torch.iinfo(TARGET_INT8_DTYPE).max)  # 127
 INT8_SYMMETRIC_MAX = min(abs(INT8_MIN), INT8_MAX)  # 127 (symmetric range)
 
+# FP4 NVFP4 E2M1 constants
+TARGET_FP4_DTYPE = torch.uint8  # Packed format (2 values per byte)
+FP4_E2M1_MAX = 6.0
+FP4_E2M1_EPS = 0.5
+FP4_BLOCK_SIZE = 16  # NVFP4 uses 16-element blocks
+
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
 VALID_QUANT_FORMATS = {
     "float8_e4m3fn",
@@ -152,6 +158,7 @@ VALID_QUANT_FORMATS = {
     "float8_e4m3fn_blockwise",
     "float8_e4m3fn_block3d",
     "int8_blockwise",
+    "nvfp4",  # NVIDIA FP4 E2M1 block quantization
 }
 
 # Global config: normalize 1-element scale arrays to scalars (set from CLI)
