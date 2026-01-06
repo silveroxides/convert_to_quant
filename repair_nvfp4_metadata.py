@@ -72,8 +72,19 @@ def repair_nvfp4_metadata(
         new_file_metadata = dict(metadata)
         new_file_metadata["_quantization_metadata"] = json.dumps(fixed_metadata)
         
-        # Load all tensors
-        tensors = {key: f.get_tensor(key) for key in f.keys()}
+        # Load all tensors and fix scalar weight_scale tensors
+        tensors = {}
+        scalar_scales_fixed = 0
+        for key in f.keys():
+            tensor = f.get_tensor(key)
+            # Fix scalar weight_scale tensors ([] -> [1]) for ComfyUI .view() compatibility
+            if key.endswith(".weight_scale") and tensor.dim() == 0:
+                tensor = tensor.unsqueeze(0)
+                scalar_scales_fixed += 1
+            tensors[key] = tensor
+        
+        if scalar_scales_fixed > 0:
+            print(f"Fixed {scalar_scales_fixed} scalar weight_scale tensors")
     
     # If replacing original, rename faulty file to .bak first
     backup_file = None

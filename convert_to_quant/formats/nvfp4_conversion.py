@@ -218,7 +218,11 @@ def convert_to_nvfp4(
             
             # Store quantized data and scales (move to CPU for saving)
             output_tensors[key] = qdata.cpu()  # Packed uint8
-            output_tensors[f"{base_key}.weight_scale"] = per_tensor_scale.cpu().to(torch.float32)
+            # Ensure weight_scale is 1D (not scalar) for ComfyUI .view() compatibility
+            scale_val = per_tensor_scale.cpu().to(torch.float32)
+            if scale_val.dim() == 0:
+                scale_val = scale_val.unsqueeze(0)  # [] -> [1]
+            output_tensors[f"{base_key}.weight_scale"] = scale_val
             output_tensors[f"{base_key}.block_scale"] = block_scales.cpu()  # FP8 in cuBLAS layout
             
             # Always create .comfy_quant metadata tensor (required for NVFP4)
