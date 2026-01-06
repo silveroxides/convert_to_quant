@@ -74,10 +74,13 @@ def repair_nvfp4_metadata(
         
         # Load all tensors and fix issues:
         # 1. Rename old scale names to match ComfyUI convention
-        # 2. Fix scalar weight_scale_2 tensors ([] -> [1])
+        # 2. Fix 1D weight_scale_2 tensors ([1] -> []) to match NVIDIA scalar format
+        # NOTE: weight_scale dtype fix (uint8->float8) is NOT feasible via repair.
+        #       If weight_scale is uint8, the model must be re-quantized.
         tensors = {}
         renamed_scales = 0
         scalar_scales_fixed = 0
+        dtype_warning_shown = False
         
         all_keys = list(f.keys())
         for key in all_keys:
@@ -85,7 +88,7 @@ def repair_nvfp4_metadata(
             new_key = key
             
             # Rename old naming convention to new:
-            #   Old: .block_scale -> New: .weight_scale (FP8 as uint8)
+            #   Old: .block_scale -> New: .weight_scale (should be float8)
             #   Old: .weight_scale (per_tensor) -> New: .weight_scale_2
             if key.endswith(".block_scale"):
                 # Old block_scale becomes weight_scale
@@ -100,9 +103,17 @@ def repair_nvfp4_metadata(
                     new_key = key.replace(".weight_scale", ".weight_scale_2")
                     renamed_scales += 1
             
-            # Fix scalar weight_scale_2 tensors ([] -> [1]) for ComfyUI
-            if new_key.endswith(".weight_scale_2") and tensor.dim() == 0:
-                tensor = tensor.unsqueeze(0)
+            # Warn about weight_scale dtype issue (uint8 instead of float8)
+            if new_key.endswith(".weight_scale") and not dtype_warning_shown:
+                import torch
+                if tensor.dtype == torch.uint8:
+                    print("WARNING: weight_scale is uint8 (should be float8_e4m3fn).")
+                    print("         This cannot be fixed by repair. Re-quantize the model instead.")
+                    dtype_warning_shown = True
+            
+            # Fix weight_scale_2 tensors: squeeze [1] to scalar [] (NVIDIA format)
+            if new_key.endswith(".weight_scale_2") and tensor.dim() == 1 and tensor.numel() == 1:
+                tensor = tensor.squeeze(0)  # [1] -> []
                 scalar_scales_fixed += 1
             
             tensors[new_key] = tensor
@@ -110,7 +121,7 @@ def repair_nvfp4_metadata(
         if renamed_scales > 0:
             print(f"Renamed {renamed_scales} scale tensors to ComfyUI convention")
         if scalar_scales_fixed > 0:
-            print(f"Fixed {scalar_scales_fixed} scalar weight_scale_2 tensors")
+            print(f"Fixed {scalar_scales_fixed} weight_scale_2 tensors: [1] -> [] (scalar)")
     
     # If replacing original, rename faulty file to .bak first
     backup_file = None

@@ -1,5 +1,40 @@
 # Development Log
 
+## 2026-01-06: NVFP4 Format Fixes (Match NVIDIA Official)
+
+### Session Summary
+Fixed NVFP4 output format to match NVIDIA FLUX.2-dev-NVFP4 structure. Added `--input-scales` CLI option for calibrated activation scales.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `formats/nvfp4_conversion.py` | Block scale as `float8_e4m3fn` (not uint8), per-tensor scale as scalar `[]` (not `[1]`), added `input_scales` param |
+| `cli/main.py` | Added `load_input_scales()` helper, `--input-scales` CLI arg (loads JSON or safetensors) |
+| `repair_nvfp4_metadata.py` | Squeeze `weight_scale_2` from `[1]` to `[]`, added dtype warning |
+
+### Usage
+
+```bash
+# Quantize with calibrated input scales
+python -m convert_to_quant -i model.safetensors --nvfp4 --input-scales scales.json
+
+# Or from another NVFP4 model
+python -m convert_to_quant -i model.safetensors --nvfp4 --input-scales reference_nvfp4.safetensors
+```
+
+### Format Comparison
+
+| Tensor | Before | After (NVIDIA-compatible) |
+|--------|--------|--------------------------|
+| `.weight_scale` | uint8 | float8_e4m3fn |
+| `.weight_scale_2` | `[1]` | `[]` (scalar) |
+| `.input_scale` | missing | `[]` (scalar, optional) |
+
+---
+
 ## 2026-01-05: NVFP4 (E2M1) Quantization Support
 
 ### Session Summary

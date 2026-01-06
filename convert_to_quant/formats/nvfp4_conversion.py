@@ -84,6 +84,8 @@ def convert_to_nvfp4(
     early_stop_loss: float = 1e-8,
     early_stop_lr: float = 1e-10,
     early_stop_stall: int = 1000,
+    # Input scales (optional, from calibration or another NVFP4 model)
+    input_scales: Optional[dict] = None,
 ) -> None:
     """
     Convert safetensors model to NVFP4 (FP4 E2M1) quantized format.
@@ -222,14 +224,17 @@ def convert_to_nvfp4(
             #   weight_scale = block_scale (FP8 in cuBLAS tiled layout)
             output_tensors[key] = qdata.cpu()  # Packed uint8
             
-            # per_tensor_scale -> weight_scale_2 (ensure 1D for ComfyUI .view() compat)
-            scale_val = per_tensor_scale.cpu().to(torch.float32)
-            if scale_val.dim() == 0:
-                scale_val = scale_val.unsqueeze(0)  # [] -> [1]
-            output_tensors[f"{base_key}.weight_scale_2"] = scale_val
+            # per_tensor_scale -> weight_scale_2 (scalar, matching NVIDIA format)
+            output_tensors[f"{base_key}.weight_scale_2"] = per_tensor_scale.cpu().to(torch.float32)
             
-            # block_scales -> weight_scale (FP8 stored as uint8 for safetensors compat)
-            output_tensors[f"{base_key}.weight_scale"] = block_scales.cpu().view(dtype=torch.uint8)
+            # block_scales -> weight_scale (float8_e4m3fn, matching NVIDIA format)
+            output_tensors[f"{base_key}.weight_scale"] = block_scales.cpu()
+            
+            # Optional: input_scale from calibration (scalar float32)
+            if input_scales and base_key in input_scales:
+                output_tensors[f"{base_key}.input_scale"] = torch.tensor(
+                    input_scales[base_key], dtype=torch.float32
+                )
             
             # Always create .comfy_quant metadata tensor (required for NVFP4)
             metadata = {

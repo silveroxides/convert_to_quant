@@ -41,6 +41,32 @@ from ..formats.legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
 from ..formats.nvfp4_conversion import convert_to_nvfp4
 from ..utils.comfy_quant import edit_comfy_quant
 from ..pinned_transfer import set_verbose as set_pinned_verbose
+import json
+from safetensors import safe_open
+
+
+def load_input_scales(path: str) -> dict:
+    """Load input scales from JSON or safetensors file.
+    
+    Args:
+        path: Path to JSON file or safetensors model with .input_scale tensors
+        
+    Returns:
+        Dict mapping layer base names to input_scale values (float)
+    """
+    if path.endswith('.json'):
+        with open(path) as f:
+            return json.load(f)
+    elif path.endswith('.safetensors'):
+        scales = {}
+        with safe_open(path, framework="pt") as f:
+            for key in f.keys():
+                if key.endswith('.input_scale'):
+                    base = key.rsplit('.input_scale', 1)[0]
+                    scales[base] = f.get_tensor(key).item()
+        return scales
+    else:
+        raise ValueError(f"Unsupported input scales format: {path}. Use .json or .safetensors")
 
 
 def main():
@@ -471,6 +497,17 @@ def main():
         help="Disable normalization of 1-element scale arrays to scalars (for testing/compatibility)",
     )
 
+    # NVFP4 input scales (from calibration or another NVFP4 model)
+    parser.add_argument(
+        "--input-scales",
+        type=str,
+        default=None,
+        dest="input_scales_path",
+        help="Path to input scales file (.json or .safetensors). "
+             "JSON format: {'layer.name': 0.015, ...}. "
+             "Safetensors: extracts .input_scale tensors from an existing NVFP4 model.",
+    )
+
 
     # ComfyQuant layer config editing mode
     parser.add_argument(
@@ -644,12 +681,23 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             "scaled_fp8_marker", "actcal_samples", "actcal_percentile",
             "actcal_lora", "actcal_seed", "actcal_device", "remove_keys",
             "add_keys", "quant_filter", "no_normalize_scales", "verbose_pinned",
+            "input_scales_path",  # Handle separately
         ]
         nvfp4_kwargs = {k: v for k, v in vars(args).items() if k not in nvfp4_excluded}
+
+        # Load input scales if provided
+        input_scales = None
+        if args.input_scales_path:
+            if not os.path.exists(args.input_scales_path):
+                print(f"Error: Input scales file not found: {args.input_scales_path}")
+                return
+            input_scales = load_input_scales(args.input_scales_path)
+            print(f"Loaded {len(input_scales)} input scales from: {args.input_scales_path}")
 
         convert_to_nvfp4(
             args.input,
             args.output,
+            input_scales=input_scales,
             **nvfp4_kwargs,
         )
         return
