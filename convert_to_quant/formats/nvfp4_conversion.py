@@ -245,7 +245,9 @@ def convert_to_nvfp4(
     metadata_dict = {}
     if quant_metadata:
         import json
-        metadata_dict["_quantization_metadata"] = json.dumps(quant_metadata)
+        # Wrap in proper structure with format_version and layers (matching FP8)
+        full_metadata = {"format_version": "1.0", "layers": quant_metadata}
+        metadata_dict["_quantization_metadata"] = json.dumps(full_metadata)
     
     if verbose:
         print(f"\nSaving to: {output_file}")
