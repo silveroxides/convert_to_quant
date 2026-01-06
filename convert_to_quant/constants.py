@@ -265,6 +265,39 @@ FP4_E2M1_MAX = 6.0
 FP4_E2M1_EPS = 0.5
 FP4_BLOCK_SIZE = 16  # NVFP4 uses 16-element blocks
 
+# --- Adaptive LR Tier Configuration ---
+# Used by 'original' optimizer in LearnedRoundingConverter and LearnedNVFP4Converter.
+# Format: List of (counter_threshold, improvement_mult, decay_mult, min_lr)
+#   - counter_threshold: worse_loss_counter must be >= this to use this tier
+#   - improvement_mult: LR multiplier when loss improves (boost)
+#   - decay_mult: LR multiplier when loss worsens (decay)
+#   - min_lr: minimum LR floor for decay operations at this tier
+ADAPTIVE_LR_TIERS_IMPROVE = [
+    # (counter_threshold, multiplier, max_lr)
+    (0, 1.25, 100.0),     # counter < 50: boost by 1.25x
+    (50, 1.375, 100.0),   # 50 <= counter < 75
+    (75, 1.5, 100.0),     # 75 <= counter < 100
+    (100, 1.75, 100.0),   # 100 <= counter < 125
+    (125, 2.0, 100.0),    # 125 <= counter < 150
+    (150, 2.25, 100.0),   # 150 <= counter < 200
+    (200, 2.5, 100.0),    # 200 <= counter < 250
+    (250, 2.75, 100.0),   # 250 <= counter < 300
+    (300, 3.0, 100.0),    # counter >= 300
+]
+
+ADAPTIVE_LR_TIERS_DECAY = [
+    # (counter_threshold, multiplier, min_lr)
+    (0, 0.95, 9e-8),      # counter < 26: decay by 0.95x
+    (26, 0.97, 8e-8),     # 26 <= counter < 51
+    (51, 0.985, 7e-8),    # 51 <= counter < 76
+    (76, 0.9875, 6e-8),   # 76 <= counter < 101
+    (101, 0.98875, 5e-8), # 101 <= counter < 151
+    (151, 0.99, 4e-8),    # 151 <= counter < 201
+    (201, 0.99125, 3e-8), # 201 <= counter < 251
+    (251, 0.9925, 2e-8),  # 251 <= counter < 301
+    (301, 0.995, 5e-9),   # counter >= 301
+]
+
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
 VALID_QUANT_FORMATS = {
     "float8_e4m3fn",

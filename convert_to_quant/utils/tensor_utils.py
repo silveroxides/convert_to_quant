@@ -72,3 +72,94 @@ def normalize_tensorwise_scales(
                 normalized_count += 1
 
     return tensors, normalized_count
+
+
+def generate_calibration_data(
+    tensors: Dict[str, torch.Tensor],
+    calib_samples: int,
+    seed: int,
+    device: str,
+    compute_dtype: torch.dtype = torch.float32,
+) -> Dict[int, torch.Tensor]:
+    """
+    Generate random calibration data for each unique input dimension.
+    
+    Used for bias correction during quantization - creates synthetic
+    activation samples for each unique weight input dimension found.
+    
+    Args:
+        tensors: Dictionary of model tensors to scan for weight shapes
+        calib_samples: Number of calibration samples to generate per dimension
+        seed: Random seed for reproducibility
+        device: Device to create tensors on ('cuda' or 'cpu')
+        compute_dtype: Data type for calibration tensors (default: float32)
+    
+    Returns:
+        Dict mapping input_features -> calibration tensor of shape (calib_samples, input_features)
+    """
+    seed_generator = torch.Generator(device=device)
+    seed_generator.manual_seed(seed)
+    
+    calibration_data_cache: Dict[int, torch.Tensor] = {}
+    
+    for key, tensor in tensors.items():
+        if key.endswith(".weight") and tensor.ndim == 2:
+            in_features = tensor.shape[1]
+            if in_features not in calibration_data_cache:
+                calibration_data_cache[in_features] = torch.randn(
+                    calib_samples,
+                    in_features,
+                    dtype=compute_dtype,
+                    generator=seed_generator,
+                    device=device,
+                )
+    
+    return calibration_data_cache
+
+
+def adaptive_lr_update(
+    curr_lr: float,
+    improved: bool,
+    counter_for_tier: int,
+    worse_loss_counter: int,
+    small_mult: float = 1.0,
+) -> float:
+    """
+    Compute new learning rate using tier-based adaptive schedule.
+    
+    Uses ADAPTIVE_LR_TIERS_IMPROVE and ADAPTIVE_LR_TIERS_DECAY from constants
+    to determine appropriate boost/decay multipliers based on worse_loss_counter.
+    
+    Args:
+        curr_lr: Current learning rate
+        improved: Whether loss improved this iteration
+        counter_for_tier: Counter value to use for tier selection (may differ from worse_loss_counter in no-reset mode)
+        worse_loss_counter: Current worse loss counter
+        small_mult: Optional multiplier for square matrices (default 1.0)
+    
+    Returns:
+        Updated learning rate
+    """
+    from ..constants import ADAPTIVE_LR_TIERS_IMPROVE, ADAPTIVE_LR_TIERS_DECAY
+    
+    if improved:
+        # Find appropriate improvement tier
+        tier = ADAPTIVE_LR_TIERS_IMPROVE[-1]  # Default to highest tier
+        for i, (threshold, mult, max_lr) in enumerate(ADAPTIVE_LR_TIERS_IMPROVE):
+            next_threshold = ADAPTIVE_LR_TIERS_IMPROVE[i + 1][0] if i + 1 < len(ADAPTIVE_LR_TIERS_IMPROVE) else float('inf')
+            if threshold <= counter_for_tier < next_threshold:
+                tier = (threshold, mult, max_lr)
+                break
+        _, mult, max_lr = tier
+        return min(curr_lr * (mult * small_mult), max_lr)
+    else:
+        # Find appropriate decay tier
+        tier = ADAPTIVE_LR_TIERS_DECAY[-1]  # Default to highest tier
+        for i, (threshold, mult, min_lr) in enumerate(ADAPTIVE_LR_TIERS_DECAY):
+            next_threshold = ADAPTIVE_LR_TIERS_DECAY[i + 1][0] if i + 1 < len(ADAPTIVE_LR_TIERS_DECAY) else float('inf')
+            if threshold <= worse_loss_counter < next_threshold:
+                tier = (threshold, mult, min_lr)
+                break
+        _, mult, min_lr = tier
+        return max(curr_lr * (mult * small_mult), min_lr)
+
