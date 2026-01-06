@@ -12,14 +12,24 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 
-def repair_nvfp4_metadata(input_file: str, output_file: str = None, dry_run: bool = False) -> bool:
+def repair_nvfp4_metadata(
+    input_file: str, 
+    output_file: str = None, 
+    dry_run: bool = False,
+    replace_original: bool = False,
+) -> bool:
     """
     Repair NVFP4 metadata nesting.
     
     Returns True if repair was needed, False if already correct.
     """
-    if output_file is None:
-        output_file = input_file  # In-place repair
+    # Determine output path
+    if replace_original:
+        output_file = input_file  # Will rename original to .bak first
+    elif output_file is None:
+        # Default: add _repaired suffix
+        base, ext = os.path.splitext(input_file)
+        output_file = f"{base}_repaired{ext}"
     
     with safe_open(input_file, framework="pt") as f:
         metadata = f.metadata() or {}
@@ -54,6 +64,7 @@ def repair_nvfp4_metadata(input_file: str, output_file: str = None, dry_run: boo
         
         if dry_run:
             print(f"[DRY RUN] Would wrap {len(quant_meta)} layers in format_version/layers structure")
+            print(f"[DRY RUN] Output would be: {output_file}")
             return True
         
         # Fix: wrap in proper structure
@@ -64,25 +75,29 @@ def repair_nvfp4_metadata(input_file: str, output_file: str = None, dry_run: boo
         # Load all tensors
         tensors = {key: f.get_tensor(key) for key in f.keys()}
     
-    # Save with fixed metadata (atomic write for in-place safety)
+    # If replacing original, rename faulty file to .bak first
+    backup_file = None
+    if replace_original:
+        backup_file = input_file + ".bak"
+        print(f"Backing up original to: {backup_file}")
+        os.rename(input_file, backup_file)
+    
+    # Save repaired file
     print(f"Saving repaired file to: {output_file}")
     os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
     
-    # Write to temp file first, then rename (atomic on same filesystem)
-    temp_file = output_file + ".tmp"
     try:
-        save_file(tensors, temp_file, metadata=new_file_metadata)
-        # Atomic rename (overwrites destination on Windows/Linux)
-        if os.path.exists(output_file) and output_file != input_file:
-            os.remove(output_file)
-        os.replace(temp_file, output_file)
+        save_file(tensors, output_file, metadata=new_file_metadata)
     except Exception as e:
-        # Clean up temp file on failure
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+        # Restore backup on failure
+        if backup_file and os.path.exists(backup_file):
+            print(f"Error occurred, restoring backup...")
+            os.rename(backup_file, input_file)
         raise RuntimeError(f"Failed to save repaired file: {e}") from e
     
     print(f"Done! Repaired metadata for {len(quant_meta)} layers.")
+    if backup_file:
+        print(f"Original backed up to: {backup_file}")
     return True
 
 
@@ -91,7 +106,9 @@ def main():
         description="Repair NVFP4 metadata nesting for models with broken format"
     )
     parser.add_argument("input", help="Input safetensors file")
-    parser.add_argument("-o", "--output", help="Output file (default: overwrite input)")
+    parser.add_argument("-o", "--output", help="Output file (default: adds _repaired suffix)")
+    parser.add_argument("--replace-original", action="store_true", 
+                        help="Replace original file (backs up to .bak first)")
     parser.add_argument("--dry-run", action="store_true", help="Check without modifying")
     
     args = parser.parse_args()
@@ -100,7 +117,12 @@ def main():
         print(f"Error: Input file not found: {args.input}")
         sys.exit(1)
     
-    repaired = repair_nvfp4_metadata(args.input, args.output, args.dry_run)
+    repaired = repair_nvfp4_metadata(
+        args.input, 
+        args.output, 
+        args.dry_run,
+        args.replace_original,
+    )
     sys.exit(0 if repaired else 1)
 
 
