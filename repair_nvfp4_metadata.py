@@ -64,10 +64,24 @@ def repair_nvfp4_metadata(input_file: str, output_file: str = None, dry_run: boo
         # Load all tensors
         tensors = {key: f.get_tensor(key) for key in f.keys()}
     
-    # Save with fixed metadata
+    # Save with fixed metadata (atomic write for in-place safety)
     print(f"Saving repaired file to: {output_file}")
     os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
-    save_file(tensors, output_file, metadata=new_file_metadata)
+    
+    # Write to temp file first, then rename (atomic on same filesystem)
+    temp_file = output_file + ".tmp"
+    try:
+        save_file(tensors, temp_file, metadata=new_file_metadata)
+        # Atomic rename (overwrites destination on Windows/Linux)
+        if os.path.exists(output_file) and output_file != input_file:
+            os.remove(output_file)
+        os.replace(temp_file, output_file)
+    except Exception as e:
+        # Clean up temp file on failure
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise RuntimeError(f"Failed to save repaired file: {e}") from e
+    
     print(f"Done! Repaired metadata for {len(quant_meta)} layers.")
     return True
 
