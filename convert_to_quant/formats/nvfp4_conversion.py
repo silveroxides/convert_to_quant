@@ -217,13 +217,19 @@ def convert_to_nvfp4(
                 del tensor_gpu
             
             # Store quantized data and scales (move to CPU for saving)
+            # Naming convention (matching comfy-kitchen/ComfyUI):
+            #   weight_scale_2 = per_tensor_scale (FP32)
+            #   weight_scale = block_scale (FP8 in cuBLAS tiled layout)
             output_tensors[key] = qdata.cpu()  # Packed uint8
-            # Ensure weight_scale is 1D (not scalar) for ComfyUI .view() compatibility
+            
+            # per_tensor_scale -> weight_scale_2 (ensure 1D for ComfyUI .view() compat)
             scale_val = per_tensor_scale.cpu().to(torch.float32)
             if scale_val.dim() == 0:
                 scale_val = scale_val.unsqueeze(0)  # [] -> [1]
-            output_tensors[f"{base_key}.weight_scale"] = scale_val
-            output_tensors[f"{base_key}.block_scale"] = block_scales.cpu()  # FP8 in cuBLAS layout
+            output_tensors[f"{base_key}.weight_scale_2"] = scale_val
+            
+            # block_scales -> weight_scale (FP8 stored as uint8 for safetensors compat)
+            output_tensors[f"{base_key}.weight_scale"] = block_scales.cpu().view(dtype=torch.uint8)
             
             # Always create .comfy_quant metadata tensor (required for NVFP4)
             metadata = {

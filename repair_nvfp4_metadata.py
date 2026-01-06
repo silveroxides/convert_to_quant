@@ -72,19 +72,45 @@ def repair_nvfp4_metadata(
         new_file_metadata = dict(metadata)
         new_file_metadata["_quantization_metadata"] = json.dumps(fixed_metadata)
         
-        # Load all tensors and fix scalar weight_scale tensors
+        # Load all tensors and fix issues:
+        # 1. Rename old scale names to match ComfyUI convention
+        # 2. Fix scalar weight_scale_2 tensors ([] -> [1])
         tensors = {}
+        renamed_scales = 0
         scalar_scales_fixed = 0
-        for key in f.keys():
+        
+        all_keys = list(f.keys())
+        for key in all_keys:
             tensor = f.get_tensor(key)
-            # Fix scalar weight_scale tensors ([] -> [1]) for ComfyUI .view() compatibility
-            if key.endswith(".weight_scale") and tensor.dim() == 0:
+            new_key = key
+            
+            # Rename old naming convention to new:
+            #   Old: .block_scale -> New: .weight_scale (FP8 as uint8)
+            #   Old: .weight_scale (per_tensor) -> New: .weight_scale_2
+            if key.endswith(".block_scale"):
+                # Old block_scale becomes weight_scale
+                new_key = key.replace(".block_scale", ".weight_scale")
+                renamed_scales += 1
+            elif key.endswith(".weight_scale"):
+                # Check if this is actually per_tensor_scale (old convention)
+                # by checking if there's also a block_scale for this layer
+                base = key.rsplit(".weight_scale", 1)[0]
+                if f"{base}.block_scale" in all_keys:
+                    # Old per_tensor_scale becomes weight_scale_2
+                    new_key = key.replace(".weight_scale", ".weight_scale_2")
+                    renamed_scales += 1
+            
+            # Fix scalar weight_scale_2 tensors ([] -> [1]) for ComfyUI
+            if new_key.endswith(".weight_scale_2") and tensor.dim() == 0:
                 tensor = tensor.unsqueeze(0)
                 scalar_scales_fixed += 1
-            tensors[key] = tensor
+            
+            tensors[new_key] = tensor
         
+        if renamed_scales > 0:
+            print(f"Renamed {renamed_scales} scale tensors to ComfyUI convention")
         if scalar_scales_fixed > 0:
-            print(f"Fixed {scalar_scales_fixed} scalar weight_scale tensors")
+            print(f"Fixed {scalar_scales_fixed} scalar weight_scale_2 tensors")
     
     # If replacing original, rename faulty file to .bak first
     backup_file = None
