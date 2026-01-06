@@ -1,5 +1,60 @@
 # Development Log
 
+## 2026-01-06: NVFP4 Console Output & Bias Correction
+
+### Session Summary
+Rewrote `nvfp4_conversion.py` to add legacy-style console outputs and bias correction. Now matches FP8 conversion flow with calibration scanning, layer progress, bias correction, and final shapes.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `formats/nvfp4_conversion.py` | Complete rewrite: added `calib_samples`/`seed` params, calibration data generation, `(i+1)/(total)` layer progress, bias correction using dequantized weights, final shape outputs |
+
+### New Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `calib_samples` | 3072 | Number of random samples for bias correction |
+| `seed` | 42 | Seed for reproducibility |
+
+### Verification
+
+- Syntax check: ✅ Passed
+
+---
+
+## 2026-01-06: Fix Console Output Formatting in Converters
+
+### Session Summary
+Fixed SVD print statement formatting in `learned_rounding.py` to match the legacy reference script. Added `    - ` indentation prefix to 6 print statements.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/learned_rounding.py` | Added `    - ` prefix to SVD print statements at lines 1236, 1240, 1336, 1340, 1448, 1453 |
+
+### Before/After
+
+```diff
+-print("Using torch.linalg.svd with full_matrices=True")
++print("    - Using torch.linalg.svd with full_matrices=True")
+
+-print("Trying svd_lowrank")
++print("    - Trying svd_lowrank")
+```
+
+### Verification
+
+- Syntax check: ✅ Passed
+
+---
+
 ## 2026-01-06: NVFP4 Format Fixes (Match NVIDIA Official)
 
 ### Session Summary

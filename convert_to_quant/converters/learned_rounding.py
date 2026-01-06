@@ -1233,11 +1233,11 @@ class LearnedRoundingConverter:
         )
 
         if self.full_matrix:
-            print("Using torch.linalg.svd with full_matrices=True")
+            print("    - Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print("Trying svd_lowrank")
+                print("    - Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
@@ -1333,11 +1333,11 @@ class LearnedRoundingConverter:
         )
 
         if self.full_matrix:
-            print("Using torch.linalg.svd with full_matrices=True")
+            print("    - Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print("Trying svd_lowrank")
+                print("    - Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
@@ -1446,11 +1446,11 @@ class LearnedRoundingConverter:
         )
 
         if self.full_matrix:
-            print("Using torch.linalg.svd with full_matrices=True")
+            print("    - Using torch.linalg.svd with full_matrices=True")
             U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
         else:
             try:
-                print("Trying svd_lowrank")
+                print("    - Trying svd_lowrank")
                 U, _, Vh = torch.svd_lowrank(
                     W_float32, q=min(k + 10, max_rank), niter=4
                 )
