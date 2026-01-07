@@ -4,7 +4,6 @@ import triton.language as tl
 from triton import Config
 from typing import Tuple
 
-
 """
 INT8 Quantization Kernels with Multiple Implementation Variants
 
@@ -94,7 +93,6 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y)
     tl.store(s_ptr + pid, s)
 
-
 def act_quant(
     x: torch.Tensor, block_size: int = 128
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -145,7 +143,6 @@ def act_dequant_kernel(x_ptr, s_ptr, y_ptr, BLOCK_SIZE: tl.constexpr):
     y = x * s
     y = y.to(y_ptr.dtype.element_ty)
     tl.store(y_ptr + offs, y)
-
 
 def act_dequant(
     x: torch.Tensor,
@@ -219,7 +216,6 @@ def weight_quant_kernel(x_ptr, y_ptr, s_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask=mask)
     tl.store(s_ptr + pid_m * n + pid_n, s)
 
-
 def weight_quant(
     x: torch.Tensor, block_size: int = 128
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -284,7 +280,6 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     y = x * s
     tl.store(y_ptr + offs, y, mask=mask)
 
-
 def weight_dequant(
     x: torch.Tensor,
     s: torch.Tensor,
@@ -320,7 +315,6 @@ def weight_dequant(
     )
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
     return y
-
 
 int8_gemm_configs = [
     Config(
@@ -497,7 +491,6 @@ def int8_gemm_addmm_kernel(
     mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
     tl.store(c_ptrs, c, mask=mask)
 
-
 def int8_gemm(
     a: torch.Tensor,
     a_s: torch.Tensor,
@@ -558,7 +551,6 @@ def int8_gemm(
         BLOCK_SIZE_K=input_block_size,
     )
     return c
-
 
 def int8_addmm(
     a: torch.Tensor,
@@ -923,7 +915,6 @@ def int8_gemm_addmm_quant_kernel(
     scale_mask = (offs_m_scale[:, None] < M) & (offs_n_scale[None, :] < n_scale_stride)
     tl.store(scale_ptrs, block_scale, mask=scale_mask)
 
-
 def int8_gemm_quant(
     a: torch.Tensor,
     a_s: torch.Tensor,
@@ -1001,7 +992,6 @@ def int8_gemm_quant(
         c_s = c_s.reshape(*batch_shape, n_blocks)
 
     return c, c_s
-
 
 def int8_addmm_quant(
     a: torch.Tensor,
@@ -1238,7 +1228,6 @@ def int8_gelu_kernel(
     # Store output scales
     output_scale_ptrs = output_scale_ptr + offs_sm[:, None] * SN + offs_sn[None, :]
     tl.store(output_scale_ptrs, output_scales, mask=scale_mask)
-
 
 def int8_gelu(
     x: torch.Tensor, s_x: torch.Tensor, block_size: int = 128

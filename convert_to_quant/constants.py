@@ -218,8 +218,7 @@ MODEL_FILTERS = {
         "exclude": ZIMAGE_AVOID_KEY_NAMES,
         "highprec": ZIMAGE_REFINER_LAYER_KEYNAMES,
     },
-}
-
+}
 
 def build_exclusion_patterns(active_filters: dict) -> tuple:
     """

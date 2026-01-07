@@ -31,7 +31,6 @@ from ..pinned_transfer import set_verbose as set_pinned_verbose
 import json
 from safetensors import safe_open
 
-
 def load_input_scales(path: str) -> dict:
     """Load input scales from JSON or safetensors file.
 
@@ -55,7 +54,6 @@ def load_input_scales(path: str) -> dict:
     else:
         raise ValueError(f"Unsupported input scales format: {path}. Use .json or .safetensors")
 
-
 def extract_filter_flags(args) -> dict:
     """Extract model filter flags from parsed args with validation.
 
@@ -78,7 +76,6 @@ def extract_filter_flags(args) -> dict:
             )
         flags[name] = getattr(args, name)
     return flags
-
 
 def main():
     parser = MultiHelpArgumentParser(
@@ -469,7 +466,6 @@ def main():
              "JSON format: {'layer.name': 0.015, ...}. "
              "Safetensors: extracts .input_scale tensors from an existing NVFP4 model.",
     )
-
 
     # ComfyQuant layer config editing mode
     parser.add_argument(
@@ -977,7 +973,6 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         early_stop_lr=args.early_stop_lr,
         early_stop_stall=args.early_stop_stall,
     )
-
 
 if __name__ == "__main__":
     main()

@@ -28,7 +28,6 @@ from safetensors.torch import load_file, save_file
 # FP8 maximum value
 FP8_E4M3_MAX = 448.0
 
-
 def infer_block_size(weight_shape: tuple, scale_shape: tuple) -> int:
     """
     Infer block_size from weight and scale tensor shapes.
@@ -69,7 +68,6 @@ def infer_block_size(weight_shape: tuple, scale_shape: tuple) -> int:
 
     # Non-square blocks - use M dimension
     return block_size_m
-
 
 def dequantize_fp8_weight(
     weight: torch.Tensor,
@@ -132,7 +130,6 @@ def dequantize_fp8_weight(
 
     # Fallback: try simple broadcast
     return weight.to(target_dtype) * scale.to(dtype=target_dtype)
-
 
 def compute_activation_scale(
     weight: torch.Tensor,
@@ -255,8 +252,7 @@ LORA_PREFIXES = [
     "lora_te1_",               # SDXL TE1
     "lora_te2_",               # SDXL TE2
     "lycoris_",                # SimpleTuner LyCORIS
-]
-
+]
 
 def normalize_layer_name(name: str) -> str:
     """
@@ -287,7 +283,6 @@ def normalize_layer_name(name: str) -> str:
     normalized = name.replace("_", ".")
 
     return normalized.lower()
-
 
 def build_lora_key_map(model_keys: list, lora_keys: dict) -> dict:
     """
@@ -328,7 +323,6 @@ def build_lora_key_map(model_keys: list, lora_keys: dict) -> dict:
                 break
 
     return key_map
-
 
 def load_lora_tensors(lora_path: str) -> dict:
     """
@@ -391,7 +385,6 @@ def load_lora_tensors(lora_path: str) -> dict:
                 break
 
     return lora_by_layer
-
 
 def calibrate_model(
     tensors: dict,
@@ -515,7 +508,6 @@ def calibrate_model(
 
     return scales
 
-
 def patch_model_with_scales(
     tensors: dict,
     scales: dict,
@@ -574,7 +566,6 @@ def patch_model_with_scales(
                 pass
 
     return output
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -715,7 +706,6 @@ Examples:
 
         if verbose:
             print("Done!")
-
 
 if __name__ == "__main__":
     main()

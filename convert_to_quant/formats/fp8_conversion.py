@@ -35,7 +35,6 @@ from ..utils.comfy_quant import create_comfy_quant_tensor, should_skip_layer_for
 from ..utils.memory_efficient_loader import MemoryEfficientSafeOpen
 from ..pinned_transfer import get_pinned_transfer_stats
 
-
 def convert_to_fp8_scaled(
     input_file: str,
     output_file: str,

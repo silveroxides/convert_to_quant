@@ -27,7 +27,6 @@ from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
 from ..utils.comfy_quant import should_skip_layer_for_performance
 from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
 
-
 def convert_to_nvfp4(
     input_file: str,
     output_file: str,

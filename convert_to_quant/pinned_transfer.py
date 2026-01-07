@@ -9,25 +9,21 @@ from typing import Optional
 
 # Module-level configuration
 _verbose = False
-_pinned_transfer_stats = {"pinned": 0, "fallback": 0}
-
+_pinned_transfer_stats = {"pinned": 0, "fallback": 0}
 
 def set_verbose(enabled: bool):
     """Enable/disable verbose output for pinned transfers."""
     global _verbose
     _verbose = enabled
 
-
 def get_pinned_transfer_stats():
     """Return pinned transfer statistics for verification."""
     return _pinned_transfer_stats.copy()
 
-
 def reset_pinned_transfer_stats():
     """Reset transfer statistics."""
     global _pinned_transfer_stats
-    _pinned_transfer_stats = {"pinned": 0, "fallback": 0}
-
+    _pinned_transfer_stats = {"pinned": 0, "fallback": 0}
 
 def transfer_to_gpu_pinned(
     tensor: torch.Tensor,

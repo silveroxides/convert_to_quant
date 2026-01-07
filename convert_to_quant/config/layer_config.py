@@ -13,7 +13,6 @@ from tqdm import tqdm
 
 from ..constants import VALID_QUANT_FORMATS
 
-
 def pattern_specificity(pattern: str) -> tuple:
     """
     Calculate specificity score for a regex pattern.
@@ -41,7 +40,6 @@ def pattern_specificity(pattern: str) -> tuple:
     tier = 0 if (has_number and literal_len >= 8) else 1
 
     return (tier, literal_len)
-
 
 def load_layer_config(config_path: str) -> Dict[str, Any]:
     """
@@ -126,7 +124,6 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
     )
     return config
 
-
 def get_layer_settings(
     layer_key: str, config: Dict[str, Any], fullmatch: bool = False
 ) -> Optional[Dict[str, Any]]:
@@ -178,7 +175,6 @@ def get_layer_settings(
 
     # Fall back to _default if present
     return config.get("_default")
-
 
 def generate_config_template(input_file: str, output_path: str, block_size: int = 128):
     """

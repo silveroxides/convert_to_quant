@@ -31,7 +31,6 @@ from ..utils.float_utils import (
     F4_E2M1_MBITS,
 )
 
-
 class NVFP4Converter:
     """
     NVIDIA FP4 E2M1 block quantization converter.
@@ -182,7 +181,6 @@ class NVFP4Converter:
 
         return data_dequantized.view(orig_shape).to(output_dtype)
 
-
 def quantize_nvfp4(
     tensor: torch.Tensor,
     per_tensor_scale: Optional[torch.Tensor] = None,
@@ -201,7 +199,6 @@ def quantize_nvfp4(
     """
     converter = NVFP4Converter(pad_to_16x=pad_to_16x, optimize=False)
     return converter.quantize(tensor, per_tensor_scale)
-
 
 def dequantize_nvfp4(
     qdata: torch.Tensor,

@@ -7,7 +7,6 @@ import json
 import torch
 from typing import Dict, Tuple
 
-
 def dict_to_tensor(data_dict: dict) -> torch.Tensor:
     """
     Convert a dictionary to a torch.uint8 tensor containing JSON bytes.
@@ -23,7 +22,6 @@ def dict_to_tensor(data_dict: dict) -> torch.Tensor:
     tensor_data = torch.tensor(list(byte_data), dtype=torch.uint8)
     return tensor_data
 
-
 def tensor_to_dict(tensor_data: torch.Tensor) -> dict:
     """
     Convert a torch.uint8 tensor containing JSON bytes to a dictionary.
@@ -38,7 +36,6 @@ def tensor_to_dict(tensor_data: torch.Tensor) -> dict:
     json_str = byte_data.decode("utf-8")
     data_dict = json.loads(json_str)
     return data_dict
-
 
 def normalize_tensorwise_scales(
     tensors: Dict[str, torch.Tensor],
@@ -72,7 +69,6 @@ def normalize_tensorwise_scales(
                 normalized_count += 1
 
     return tensors, normalized_count
-
 
 def generate_calibration_data(
     tensors: Dict[str, torch.Tensor],
@@ -115,7 +111,6 @@ def generate_calibration_data(
                 )
 
     return calibration_data_cache
-
 
 def adaptive_lr_update(
     curr_lr: float,
@@ -162,7 +157,6 @@ def adaptive_lr_update(
                 break
         _, mult, min_lr = tier
         return max(curr_lr * (mult * small_mult), min_lr)
-
 
 def compute_bias_correction(
     original_weight: torch.Tensor,

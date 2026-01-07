@@ -76,7 +76,6 @@ from .formats import (
 # Re-export CLI
 from .cli import main
 
-
 __all__ = [
     # Constants
     "AVOID_KEY_NAMES",
@@ -134,8 +133,7 @@ __all__ = [
     "cleanup_fp8_scaled",
     # CLI
     "main",
-]
-
+]
 
 if __name__ == "__main__":
     main()

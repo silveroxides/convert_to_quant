@@ -38,7 +38,6 @@ from ..utils.float_utils import (
 from ..utils.tensor_utils import adaptive_lr_update
 from ..pinned_transfer import transfer_to_gpu_pinned
 
-
 class LearnedNVFP4Converter:
     """
     Learned Rounding NVFP4 (E2M1) block quantization converter.

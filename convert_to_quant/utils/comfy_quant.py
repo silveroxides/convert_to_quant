@@ -21,7 +21,6 @@ BLOCK_BASED_FORMATS = (
     "float8_e4m3fn_blockwise",
 )
 
-
 def create_comfy_quant_tensor(
     format_type: str,
     block_size: Optional[int] = None,
@@ -50,7 +49,6 @@ def create_comfy_quant_tensor(
         comfy_quant["full_precision_matrix_mult"] = True
 
     return dict_to_tensor(comfy_quant)
-
 
 def fix_comfy_quant_params_structure(
     comfy_quant_tensor: torch.Tensor,
@@ -89,7 +87,6 @@ def fix_comfy_quant_params_structure(
                 config[key] = value
 
     return dict_to_tensor(config), True
-
 
 def parse_add_keys_string(add_keys_str: str) -> Dict[str, Any]:
     """
@@ -135,7 +132,6 @@ def parse_add_keys_string(add_keys_str: str) -> Dict[str, Any]:
                 result[key] = value
 
     return result
-
 
 def edit_comfy_quant(
     input_file: str,
@@ -398,7 +394,6 @@ def edit_comfy_quant(
     except Exception as e:
         print(f"FATAL: Error saving file '{output_file}': {e}")
         return
-
 
 def should_skip_layer_for_performance(
     tensor: torch.Tensor, block_size: int

@@ -10,7 +10,6 @@ Portions derived from:
 """
 import torch
 
-
 def _n_ones(n: int) -> int:
     """Generate a bitmask with n ones."""
     return (1 << n) - 1
@@ -32,27 +31,22 @@ F8_E4M3_EPS = 0.125
 F8_E5M2_MAX = 57344.0
 F8_E5M2_EPS = 0.0625
 
-
 def roundup(x: int, multiple: int) -> int:
     """Round up x to the nearest multiple."""
     return ((x + multiple - 1) // multiple) * multiple
 
-
 def ceil_div(a: int, b: int) -> int:
     """Ceiling division."""
     return (a + b - 1) // b
-
 
 def down_size(size: tuple) -> tuple:
     """Halve the last dimension (for packing)."""
     assert size[-1] % 2 == 0, f"{size} last dim not divisible by two"
     return (*size[:-1], size[-1] // 2)
 
-
 def up_size(size: tuple) -> tuple:
     """Double the last dimension (for unpacking)."""
     return (*size[:-1], size[-1] * 2)
-
 
 def pack_uint4(uint8_data: torch.Tensor) -> torch.Tensor:
     """Pack two 4-bit values into one uint8."""
@@ -60,7 +54,6 @@ def pack_uint4(uint8_data: torch.Tensor) -> torch.Tensor:
     assert shape[-1] % 2 == 0
     uint8_data = uint8_data.contiguous().view(-1)
     return (uint8_data[::2] << 4 | uint8_data[1::2]).view(down_size(shape))
-
 
 def unpack_uint4(uint8_data: torch.Tensor) -> torch.Tensor:
     """Unpack uint8 into two 4-bit values."""
@@ -70,11 +63,9 @@ def unpack_uint4(uint8_data: torch.Tensor) -> torch.Tensor:
     second_elements = (uint8_data & 0b1111).to(torch.uint8)
     return torch.stack([first_elements, second_elements], dim=-1).view(up_size(shape))
 
-
 def _float8_round(x: torch.Tensor) -> torch.Tensor:
     """Round to FP8 precision."""
     return x.to(torch.float8_e4m3fn).to(torch.float32)
-
 
 def _f32_to_floatx_unpacked(x: torch.Tensor, ebits: int, mbits: int) -> torch.Tensor:
     """
@@ -134,7 +125,6 @@ def _f32_to_floatx_unpacked(x: torch.Tensor, ebits: int, mbits: int) -> torch.Te
 
     return x.to(torch.uint8)
 
-
 def _floatx_unpacked_to_f32(x: torch.Tensor, ebits: int, mbits: int) -> torch.Tensor:
     """
     Convert sub-byte float format (e.g., FP4 E2M1) back to FP32.
@@ -184,7 +174,6 @@ def _floatx_unpacked_to_f32(x: torch.Tensor, ebits: int, mbits: int) -> torch.Te
 
     return result.view(torch.float)
 
-
 def to_blocked(input_matrix: torch.Tensor, flatten: bool = True) -> torch.Tensor:
     """
     Rearrange matrix to cuBLAS 2D block scaling factors layout.
@@ -221,7 +210,6 @@ def to_blocked(input_matrix: torch.Tensor, flatten: bool = True) -> torch.Tensor
         return rearranged.flatten()
     return rearranged.reshape(padded_rows, padded_cols)
 
-
 def from_blocked(blocked_matrix: torch.Tensor, num_rows: int, num_cols: int) -> torch.Tensor:
     """
     Reverse cuBLAS tiled layout back to normal (H, W) layout.
@@ -247,8 +235,7 @@ def from_blocked(blocked_matrix: torch.Tensor, num_rows: int, num_cols: int) -> 
     step5 = step4.permute(0, 2, 1, 3)
     unblocked = step5.reshape(padded_rows, padded_cols)
 
-    return unblocked[:num_rows, :num_cols]
-
+    return unblocked[:num_rows, :num_cols]
 
 def fp4_x2_to_f32(packed_fp4: torch.Tensor) -> torch.Tensor:
     """Unpack and dequantize FP4 E2M1 values to float32."""

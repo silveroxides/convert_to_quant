@@ -135,7 +135,6 @@ def add_legacy_input_scale(
         print(f"FATAL: Error saving file '{output_file}': {e}")
         return
 
-
 def cleanup_fp8_scaled(
     input_file: str,
     output_file: str,

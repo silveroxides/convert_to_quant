@@ -24,7 +24,6 @@ except ImportError:
     _HAS_TRITON_INT8 = False
     logging.warning("Triton INT8 kernels not available, using PyTorch fallback")
 
-
 def register_layout_op(torch_op, layout_type):
     """
     Decorator to register a layout-specific operation handler.
@@ -46,7 +45,6 @@ def register_layout_op(torch_op, layout_type):
 
     return decorator
 
-
 def register_generic_util(torch_op):
     """
     Decorator to register a generic utility that works for all layouts.
@@ -66,7 +64,6 @@ def register_generic_util(torch_op):
 
     return decorator
 
-
 def _get_layout_from_args(args):
     for arg in args:
         if isinstance(arg, QuantizedTensor):
@@ -77,7 +74,6 @@ def _get_layout_from_args(args):
                     return item._layout_type
     return None
 
-
 def _move_layout_params_to_device(params, device):
     new_params = {}
     for k, v in params.items():
@@ -86,7 +82,6 @@ def _move_layout_params_to_device(params, device):
         else:
             new_params[k] = v
     return new_params
-
 
 def _copy_layout_params(params):
     new_params = {}
@@ -97,14 +92,12 @@ def _copy_layout_params(params):
             new_params[k] = v
     return new_params
 
-
 def _copy_layout_params_inplace(src, dst, non_blocking=False):
     for k, v in src.items():
         if isinstance(v, torch.Tensor):
             dst[k].copy_(v, non_blocking=non_blocking)
         else:
             dst[k] = v
-
 
 class QuantizedLayout:
     """
@@ -127,7 +120,6 @@ class QuantizedLayout:
     @classmethod
     def get_plain_tensors(cls, qtensor) -> torch.Tensor:
         raise NotImplementedError(f"{cls.__name__} must implement get_plain_tensors()")
-
 
 class QuantizedTensor(torch.Tensor):
     """
@@ -280,14 +272,12 @@ class QuantizedTensor(torch.Tensor):
 
 # ==============================================================================
 # Generic Utilities (Layout-Agnostic Operations)
-# ==============================================================================
-
+# ==============================================================================
 
 def _create_transformed_qtensor(qt, transform_fn):
     new_data = transform_fn(qt._qdata)
     new_params = _copy_layout_params(qt._layout_params)
     return QuantizedTensor(new_data, qt._layout_type, new_params)
-
 
 def _handle_device_transfer(
     qt, target_device, target_dtype=None, target_layout=None, op_name="to"
@@ -1026,8 +1016,7 @@ QUANT_ALGOS = {
         "group_size": 128,  # Fallback if per-tensor metadata missing
         "asymmetric_layout": True,
     },
-}
-
+}
 
 LAYOUTS = {
     "TensorCoreFP8Layout": TensorCoreFP8Layout,
@@ -1104,7 +1093,6 @@ def fp8_linear(func, args, kwargs):
         input_tensor = input_tensor.dequantize()
 
     return torch.nn.functional.linear(input_tensor, weight, bias)
-
 
 def fp8_mm_(input_tensor, weight, bias=None, out_dtype=None):
     if out_dtype is None:
@@ -1333,8 +1321,7 @@ def blockwise_fp8_func(func, args, kwargs):
 
 # ==============================================================================
 # Block-Wise INT8 Operation Handlers
-# ==============================================================================
-
+# ==============================================================================
 
 def _int8_gemm_pytorch_fallback(
     a_int8, a_scale, b_int8, b_scale, block_size, bias=None
@@ -1401,7 +1388,6 @@ def _int8_gemm_pytorch_fallback(
 
     output = torch.nn.functional.linear(a_fp32, b_fp32, bias)
     return output
-
 
 def _int8_gemm_triton_or_fallback(
     a_int8, a_scale, b_int8, b_scale, block_size, bias=None, out_quant=False

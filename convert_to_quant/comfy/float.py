@@ -46,7 +46,6 @@ def manual_stochastic_round_to_float8(x, dtype, generator=None):
     return sign
 
 
-
 def stochastic_rounding(value, dtype, seed=0):
     if dtype == torch.float32:
         return value.to(dtype=torch.float32)
