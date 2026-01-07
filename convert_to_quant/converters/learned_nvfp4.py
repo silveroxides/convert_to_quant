@@ -2,8 +2,7 @@
 Learned Rounding NVFP4 (E2M1) Quantization Converter.
 
 Implements NVIDIA FP4 E2M1 block quantization with SVD-based learned rounding
-optimization. Provides high-quality quantization using the same optimization
-infrastructure as LearnedRoundingConverter for FP8/INT8.
+optimization. Inherits from BaseLearnedConverter for shared infrastructure.
 
 Requires SM >= 10.0 (datacenter Blackwell) or SM >= 12.0 (consumer RTX 50 series).
 """
@@ -35,103 +34,38 @@ from ..utils.float_utils import (
     F4_E2M1_EBITS,
     F4_E2M1_MBITS,
 )
-from ..utils.tensor_utils import adaptive_lr_update
 from ..pinned_transfer import transfer_to_gpu_pinned
+from .base_converter import BaseLearnedConverter
 
-class LearnedNVFP4Converter:
+class LearnedNVFP4Converter(BaseLearnedConverter):
     """
     Learned Rounding NVFP4 (E2M1) block quantization converter.
 
-    Uses SVD-based optimization to minimize quantization error in the
-    principal component space, providing significantly better accuracy
-    than naive rounding.
-
-    Args:
-        optimizer: Optimization algorithm ("original", "adamw", "radam")
-        num_iter: Number of optimization iterations
-        top_p: Proportion of principal components to use
-        min_k: Minimum number of SVD components
-        max_k: Maximum number of SVD components
-        block_size: Block size for quantization (must be 16 for NVFP4)
-        pad_to_16x: Pad dimensions to be divisible by 16
-        full_matrix: Use full SVD instead of lowrank
-        no_learned_rounding: Skip optimization, use simple quantization
-        lr_schedule: LR schedule ("adaptive", "exponential", "plateau")
-        lr_gamma: Decay factor for exponential schedule
-        lr_patience: Steps before decay for plateau schedule
-        lr_factor: LR reduction factor for plateau
-        lr_min: Minimum learning rate
-        lr_cooldown: Cooldown steps after LR reduction
-        lr_threshold: Minimum improvement threshold
-        lr_adaptive_mode: Counter reset mode ("simple-reset", "no-reset")
-        lr_shape_influence: Shape-aware LR scaling (0.0-1.0)
-        lr_threshold_mode: Threshold mode ("rel", "abs")
-        early_stop_loss: Stop when loss drops below this
-        early_stop_lr: Stop when LR drops below this
-        early_stop_stall: Stop after this many steps without improvement
+    Inherits shared infrastructure from BaseLearnedConverter.
+    Adds NVFP4-specific: block_size=16 validation, pad_to_16x padding.
     """
 
     def __init__(
         self,
-        optimizer: str = "original",
-        num_iter: int = 500,
-        top_p: float = 0.01,
-        min_k: int = 1,
-        max_k: int = 16,
         block_size: int = 16,
         pad_to_16x: bool = True,
-        full_matrix: bool = False,
-        no_learned_rounding: bool = False,
-        lr_schedule: str = "adaptive",
-        lr_gamma: float = 0.99,
-        lr_patience: int = 50,
-        lr_factor: float = 0.5,
-        lr_min: float = 1e-8,
-        lr_cooldown: int = 0,
-        lr_threshold: float = 0.0,
-        lr_adaptive_mode: str = "simple-reset",
-        lr_shape_influence: float = 1.0,
-        lr_threshold_mode: str = "rel",
-        early_stop_loss: float = 1e-8,
-        early_stop_lr: float = 1e-10,
-        early_stop_stall: int = 1000,
         **kwargs,
     ):
+        """
+        Initialize NVFP4 converter.
+
+        Args:
+            block_size: Block size for quantization (must be 16 for NVFP4)
+            pad_to_16x: Pad dimensions to be divisible by 16
+            **kwargs: All other args passed to BaseLearnedConverter
+        """
         if block_size != 16:
             raise ValueError("NVFP4 requires block_size=16")
 
+        super().__init__(**kwargs)
+
         self.block_size = block_size
         self.pad_to_16x = pad_to_16x
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        # SVD parameters
-        self.top_p = top_p
-        self.min_k = min_k
-        self.max_k = max_k
-        self.full_matrix = full_matrix
-
-        # Optimizer configuration
-        self.optimizer_choice = optimizer
-        self.num_iter = num_iter
-        self.no_learned_rounding = no_learned_rounding
-        self.optimizer_kwargs = kwargs
-
-        # LR schedule configuration
-        self.lr_schedule = lr_schedule
-        self.lr_gamma = lr_gamma
-        self.lr_patience = lr_patience
-        self.lr_factor = lr_factor
-        self.lr_min = lr_min
-        self.lr_cooldown = lr_cooldown
-        self.lr_threshold = lr_threshold
-        self.lr_adaptive_mode = lr_adaptive_mode
-        self.lr_shape_influence = lr_shape_influence
-        self.lr_threshold_mode = lr_threshold_mode
-
-        # Early stopping thresholds
-        self.early_stop_loss = early_stop_loss
-        self.early_stop_lr = early_stop_lr
-        self.early_stop_stall = early_stop_stall
 
         print(f"LearnedNVFP4Converter initialized on device: {self.device}")
         print(f"  - Format: NVFP4 (FP4 E2M1)")
@@ -284,26 +218,8 @@ class LearnedNVFP4Converter:
         """Apply learned rounding optimization for NVFP4."""
         M, N = W_float32.shape
 
-        # Compute SVD for optimization
-        max_rank = min(M, N)
-        k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
-        k = min(k, max_rank)
-
-        print(f"    - Tensor shape: [{M}, {N}], Max rank: {max_rank}. Using k={k} components.")
-
-        if self.full_matrix:
-            print("    - Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
-        else:
-            try:
-                print("    - Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(W_float32, q=min(k + 10, max_rank), niter=4)
-                Vh = Vh.T
-            except RuntimeError:
-                print("    - svd_lowrank failed, falling back to full SVD.")
-                U, _, Vh = torch.linalg.svd(W_float32, full_matrices=False)
-
-        U_k, Vh_k = U[:, :k], Vh[:k, :]
+        # Use inherited SVD computation
+        U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
         # Route to appropriate optimizer
         if self.optimizer_choice == "original":
@@ -316,10 +232,7 @@ class LearnedNVFP4Converter:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
         # Cleanup SVD tensors
-        del U, Vh, U_k, Vh_k
-        gc.collect()
-        if self.device == "cuda":
-            torch.cuda.empty_cache()
+        self._cleanup_tensors(U_k, Vh_k)
 
         return qdata
 
@@ -659,21 +572,7 @@ class LearnedNVFP4Converter:
         final_q = torch.clamp(final_q.detach(), -FP4_E2M1_MAX, FP4_E2M1_MAX)
         return _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
 
-    def _adaptive_lr_update(
-        self,
-        curr_lr: float,
-        improved: bool,
-        counter_for_tier: int,
-        worse_loss_counter: int,
-        small_mult: float,
-    ) -> float:
-        """Tier-based adaptive LR update schedule.
 
-        Delegates to centralized adaptive_lr_update() from tensor_utils.
-        """
-        return adaptive_lr_update(
-            curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult
-        )
 
     def _check_early_stop(
         self, current_loss: float, curr_lr: float, worse_loss_counter: int

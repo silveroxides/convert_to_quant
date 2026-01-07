@@ -1,5 +1,44 @@
 # Development Log
 
+## 2026-01-07: Converter Class Unification (Phase 1)
+
+### Session Summary
+Created `BaseLearnedConverter` ABC to extract shared infrastructure from `LearnedRoundingConverter` and `LearnedNVFP4Converter`. Migrated NVFP4 converter to inherit from base class.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/base_converter.py` | **NEW** - Abstract base class with shared `__init__`, SVD computation, LR scheduling |
+| `converters/learned_nvfp4.py` | Inherits from `BaseLearnedConverter`, removed ~80 lines of duplicated init |
+| `converters/learned_rounding.py` | Replaced inline INT8 LR tiers with `adaptive_lr_update()` call (-32 lines) |
+| `converters/__init__.py` | Added `BaseLearnedConverter` export |
+
+### Technical Details
+
+- `BaseLearnedConverter` provides:
+  - Shared `__init__` with 17 common parameters (SVD, LR, early stopping)
+  - `_compute_svd_components()` for SVD computation
+  - `_adaptive_lr_update()` wrapper to centralized utility
+  - `_compute_shape_aware_plateau_params()` for plateau LR schedule
+  - `_cleanup_tensors()` for memory management
+- `LearnedNVFP4Converter` now only defines format-specific: `block_size`, `pad_to_16x`
+
+### Verification
+
+- Syntax check: ✅ All modules pass
+- Functional tests: ✅ All 6 tests pass (`test_cli_args.py`)
+
+### Git
+
+```bash
+git checkout feature/converter-unification
+```
+
+---
+
 ## 2026-01-07: Memory-Efficient Tensor Loading (`--low-memory`)
 
 ### Session Summary

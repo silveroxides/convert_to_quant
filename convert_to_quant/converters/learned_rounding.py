@@ -1009,42 +1009,10 @@ class LearnedRoundingConverter:
                     else worse_loss_counter
                 )
 
-                if improved and counter_for_tier < 50:
-                    curr_lr = min(curr_lr * (1.25 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 50 and counter_for_tier < 75:
-                    curr_lr = min(curr_lr * (1.375 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 75 and counter_for_tier < 100:
-                    curr_lr = min(curr_lr * (1.5 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 100 and counter_for_tier < 125:
-                    curr_lr = min(curr_lr * (1.75 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 125 and counter_for_tier < 150:
-                    curr_lr = min(curr_lr * (2.0 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 150 and counter_for_tier < 200:
-                    curr_lr = min(curr_lr * (2.25 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 200 and counter_for_tier < 250:
-                    curr_lr = min(curr_lr * (2.5 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 250 and counter_for_tier < 300:
-                    curr_lr = min(curr_lr * (2.75 * small_mult), 100.0)
-                elif improved and counter_for_tier >= 300:
-                    curr_lr = min(curr_lr * (3.0 * small_mult), 100.0)
-                elif not improved and worse_loss_counter < 26:
-                    curr_lr = max(curr_lr * (0.95 * small_mult), 9e-8)
-                elif worse_loss_counter >= 26 and worse_loss_counter < 51:
-                    curr_lr = max(curr_lr * (0.97 * small_mult), 8e-8)
-                elif worse_loss_counter >= 51 and worse_loss_counter < 76:
-                    curr_lr = max(curr_lr * (0.985 * small_mult), 7e-8)
-                elif worse_loss_counter >= 76 and worse_loss_counter < 101:
-                    curr_lr = max(curr_lr * (0.9875 * small_mult), 6e-8)
-                elif worse_loss_counter >= 101 and worse_loss_counter < 151:
-                    curr_lr = max(curr_lr * (0.98875 * small_mult), 5e-8)
-                elif worse_loss_counter >= 151 and worse_loss_counter < 201:
-                    curr_lr = max(curr_lr * (0.99 * small_mult), 4e-8)
-                elif worse_loss_counter >= 201 and worse_loss_counter < 251:
-                    curr_lr = max(curr_lr * (0.99125 * small_mult), 3e-8)
-                elif worse_loss_counter >= 251 and worse_loss_counter < 301:
-                    curr_lr = max(curr_lr * (0.9925 * small_mult), 2e-8)
-                else:  # worse_loss_counter >= 301
-                    curr_lr = max(curr_lr * (0.995 * small_mult), 5e-9)
+                # Use centralized tier-based LR update
+                curr_lr = adaptive_lr_update(
+                    curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult
+                )
 
                 # Reset counter after boost in no-reset mode
                 if improved and self.lr_adaptive_mode == "no-reset":
