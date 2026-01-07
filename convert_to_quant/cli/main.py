@@ -622,7 +622,14 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     if args.nvfp4:
         if not args.output:
             base = os.path.splitext(args.input)[0]
-            args.output = f"{base}_nvfp4.safetensors"
+            # Build filename: {simple_|learned_}nvfp4[mixed]
+            prefix = "simple_" if args.simple else "learned_"
+            # Check for filters or custom-layers
+            filter_flags = extract_filter_flags(args)
+            has_filters = any(filter_flags.values())
+            has_custom = bool(args.custom_layers)
+            mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+            args.output = f"{base}_{prefix}nvfp4{mixed_suffix}.safetensors"
 
         if not os.path.exists(args.input):
             print(f"Error: Input file not found: {args.input}")
@@ -878,17 +885,21 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
 
     if not args.output:
         base = os.path.splitext(args.input)[0]
+        # Build filename: {simple_|learned_}{format}[mixed]_{scaling}
+        # TODO: SVD stats (k, top_p, lr) should be saved to _convert_to_quant_stats metadata entry
+        prefix = "simple_" if args.simple else "learned_"
         if args.int8:
-            format_str = "int8_blockwise"
+            format_str = "int8"
             scaling_str = f"_bs{args.block_size}"
         else:
-            format_str = TARGET_FP8_DTYPE.__str__().split(".")[-1]
+            format_str = "fp8"
             scaling_str = f"_{args.scaling_mode}"
-        # Build filter flags dynamically from MODEL_FILTERS registry
+        # Check for filters or custom-layers (metadata tracks specifics)
         filter_flags = extract_filter_flags(args)
-        active_filters = [name for name, active in filter_flags.items() if active]
-        flags = "".join(f"_{name}" for name in active_filters)
-        output_file = f"{base}_{format_str}{scaling_str}{flags}_k{args.min_k}-{args.max_k}_p{args.top_p}_lr{args.lr}.safetensors"
+        has_filters = any(filter_flags.values())
+        has_custom = bool(args.custom_layers)
+        mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+        output_file = f"{base}_{prefix}{format_str}{mixed_suffix}{scaling_str}.safetensors"
     else:
         output_file = args.output
 

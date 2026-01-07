@@ -622,7 +622,7 @@ def convert_to_fp8_scaled(
 
     print(f"Saving {len(new_tensors)} tensors to {output_file}")
     try:
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
 
         # Prepare metadata args
         save_kwargs = {}
