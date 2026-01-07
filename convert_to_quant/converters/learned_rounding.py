@@ -2,7 +2,7 @@
 Learned rounding converter for FP8 and INT8 quantization.
 
 This module implements advanced quantization using learned adaptive rounding
-with SVD-based optimization. Supports multiple optimizer choices and LR schedules.
+with SVD-based optimization. Inherits from BaseLearnedConverter.
 """
 import gc
 import math
@@ -21,72 +21,36 @@ from ..constants import (
 )
 from ..comfy.quant_ops import BlockWiseINT8Layout
 from ..pinned_transfer import transfer_to_gpu_pinned
-from ..utils.tensor_utils import adaptive_lr_update
+from .base_converter import BaseLearnedConverter
 
-class LearnedRoundingConverter:
+class LearnedRoundingConverter(BaseLearnedConverter):
     """
-    Implements advanced quantization using learned adaptive rounding.
-    Provides a highly effective optimization strategy.
-    Supports both FP8 and INT8 quantization formats.
+    Learned rounding converter for FP8 and INT8 quantization.
+
+    Inherits shared infrastructure from BaseLearnedConverter.
+    Adds format-specific: target_format, scaling_mode, block_size.
     """
 
     def __init__(
         self,
-        optimizer="original",
-        num_iter=500,
-        top_p=0.01,
-        min_k=1,
-        max_k=16,
-        scaling_mode="tensor",
-        block_size=64,
-        full_matrix=False,
-        target_format="fp8",
-        no_learned_rounding=False,
-        lr_schedule="adaptive",
-        lr_gamma=0.99,
-        lr_patience=50,
-        lr_factor=0.5,
-        lr_min=1e-8,
-        lr_cooldown=0,
-        lr_threshold=0.0,
-        lr_adaptive_mode="simple-reset",
-        lr_shape_influence=1.0,
-        lr_threshold_mode="rel",
-        early_stop_loss=1e-8,
-        early_stop_lr=1e-10,
-        early_stop_stall=1000,
+        scaling_mode: str = "tensor",
+        block_size: int = 64,
+        target_format: str = "fp8",
         **kwargs,
     ):
-        self.num_iter = num_iter
-        self.top_p = top_p
-        self.min_k = min_k
-        self.max_k = max_k
+        """
+        Initialize FP8/INT8 converter.
+
+        Args:
+            scaling_mode: Scale granularity ("tensor", "row", "block")
+            block_size: Block size for block-wise scaling (default 64)
+            target_format: Target format ("fp8" or "int8")
+            **kwargs: All other args passed to BaseLearnedConverter
+        """
+        super().__init__(**kwargs)
+
         self.block_size = block_size
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.optimizer_choice = optimizer
-        self.full_matrix = full_matrix
         self.target_format = target_format
-        self.no_learned_rounding = no_learned_rounding
-        self.optimizer_kwargs = kwargs
-
-        # LR schedule configuration (for 'original' optimizer)
-        self.lr_schedule = lr_schedule
-        self.lr_gamma = lr_gamma
-        self.lr_patience = lr_patience
-        self.lr_factor = lr_factor
-        self.lr_min = lr_min
-        self.lr_cooldown = lr_cooldown
-        self.lr_threshold = lr_threshold
-        self.lr_adaptive_mode = lr_adaptive_mode
-
-        # Shape-adaptive LR (for plateau schedule)
-        self.lr_shape_influence = lr_shape_influence
-        self.lr_threshold_mode = lr_threshold_mode  # 'rel' or 'abs'
-
-        # Early stopping thresholds
-        self.early_stop_loss = early_stop_loss
-        self.early_stop_lr = early_stop_lr
-        self.early_stop_stall = early_stop_stall
 
         # INT8 always uses block-wise scaling
         if target_format == "int8":
@@ -98,13 +62,11 @@ class LearnedRoundingConverter:
 
         # Set format-specific max values and dtype
         if self.target_format == "int8":
-            # INT8 uses integer symmetric range [-127, 127]
             self.target_dtype = TARGET_INT8_DTYPE
-            self.f8_max_val = None  # Not applicable to INT8
+            self.f8_max_val = None
         else:
-            # FP8 uses floating point range constants
             self.target_dtype = TARGET_FP8_DTYPE
-            self.f8_max_val = FP8_MAX  # Used in FP8 scale calculation and clamping
+            self.f8_max_val = FP8_MAX
 
         print(f"LearnedRoundingConverter initialized on device: {self.device}")
         print(f"  - Target format: {self.target_format}")
@@ -410,7 +372,7 @@ class LearnedRoundingConverter:
                 )
 
                 # Use centralized tier-based LR update
-                curr_lr = adaptive_lr_update(
+                curr_lr = self._adaptive_lr_update(
                     curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult
                 )
 
@@ -633,34 +595,9 @@ class LearnedRoundingConverter:
         """
         Apply learned rounding optimization for INT8 quantization.
         Uses SVD-based optimization similar to FP8 but adapted for INT8.
-        Supports multiple optimizer choices: original, adamw, radam.
         """
-        M, N = W_float32.shape
-
-        # Compute SVD for the optimization
-        max_rank = min(W_float32.shape)
-        k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
-        k = min(k, max_rank)
-
-        print(
-            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
-        )
-
-        if self.full_matrix:
-            print("    - Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
-        else:
-            try:
-                print("    - Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(
-                    W_float32, q=min(k + 10, max_rank), niter=4
-                )
-                Vh = Vh.T
-            except RuntimeError:
-                print("    - svd_lowrank failed, falling back to full SVD.")
-                U, _, Vh = torch.linalg.svd(W_float32, full_matrices=False)
-
-        U_k, Vh_k = U[:, :k], Vh[:k, :]
+        # Use inherited SVD computation
+        U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
         # Route to appropriate optimizer
         if self.optimizer_choice == "original":
@@ -674,10 +611,7 @@ class LearnedRoundingConverter:
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
-        del U, Vh, U_k, Vh_k
-        gc.collect()
-        if self.device == "cuda":
-            torch.cuda.empty_cache()
+        self._cleanup_tensors(U_k, Vh_k)
 
         return final_qdata, scale
 
@@ -1010,7 +944,7 @@ class LearnedRoundingConverter:
                 )
 
                 # Use centralized tier-based LR update
-                curr_lr = adaptive_lr_update(
+                curr_lr = self._adaptive_lr_update(
                     curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult
                 )
 
@@ -1161,29 +1095,8 @@ class LearnedRoundingConverter:
                 torch.cuda.empty_cache()
             return W_f8, dequant_scale, dequantized_weight_tensor
 
-        max_rank = min(W_float32.shape)
-        k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
-        k = min(k, max_rank)
-
-        print(
-            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
-        )
-
-        if self.full_matrix:
-            print("    - Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
-        else:
-            try:
-                print("    - Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(
-                    W_float32, q=min(k + 10, max_rank), niter=4
-                )
-                Vh = Vh.T
-            except RuntimeError:
-                print("    - svd_lowrank failed, falling back to full SVD.")
-                U, _, Vh = torch.linalg.svd(W_float32, full_matrices=False)
-
-        U_k, Vh_k = U[:, :k], Vh[:k, :]
+        # Use inherited SVD computation
+        U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
         if self.optimizer_choice == "adamw":
             final_tensor_scaled = self._optimize_adamw(W_float32, scale, U_k, Vh_k)
@@ -1194,12 +1107,8 @@ class LearnedRoundingConverter:
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
-        #    final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
-        #    final_tensor_scaled.clamp_(-self.f8_max_val, self.f8_max_val)
-
         with torch.no_grad():
             W_f8 = final_tensor_scaled.to(TARGET_FP8_DTYPE)
-            # Ensure compact_scale is valid before calling reciprocal; fall back to ones if missing.
             if compact_scale is None:
                 print(
                     "    - WARNING: compact_scale is None, falling back to torch.ones for dequant_scale."
@@ -1214,7 +1123,7 @@ class LearnedRoundingConverter:
             dequantized_weight_tensor = (
                 W_f8.to(self.device, dtype=COMPUTE_DTYPE) / scale
             )
-        del W_float32, scale, U, Vh, U_k, Vh_k, final_tensor_scaled, compact_scale
+        del W_float32, scale, U_k, Vh_k, final_tensor_scaled, compact_scale
         gc.collect()
         if self.device == "cuda":
             torch.cuda.empty_cache()
@@ -1260,30 +1169,8 @@ class LearnedRoundingConverter:
                 dequantized,
             )
 
-        # With learned rounding optimization
-        max_rank = min(W_float32.shape)
-        k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
-        k = min(k, max_rank)
-
-        print(
-            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
-        )
-
-        if self.full_matrix:
-            print("    - Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
-        else:
-            try:
-                print("    - Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(
-                    W_float32, q=min(k + 10, max_rank), niter=4
-                )
-                Vh = Vh.T
-            except RuntimeError:
-                print("    - svd_lowrank failed, falling back to full SVD.")
-                U, _, Vh = torch.linalg.svd(W_float32, full_matrices=False)
-
-        U_k, Vh_k = U[:, :k], Vh[:k, :]
+        # Use inherited SVD computation
+        U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
         # Use the appropriate optimizer with row-wise scale
         scale = quant_scale  # (M, 1) for broadcast
@@ -1302,10 +1189,7 @@ class LearnedRoundingConverter:
             dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
             dequantized = W_f8.to(COMPUTE_DTYPE) / quant_scale
 
-        del W_float32, scale, U, Vh, U_k, Vh_k, final_tensor_scaled, quant_scale
-        gc.collect()
-        if self.device == "cuda":
-            torch.cuda.empty_cache()
+        self._cleanup_tensors(W_float32, scale, U_k, Vh_k, final_tensor_scaled, quant_scale)
 
         return W_f8, dequant_scale, dequantized
 
@@ -1374,29 +1258,8 @@ class LearnedRoundingConverter:
         scale_full_blocked = scale_broadcast.expand(-1, -1, bs, bs)
         scale_full = scale_full_blocked.permute(0, 2, 1, 3).reshape(M, N)
 
-        max_rank = min(W_float32.shape)
-        k = min(self.max_k, max(self.min_k, int(math.floor(self.top_p * max_rank))))
-        k = min(k, max_rank)
-
-        print(
-            f"    - Tensor shape: {list(W_float32.shape)}, Max rank: {max_rank}. Using k={k} components."
-        )
-
-        if self.full_matrix:
-            print("    - Using torch.linalg.svd with full_matrices=True")
-            U, _, Vh = torch.linalg.svd(W_float32, full_matrices=True, driver="gesvd")
-        else:
-            try:
-                print("    - Trying svd_lowrank")
-                U, _, Vh = torch.svd_lowrank(
-                    W_float32, q=min(k + 10, max_rank), niter=4
-                )
-                Vh = Vh.T
-            except RuntimeError:
-                print("    - svd_lowrank failed, falling back to full SVD.")
-                U, _, Vh = torch.linalg.svd(W_float32, full_matrices=False)
-
-        U_k, Vh_k = U[:, :k], Vh[:k, :]
+        # Use inherited SVD computation
+        U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
         # Use the optimizer with the expanded scale
         if self.optimizer_choice == "adamw":
@@ -1416,20 +1279,9 @@ class LearnedRoundingConverter:
             dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
             dequantized = W_f8.to(COMPUTE_DTYPE) / scale_full
 
-        del (
-            W_float32,
-            W_blocked,
-            scale_full,
-            scale_broadcast,
-            U,
-            Vh,
-            U_k,
-            Vh_k,
-            final_tensor_scaled,
-            quant_scale,
+        self._cleanup_tensors(
+            W_float32, W_blocked, scale_full, scale_broadcast,
+            U_k, Vh_k, final_tensor_scaled, quant_scale
         )
-        gc.collect()
-        if self.device == "cuda":
-            torch.cuda.empty_cache()
 
         return W_f8, dequant_scale, dequantized
