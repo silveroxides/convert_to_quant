@@ -114,7 +114,7 @@ def convert_to_fp8_scaled(
     except Exception as e:
         print(f"FATAL: Error loading '{input_file}': {e}")
         return
-    
+
     all_keys = loader.keys()
 
     # Initialize metadata collection if enabled
@@ -283,22 +283,22 @@ def convert_to_fp8_scaled(
         if not use_custom and not use_layer_config:
             # Build dict of active filter flags from function locals
             active_filters = {
-                name: locals().get(name, False) 
+                name: locals().get(name, False)
                 for name in MODEL_FILTERS.keys()
             }
-            
+
             # Check each active filter against the key
             for filter_name, is_active in active_filters.items():
                 if not is_active:
                     continue
                 cfg = MODEL_FILTERS[filter_name]
-                
+
                 # Check "exclude" patterns (layers to skip entirely)
                 exclude_patterns = cfg.get("exclude", [])
                 if exclude_patterns and any(n in key for n in exclude_patterns):
                     exclusion_reason = f"{filter_name} exclusion"
                     break
-                
+
                 # Check "highprec" patterns (layers to keep in high precision)
                 highprec_patterns = cfg.get("highprec", [])
                 if highprec_patterns and any(n in key for n in highprec_patterns):
@@ -601,10 +601,10 @@ def convert_to_fp8_scaled(
             continue
         if key not in new_tensors:
             new_tensors[key] = loader.get_tensor(key)
-    
+
     # Close loader to release file handle
     loader.close()
-    
+
     # Free calibration data and force garbage collection before save
     calibration_data_cache.clear()
     gc.collect()

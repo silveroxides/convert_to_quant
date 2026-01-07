@@ -14,15 +14,15 @@ from typing import Dict, Optional
 
 class UnifiedSafetensorsLoader:
     """Unified safetensors loader supporting both preload and streaming modes.
-    
+
     In standard mode (low_memory=False):
         - Loads all tensors upfront (fast, uses more RAM)
         - Tensors remain in memory until explicitly deleted
-    
+
     In low-memory mode (low_memory=True):
         - Loads tensors on-demand via get_tensor()
         - Caller should delete tensors after processing
-    
+
     Usage:
         with UnifiedSafetensorsLoader("model.safetensors", low_memory=True) as loader:
             for key in loader.keys():
@@ -30,10 +30,10 @@ class UnifiedSafetensorsLoader:
                 # ... process tensor ...
                 loader.mark_processed(key)  # Frees memory in low_memory mode
     """
-    
+
     def __init__(self, filename: str, low_memory: bool = False):
         """Initialize the loader.
-        
+
         Args:
             filename: Path to safetensors file
             low_memory: If True, use streaming mode; if False, preload all tensors
@@ -45,7 +45,7 @@ class UnifiedSafetensorsLoader:
         self._file = None
         self._header = None
         self._header_size = None
-        
+
         if low_memory:
             # Streaming mode: read header only, keep file open
             self._header, self._header_size = self._read_header()
@@ -80,7 +80,7 @@ class UnifiedSafetensorsLoader:
 
     def get_shape(self, key: str) -> tuple:
         """Get tensor shape without loading tensor data.
-        
+
         In low-memory mode, reads from header.
         In standard mode, returns shape from loaded tensor.
         """
@@ -90,39 +90,39 @@ class UnifiedSafetensorsLoader:
             return tuple(self._header[key]["shape"])
         else:
             return tuple(self._tensors[key].shape)
-    
+
     def get_ndim(self, key: str) -> int:
         """Get tensor ndim without loading tensor data."""
         return len(self.get_shape(key))
 
     def get_tensor(self, key: str) -> torch.Tensor:
         """Get a tensor by key.
-        
+
         In standard mode, returns from cache.
         In low-memory mode, loads from file on-demand.
         """
         if not self.low_memory:
             # Standard mode: return from preloaded cache
             return self._tensors[key]
-        
+
         # Low-memory mode: load on-demand
         if key not in self._header:
             raise KeyError(f"Tensor '{key}' not found in file")
-        
+
         metadata = self._header[key]
         offset_start, offset_end = metadata["data_offsets"]
-        
+
         if offset_start != offset_end:
             self._file.seek(self._header_size + 8 + offset_start)
             tensor_bytes = self._file.read(offset_end - offset_start)
         else:
             tensor_bytes = None
-        
+
         return self._deserialize_tensor(tensor_bytes, metadata)
 
     def mark_processed(self, key: str):
         """Mark a tensor as processed, freeing memory if in low-memory mode.
-        
+
         In standard mode, optionally deletes from cache.
         In low-memory mode, this is a no-op (tensor was never cached).
         """

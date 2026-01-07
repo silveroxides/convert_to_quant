@@ -79,7 +79,7 @@ def _float8_round(x: torch.Tensor) -> torch.Tensor:
 def _f32_to_floatx_unpacked(x: torch.Tensor, ebits: int, mbits: int) -> torch.Tensor:
     """
     Convert FP32 to sub-byte float format (e.g., FP4 E2M1).
-    
+
     Output: uint8 tensor with bit encoding in least significant bits.
     """
     assert x.dtype == torch.float
@@ -91,7 +91,7 @@ def _f32_to_floatx_unpacked(x: torch.Tensor, ebits: int, mbits: int) -> torch.Te
     magic_adder = _n_ones(MBITS_F32 - mbits - 1)
     max_normal = 2 ** (_n_ones(ebits) - exp_bias) * (_n_ones(mbits + 1) / (2**mbits))
     min_normal = 2 ** (1 - exp_bias)
-    
+
     denorm_exp = (F32_EXP_BIAS - exp_bias) + (MBITS_F32 - mbits) + 1
     denorm_mask_int = denorm_exp << MBITS_F32
     denorm_mask_float = torch.tensor(denorm_mask_int, dtype=torch.int32).view(torch.float32)
@@ -138,7 +138,7 @@ def _f32_to_floatx_unpacked(x: torch.Tensor, ebits: int, mbits: int) -> torch.Te
 def _floatx_unpacked_to_f32(x: torch.Tensor, ebits: int, mbits: int) -> torch.Tensor:
     """
     Convert sub-byte float format (e.g., FP4 E2M1) back to FP32.
-    
+
     Input: uint8 tensor with bit encoding in least significant bits.
     """
     assert x.dtype == torch.uint8
@@ -188,13 +188,13 @@ def _floatx_unpacked_to_f32(x: torch.Tensor, ebits: int, mbits: int) -> torch.Te
 def to_blocked(input_matrix: torch.Tensor, flatten: bool = True) -> torch.Tensor:
     """
     Rearrange matrix to cuBLAS 2D block scaling factors layout.
-    
+
     See: https://docs.nvidia.com/cuda/cublas/index.html#d-block-scaling-factors-layout
-    
+
     Args:
         input_matrix: Input tensor of shape (H, W)
         flatten: If True, return flattened tensor
-    
+
     Returns:
         Rearranged tensor for cuBLAS block layout
     """
@@ -216,7 +216,7 @@ def to_blocked(input_matrix: torch.Tensor, flatten: bool = True) -> torch.Tensor
 
     blocks = padded.view(n_row_blocks, 128, n_col_blocks, 4).permute(0, 2, 1, 3)
     rearranged = blocks.reshape(-1, 4, 32, 4).transpose(1, 2).reshape(-1, 32, 16)
-    
+
     if flatten:
         return rearranged.flatten()
     return rearranged.reshape(padded_rows, padded_cols)
@@ -225,12 +225,12 @@ def to_blocked(input_matrix: torch.Tensor, flatten: bool = True) -> torch.Tensor
 def from_blocked(blocked_matrix: torch.Tensor, num_rows: int, num_cols: int) -> torch.Tensor:
     """
     Reverse cuBLAS tiled layout back to normal (H, W) layout.
-    
+
     Args:
         blocked_matrix: Swizzled tensor from cuBLAS layout
         num_rows: Desired output rows (unpadded)
         num_cols: Desired output cols (unpadded)
-    
+
     Returns:
         Unswizzled tensor of shape (num_rows, num_cols)
     """
@@ -246,7 +246,7 @@ def from_blocked(blocked_matrix: torch.Tensor, num_rows: int, num_cols: int) -> 
     step4 = step3.reshape(n_row_blocks, n_col_blocks, 128, 4)
     step5 = step4.permute(0, 2, 1, 3)
     unblocked = step5.reshape(padded_rows, padded_cols)
-    
+
     return unblocked[:num_rows, :num_cols]
 
 

@@ -186,7 +186,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("These flags keep certain model-specific layers in high precision")
         print("(not quantized). Multiple filters can be combined.")
         print()
-        
+
         # Group filters by category from MODEL_FILTERS registry
         categories = {
             "text": "Text Encoders",
@@ -194,7 +194,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             "video": "Video Models",
             "image": "Image Models",
         }
-        
+
         for cat_key, cat_name in categories.items():
             # Get filters in this category
             cat_filters = [
@@ -203,10 +203,10 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             ]
             if not cat_filters:
                 continue
-                
+
             print(f"{cat_name}:")
             print("-" * 40)
-            
+
             for action in self._all_actions:
                 if self._get_dest_name(action) in cat_filters:
                     line = self._format_action_help(action)

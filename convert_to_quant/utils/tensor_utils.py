@@ -83,25 +83,25 @@ def generate_calibration_data(
 ) -> Dict[int, torch.Tensor]:
     """
     Generate random calibration data for each unique input dimension.
-    
+
     Used for bias correction during quantization - creates synthetic
     activation samples for each unique weight input dimension found.
-    
+
     Args:
         tensors: Dictionary of model tensors to scan for weight shapes
         calib_samples: Number of calibration samples to generate per dimension
         seed: Random seed for reproducibility
         device: Device to create tensors on ('cuda' or 'cpu')
         compute_dtype: Data type for calibration tensors (default: float32)
-    
+
     Returns:
         Dict mapping input_features -> calibration tensor of shape (calib_samples, input_features)
     """
     seed_generator = torch.Generator(device=device)
     seed_generator.manual_seed(seed)
-    
+
     calibration_data_cache: Dict[int, torch.Tensor] = {}
-    
+
     for key, tensor in tensors.items():
         if key.endswith(".weight") and tensor.ndim == 2:
             in_features = tensor.shape[1]
@@ -113,7 +113,7 @@ def generate_calibration_data(
                     generator=seed_generator,
                     device=device,
                 )
-    
+
     return calibration_data_cache
 
 
@@ -126,22 +126,22 @@ def adaptive_lr_update(
 ) -> float:
     """
     Compute new learning rate using tier-based adaptive schedule.
-    
+
     Uses ADAPTIVE_LR_TIERS_IMPROVE and ADAPTIVE_LR_TIERS_DECAY from constants
     to determine appropriate boost/decay multipliers based on worse_loss_counter.
-    
+
     Args:
         curr_lr: Current learning rate
         improved: Whether loss improved this iteration
         counter_for_tier: Counter value to use for tier selection (may differ from worse_loss_counter in no-reset mode)
         worse_loss_counter: Current worse loss counter
         small_mult: Optional multiplier for square matrices (default 1.0)
-    
+
     Returns:
         Updated learning rate
     """
     from ..constants import ADAPTIVE_LR_TIERS_IMPROVE, ADAPTIVE_LR_TIERS_DECAY
-    
+
     if improved:
         # Find appropriate improvement tier
         tier = ADAPTIVE_LR_TIERS_IMPROVE[-1]  # Default to highest tier
@@ -174,10 +174,10 @@ def compute_bias_correction(
 ) -> Tuple[torch.Tensor, bool]:
     """
     Compute bias correction based on weight quantization error.
-    
+
     Uses calibration data to estimate the expected output error from
     weight quantization, then corrects the bias to compensate.
-    
+
     Args:
         original_weight: Original FP32 weight tensor (out_features, in_features)
         dequantized_weight: Dequantized weight after quantization
@@ -185,7 +185,7 @@ def compute_bias_correction(
         calibration_data: Random calibration data (samples, in_features)
         device: Device to compute on ('cuda' or 'cpu')
         compute_dtype: Data type for computation (default: float32)
-    
+
     Returns:
         Tuple of (corrected_bias, success_flag). If calibration data is missing,
         returns (original_bias, False).
@@ -195,18 +195,18 @@ def compute_bias_correction(
         W_orig_dev = original_weight.to(device=device, dtype=compute_dtype)
         W_dequant_dev = dequantized_weight.to(device=device, dtype=compute_dtype)
         b_orig_dev = original_bias.to(device=device, dtype=compute_dtype)
-        
+
         weight_error = W_orig_dev - W_dequant_dev
         output_error = X_calib_dev @ weight_error.T
         bias_correction = output_error.mean(dim=0)
         b_new = b_orig_dev - bias_correction
-        
+
         result = b_new.to(device="cpu", dtype=original_bias.dtype)
-        
+
         # Cleanup
         del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev
         del weight_error, output_error, bias_correction, b_new
         if device == "cuda":
             torch.cuda.empty_cache()
-        
+
         return result, True

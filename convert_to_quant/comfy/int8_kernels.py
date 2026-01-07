@@ -12,7 +12,7 @@ This module provides two different INT8 matmul implementations:
 1. "v1" - Original per-block scaling (from int8_matmul.py)
    - Uses per-block weight scales indexed as b_s[offs_n * k]
    - Simpler indexing, autotuned for smaller tile sizes
-   
+
 2. "v2" - Row-major 2D weight scaling (from int8_kernels.py)
    - Uses 2D weight scale array indexed as b_s[pid_n, i]
    - More explicit 2D indexing, optimized for larger tiles
@@ -25,7 +25,7 @@ Based on DeepSeek scaled FP8 matmul and Jetfire paper:
 https://arxiv.org/abs/2403.12422
 https://github.com/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
 
-                                                     N dimension →  
+                                                     N dimension →
                                                INT8 weights                 scaler per block
                                                ┌-----┬-----┬─────┬─────┐    ┌-----┬-----┬─────┬─────┐
                                                : b00 : b01 : b02 | b03 |    :     :     :     |     |
@@ -40,17 +40,17 @@ https://github.com/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
                                                : b00 : b01 :
      ├─── blk ───┤                             ├-----┼-----┤
                                                : b10 : b11 :
-            K dimension →                      └-----┴-----┘                                
+            K dimension →                      └-----┴-----┘
      INT8 activations
      ┌-----┬-----┬─────┬─────┐   ┌-----┬-----┐ ┌-----┬-----┐   ┌-----------┐   ┌-----┬-----┐   ┌-----┬-----┐
      : a00 : a01 : a02 | a03 |   : a00 : a01 : :  @  :  @  :   :   a_s00   :   :     :     :   :acc00:acc01:
-     ├-----┼-----┼─────┼─────┤   ├-----┼-----┤ ├-----┼-----┤ * ├-----------┤ * :b_s00:b_s10: = ├-----┼-----┤ 
+     ├-----┼-----┼─────┼─────┤   ├-----┼-----┤ ├-----┼-----┤ * ├-----------┤ * :b_s00:b_s10: = ├-----┼-----┤
  M   : a10 : a11 : a12 | a13 |   : a10 : a11 : :  @  :  @  :   :   a_s10   :   :     :     :   :acc10:acc11:
 dim  ├-----┼-----┼─────┼─────┤   └-----┴-----┘ └-----┴-----┘   └-----------┘   └-----┴-----┘   └-----┴-----┘
  ↓   | a20 | a21 | a22 | a23 |   INT8 matmul acc in INT32      rescale the FP32 intermediate   accumulate
      ├─────┼─────┼─────┼─────┤   then cast to FP32             "rank 1" hadamard scaler        intermediate
-     | a30 | a31 | a32 | a33 |  
-     └─────┴─────┴─────┴─────┘  
+     | a30 | a31 | a32 | a33 |
+     └─────┴─────┴─────┴─────┘
      scaler per block
      ┌-----------┬───────────┐
      :   a_s00   :   a_s01   |

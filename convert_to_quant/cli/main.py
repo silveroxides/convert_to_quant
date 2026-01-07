@@ -34,10 +34,10 @@ from safetensors import safe_open
 
 def load_input_scales(path: str) -> dict:
     """Load input scales from JSON or safetensors file.
-    
+
     Args:
         path: Path to JSON file or safetensors model with .input_scale tensors
-        
+
     Returns:
         Dict mapping layer base names to input_scale values (float)
     """
@@ -695,7 +695,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             from .calibrate_activation_scales import calibrate_model, patch_model_with_scales, load_lora_tensors
         except ImportError:
             from calibrate_activation_scales import calibrate_model, patch_model_with_scales, load_lora_tensors
-        
+
         if not args.output:
             base = os.path.splitext(args.input)[0]
             args.output = f"{base}_calibrated.safetensors"

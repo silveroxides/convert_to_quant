@@ -224,23 +224,23 @@ MODEL_FILTERS = {
 def build_exclusion_patterns(active_filters: dict) -> tuple:
     """
     Build layer exclusion patterns from active filter flags.
-    
+
     Args:
         active_filters: Dict of filter_name -> bool (e.g., {"radiance": True, "t5xxl": False})
-    
+
     Returns:
         Tuple of (exclude_patterns, highprec_patterns, remove_patterns)
     """
     exclude = []
     highprec = []
     remove = []
-    
+
     for name, cfg in MODEL_FILTERS.items():
         if active_filters.get(name, False):
             exclude.extend(cfg.get("exclude", []))
             highprec.extend(cfg.get("highprec", []))
             remove.extend(cfg.get("remove", []))
-    
+
     return exclude, highprec, remove
 
 # --- Dtype settings ---
