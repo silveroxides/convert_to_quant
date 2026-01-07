@@ -604,24 +604,24 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             print("Error: Output file cannot be same as input.")
             return
 
-        # Build converter kwargs - filter flags are now passed directly
-        # and converted to exclude_patterns inside convert_to_nvfp4
-        nvfp4_excluded = [
-            "input", "output", "comfy_quant", "save_quant_metadata",
-            "int8", "nvfp4", "fallback", "custom_layers", "custom_type",
-            "custom_block_size", "custom_scaling_mode", "custom_simple",
-            "custom_heur", "fallback_block_size", "fallback_simple",
-            "convert_fp8_scaled", "convert_int8_scaled", "legacy_input_add",
-            "cleanup_fp8_scaled", "edit_quant", "actcal", "dry_run",
-            "calib_samples", "manual_seed", "input_scale", "layer_config",
-            "layer_config_fullmatch", "hp_filter", "full_precision_mm",
-            "full_precision_matrix_mult", "scaling_mode", "block_size",
-            "scaled_fp8_marker", "actcal_samples", "actcal_percentile",
-            "actcal_lora", "actcal_seed", "actcal_device", "remove_keys",
-            "add_keys", "quant_filter", "no_normalize_scales", "verbose_pinned",
-            "input_scales_path",  # Handle separately
-        ]
-        nvfp4_kwargs = {k: v for k, v in vars(args).items() if k not in nvfp4_excluded}
+        # Build converter kwargs - use include-list pattern (matching legacy script)
+        # These are the parameters that convert_to_nvfp4 accepts
+        nvfp4_included = {
+            # Filter flags (from MODEL_FILTERS keys)
+            "t5xxl", "mistral", "visual", "flux2", "distillation_large",
+            "distillation_small", "nerf_large", "nerf_small", "radiance",
+            "wan", "qwen", "hunyuan", "zimage", "zimage_refiner",
+            # Quantization options
+            "simple", "num_iter", "heur",
+            # Optimizer/LR options
+            "optimizer", "lr", "lr_schedule", "top_p", "min_k", "max_k", "full_matrix",
+            # LR schedule tuning
+            "lr_gamma", "lr_patience", "lr_factor", "lr_min", "lr_cooldown",
+            "lr_threshold", "lr_adaptive_mode", "lr_shape_influence", "lr_threshold_mode",
+            # Early stopping
+            "early_stop_loss", "early_stop_lr", "early_stop_stall",
+        }
+        nvfp4_kwargs = {k: v for k, v in vars(args).items() if k in nvfp4_included}
 
         # Load input scales if provided
         input_scales = None

@@ -35,6 +35,7 @@ from ..utils.float_utils import (
     F4_E2M1_EBITS,
     F4_E2M1_MBITS,
 )
+from ..utils.tensor_utils import adaptive_lr_update
 from ..pinned_transfer import transfer_to_gpu_pinned
 
 
@@ -667,43 +668,13 @@ class LearnedNVFP4Converter:
         worse_loss_counter: int,
         small_mult: float,
     ) -> float:
-        """Tier-based adaptive LR update schedule."""
-        if improved and counter_for_tier < 50:
-            return min(curr_lr * (1.25 * small_mult), 100.0)
-        elif improved and counter_for_tier < 75:
-            return min(curr_lr * (1.375 * small_mult), 100.0)
-        elif improved and counter_for_tier < 100:
-            return min(curr_lr * (1.5 * small_mult), 100.0)
-        elif improved and counter_for_tier < 125:
-            return min(curr_lr * (1.75 * small_mult), 100.0)
-        elif improved and counter_for_tier < 150:
-            return min(curr_lr * (2.0 * small_mult), 100.0)
-        elif improved and counter_for_tier < 200:
-            return min(curr_lr * (2.25 * small_mult), 100.0)
-        elif improved and counter_for_tier < 250:
-            return min(curr_lr * (2.5 * small_mult), 100.0)
-        elif improved and counter_for_tier < 300:
-            return min(curr_lr * (2.75 * small_mult), 100.0)
-        elif improved:
-            return min(curr_lr * (3.0 * small_mult), 100.0)
-        elif worse_loss_counter < 26:
-            return max(curr_lr * (0.95 * small_mult), 9e-8)
-        elif worse_loss_counter < 51:
-            return max(curr_lr * (0.97 * small_mult), 8e-8)
-        elif worse_loss_counter < 76:
-            return max(curr_lr * (0.985 * small_mult), 7e-8)
-        elif worse_loss_counter < 101:
-            return max(curr_lr * (0.9875 * small_mult), 6e-8)
-        elif worse_loss_counter < 151:
-            return max(curr_lr * (0.98875 * small_mult), 5e-8)
-        elif worse_loss_counter < 201:
-            return max(curr_lr * (0.99 * small_mult), 4e-8)
-        elif worse_loss_counter < 251:
-            return max(curr_lr * (0.99125 * small_mult), 3e-8)
-        elif worse_loss_counter < 301:
-            return max(curr_lr * (0.9925 * small_mult), 2e-8)
-        else:
-            return max(curr_lr * (0.995 * small_mult), 5e-9)
+        """Tier-based adaptive LR update schedule.
+        
+        Delegates to centralized adaptive_lr_update() from tensor_utils.
+        """
+        return adaptive_lr_update(
+            curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult
+        )
     
     def _check_early_stop(
         self, current_loss: float, curr_lr: float, worse_loss_counter: int

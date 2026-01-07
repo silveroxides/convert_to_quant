@@ -163,3 +163,50 @@ def adaptive_lr_update(
         _, mult, min_lr = tier
         return max(curr_lr * (mult * small_mult), min_lr)
 
+
+def compute_bias_correction(
+    original_weight: torch.Tensor,
+    dequantized_weight: torch.Tensor,
+    original_bias: torch.Tensor,
+    calibration_data: torch.Tensor,
+    device: str,
+    compute_dtype: torch.dtype = torch.float32,
+) -> Tuple[torch.Tensor, bool]:
+    """
+    Compute bias correction based on weight quantization error.
+    
+    Uses calibration data to estimate the expected output error from
+    weight quantization, then corrects the bias to compensate.
+    
+    Args:
+        original_weight: Original FP32 weight tensor (out_features, in_features)
+        dequantized_weight: Dequantized weight after quantization
+        original_bias: Original bias tensor
+        calibration_data: Random calibration data (samples, in_features)
+        device: Device to compute on ('cuda' or 'cpu')
+        compute_dtype: Data type for computation (default: float32)
+    
+    Returns:
+        Tuple of (corrected_bias, success_flag). If calibration data is missing,
+        returns (original_bias, False).
+    """
+    with torch.no_grad():
+        X_calib_dev = calibration_data.to(device=device)
+        W_orig_dev = original_weight.to(device=device, dtype=compute_dtype)
+        W_dequant_dev = dequantized_weight.to(device=device, dtype=compute_dtype)
+        b_orig_dev = original_bias.to(device=device, dtype=compute_dtype)
+        
+        weight_error = W_orig_dev - W_dequant_dev
+        output_error = X_calib_dev @ weight_error.T
+        bias_correction = output_error.mean(dim=0)
+        b_new = b_orig_dev - bias_correction
+        
+        result = b_new.to(device="cpu", dtype=original_bias.dtype)
+        
+        # Cleanup
+        del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev
+        del weight_error, output_error, bias_correction, b_new
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        
+        return result, True

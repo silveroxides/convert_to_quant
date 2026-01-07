@@ -1,5 +1,40 @@
 # Development Log
 
+## 2026-01-06: DRY Refactor - Centralized Utilities
+
+### Session Summary
+Refactored duplicated code patterns identified during code structure audit. Centralized LR tier configuration, calibration data generation, and bias correction utilities.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `ADAPTIVE_LR_TIERS_IMPROVE`, `ADAPTIVE_LR_TIERS_DECAY` constants |
+| `utils/tensor_utils.py` | Added `generate_calibration_data()`, `adaptive_lr_update()`, `compute_bias_correction()` |
+| `utils/__init__.py` | Updated exports for new utilities |
+| `converters/learned_rounding.py` | Replaced ~35 lines of inline tier logic with call to `adaptive_lr_update()` |
+| `converters/learned_nvfp4.py` | Replaced `_adaptive_lr_update()` method with thin wrapper to shared utility |
+| `cli/main.py` | Simplified `nvfp4_excluded` list to cleaner `nvfp4_included` set pattern |
+
+### New Utilities
+
+```python
+# tensor_utils.py - shared utilities
+generate_calibration_data(tensors, calib_samples, seed, device)  # Calibration data generator
+adaptive_lr_update(curr_lr, improved, counter, worse_count, small_mult)  # Tier-based LR update
+compute_bias_correction(orig_weight, dequant_weight, bias, calib_data, device)  # Bias correction
+```
+
+### Verification
+
+- Syntax check: ✅ All 6 modified files pass
+- CLI --help: ✅ All options display correctly
+- CLI --help-filters: ✅ Model filters work as expected
+
+---
+
 ## 2026-01-06: Model Filter Registry Refactor
 
 ### Session Summary

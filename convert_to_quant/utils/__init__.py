@@ -5,6 +5,7 @@ from .tensor_utils import (
     normalize_tensorwise_scales,
     generate_calibration_data,
     adaptive_lr_update,
+    compute_bias_correction,
 )
 from .comfy_quant import (
     create_comfy_quant_tensor,
@@ -20,6 +21,7 @@ __all__ = [
     "normalize_tensorwise_scales",
     "generate_calibration_data",
     "adaptive_lr_update",
+    "compute_bias_correction",
     "create_comfy_quant_tensor",
     "fix_comfy_quant_params_structure",
     "parse_add_keys_string",
