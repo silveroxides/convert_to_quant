@@ -456,9 +456,9 @@ def convert_to_fp8_scaled(
                     if layer_full_precision_mm
                     else None,
                 )
-                # Add input_scale for FP8: use weight_scale for t5xxl/mistral, 1.0 otherwise
-                if include_input_scale or t5xxl or mistral or visual:
-                    if t5xxl or mistral or visual:
+                # Add input_scale for FP8: use weight_scale for t5xxl/mistral/visual, 1.0 otherwise
+                if include_input_scale or text_encoder_filter:
+                    if text_encoder_filter:
                         new_tensors[f"{base_name}.input_scale"] = (
                             dequant_s.to(device="cpu", dtype=SCALE_DTYPE)
                             .detach()
