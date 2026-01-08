@@ -400,7 +400,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 W_q_refined = (tensor_blocks_new / current_total_scale.unsqueeze(-1)).view(M, N)
                 W_q_refined = torch.clamp(W_q_refined, -FP4_E2M1_MAX, FP4_E2M1_MAX)
                 if self.scale_refinement_rounds > 1:
-                    pbar.set_description(f"    Optimizing NVFP4 (scale update {i // scale_update_interval + 1})")
+                    round_num = i // scale_update_interval + 1
+                    print(f"      - Scale refinement {round_num}/{self.scale_refinement_rounds}")
+                    pbar.set_description(f"    Optimizing NVFP4 (scale update {round_num})")
 
             with torch.no_grad():
                 # Dequantize: W_dq = W_q * scale (block-wise)
@@ -543,11 +545,12 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     tensor_blocks_new = current_dq.reshape(M, -1, self.block_size)
                     qdata_f32 = (tensor_blocks_new / current_total_scale.unsqueeze(-1)).view(M, N)
                     qdata_f32 = torch.clamp(qdata_f32, -FP4_E2M1_MAX, FP4_E2M1_MAX)
-                    # Reset delta
                     delta = torch.zeros_like(qdata_f32, requires_grad=True)
                     optimizer = AdamW([delta], lr=curr_lr)
                     if self.scale_refinement_rounds > 1:
-                        pbar.set_description(f"    Optimizing NVFP4 (scale update {i // scale_update_interval + 1})")
+                        round_num = i // scale_update_interval + 1
+                        print(f"      - Scale refinement {round_num}/{self.scale_refinement_rounds}")
+                        pbar.set_description(f"    Optimizing NVFP4 (scale update {round_num})")
 
             optimizer.zero_grad()
 
@@ -669,11 +672,12 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     tensor_blocks_new = current_dq.reshape(M, -1, self.block_size)
                     qdata_f32 = (tensor_blocks_new / current_total_scale.unsqueeze(-1)).view(M, N)
                     qdata_f32 = torch.clamp(qdata_f32, -FP4_E2M1_MAX, FP4_E2M1_MAX)
-                    # Reset delta
                     delta = torch.zeros_like(qdata_f32, requires_grad=True)
                     optimizer = RAdam([delta], lr=curr_lr)
                     if self.scale_refinement_rounds > 1:
-                        pbar.set_description(f"    Optimizing NVFP4 (scale update {i // scale_update_interval + 1})")
+                        round_num = i // scale_update_interval + 1
+                        print(f"      - Scale refinement {round_num}/{self.scale_refinement_rounds}")
+                        pbar.set_description(f"    Optimizing NVFP4 (scale update {round_num})")
 
             optimizer.zero_grad()
 
