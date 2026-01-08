@@ -146,13 +146,25 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     plateau_counter = 0
             # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
 
-            pbar.set_postfix(
-                {
-                    "loss": f"{current_loss_val:.3e}",
-                    "best": f"{best_loss:.3e}",
-                    "lr": f"{curr_lr:.2e}",
-                }
-            )
+            # Schedule-appropriate postfix: show plateau counter or worse counter
+            if schedule_name == "plateau":
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "plateau": f"{plateau_counter}/{self.lr_patience}",
+                    }
+                )
+            else:
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "worse_count": f"{worse_loss_counter}",
+                    }
+                )
 
             # Early stopping conditions
             if (
@@ -237,13 +249,25 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     plateau_counter = 0
             # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
 
-            pbar.set_postfix(
-                {
-                    "loss": f"{current_loss_val:.3e}",
-                    "best": f"{best_loss:.3e}",
-                    "lr": f"{curr_lr:.2e}",
-                }
-            )
+            # Schedule-appropriate postfix: show plateau counter or worse counter
+            if schedule_name == "plateau":
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "plateau": f"{plateau_counter}/{self.lr_patience}",
+                    }
+                )
+            else:
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "worse_count": f"{worse_loss_counter}",
+                    }
+                )
 
             # Early stopping conditions
             if (
