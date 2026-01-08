@@ -224,7 +224,7 @@ def convert_to_nvfp4(
 
         # Skip if heuristics say layer is poor for quantization
         if heur:
-            should_skip, skip_reason = should_skip_layer_for_performance(tensor.shape, FP4_BLOCK_SIZE)
+            should_skip, skip_reason = should_skip_layer_for_performance(tensor, FP4_BLOCK_SIZE)
             if should_skip:
                 print(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {skip_reason})")
                 output_tensors[key] = tensor

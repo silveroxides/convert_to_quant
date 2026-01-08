@@ -1,5 +1,28 @@
 # Development Log
 
+## 2026-01-08: Fix Refactoring Bugs (Static Analysis)
+
+### Session Summary
+Fixed critical runtime bugs discovered via static analysis (flake8, mypy). These bugs were introduced during the modular refactoring.
+
+---
+
+### Bugs Fixed
+
+| File | Bug | Impact |
+|------|-----|--------|
+| `formats/format_migration.py` | Missing `import re` | Crash when using `--hp-filter` |
+| `formats/nvfp4_conversion.py` | Passed `tensor.shape` instead of `tensor` to `should_skip_layer_for_performance()` | Crash when using `--heur` with `--nvfp4` |
+| `formats/int8_conversion.py` | Undefined name `fix_comfy_quant_params_structure` | Crash during INT8-to-comfy_quant conversion |
+
+### Verification
+
+- flake8 F821 (undefined name): ✅ 0 errors (was 1)
+- flake8 F401 (unused imports): 21 warnings (cosmetic, non-breaking)
+- All format modules import successfully
+
+---
+
 ## 2026-01-08: NVFP4 Iterative Scale Refinement
 
 ### Session Summary

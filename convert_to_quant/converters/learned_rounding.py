@@ -380,14 +380,25 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
-            pbar.set_postfix(
-                {
-                    "loss": f"{current_loss:.3e}",
-                    "best": f"{best_loss:.3e}",
-                    "lr": f"{curr_lr:.2e}",
-                    "worse_count": f"{worse_loss_counter}",
-                }
-            )
+            # Show schedule-appropriate metric in progress bar
+            if schedule_name == "plateau":
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "plateau": f"{plateau_counter}/{effective_patience}",
+                    }
+                )
+            else:
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "worse_count": f"{worse_loss_counter}",
+                    }
+                )
 
             # Early stopping conditions (configurable thresholds)
             if (

@@ -6,11 +6,13 @@ Converts between legacy quantization formats and comfy_quant format.
 import gc
 import json
 import os
+import re
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 from typing import Dict, Any, Optional
 from tqdm import tqdm
+
 
 from ..constants import (
     TARGET_FP8_DTYPE,

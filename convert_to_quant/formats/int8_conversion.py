@@ -18,7 +18,7 @@ from ..constants import (
     NORMALIZE_SCALES_ENABLED,
 )
 from ..utils.tensor_utils import normalize_tensorwise_scales
-from ..utils.comfy_quant import create_comfy_quant_tensor
+from ..utils.comfy_quant import create_comfy_quant_tensor, fix_comfy_quant_params_structure
 
 def convert_int8_to_comfy_quant(
     input_file: str,
