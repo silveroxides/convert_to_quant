@@ -48,10 +48,16 @@ def convert_fp8_scaled_to_comfy_quant(
     print(f"Output: {output_file}")
     print("-" * 60)
 
-    # Load input tensors
+    # Load input tensors and preserve original metadata
     tensors: Dict[str, torch.Tensor] = {}
+    original_metadata: Dict[str, str] = {}
     try:
         with safe_open(input_file, framework="pt", device="cpu") as f:
+            # Preserve original file metadata
+            original_metadata = f.metadata() or {}
+            if original_metadata:
+                print(f"Preserving {len(original_metadata)} original metadata entries")
+            
             print(f"Loading {len(f.keys())} tensors from source file...")
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
@@ -347,16 +353,17 @@ def convert_fp8_scaled_to_comfy_quant(
             exist_ok=True,
         )
 
-        # Prepare metadata args
-        save_kwargs = {}
+        # Prepare metadata args - merge original metadata with new quantization metadata
+        output_metadata = dict(original_metadata)  # Start with original metadata
+        
         if save_quant_metadata and quant_metadata_layers:
             full_metadata = {"format_version": "1.0", "layers": quant_metadata_layers}
-            save_kwargs["metadata"] = {
-                "_quantization_metadata": json.dumps(full_metadata)
-            }
+            output_metadata["_quantization_metadata"] = json.dumps(full_metadata)
             print(
                 f"  Adding quantization metadata for {len(quant_metadata_layers)} layers"
             )
+        
+        save_kwargs = {"metadata": output_metadata} if output_metadata else {}
 
         # Normalize any 1-element scale tensors to scalars
         output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
