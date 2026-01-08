@@ -1,5 +1,27 @@
 # Development Log
 
+## 2026-01-08: Critical FP8 Clamp Fix (Quality Issue)
+
+### Session Summary
+Fixed critical missing `.clamp()` calls before `.to(TARGET_FP8_DTYPE)` in most FP8 conversion paths. This could cause values outside FP8 range (±448 for E4M3FN) to overflow, producing NaN or incorrect quantization.
+
+---
+
+### Bugs Fixed
+
+| Line | Method | Path | Fix |
+|------|--------|------|-----|
+| 1122 | `_convert_fp8` | learned | Added `.clamp(-self.f8_max_val, self.f8_max_val)` |
+| 1167 | `_convert_fp8_rowwise` | simple | Added `.clamp()` |
+| 1196 | `_convert_fp8_rowwise` | learned | Added `.clamp()` |
+| 1240 | `_convert_fp8_block2d` | simple | Added `.clamp()` |
+| 1284 | `_convert_fp8_block2d` | learned | Added `.clamp()` |
+
+### Impact
+This was likely causing quality degradation in all learned rounding quantizations.
+
+---
+
 ## 2026-01-08: Fix Refactoring Bugs (Static Analysis)
 
 ### Session Summary
