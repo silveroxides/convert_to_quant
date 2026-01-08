@@ -58,6 +58,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         block_size: int = 16,
         pad_to_16x: bool = True,
         scale_refinement_rounds: int = 1,
+        scale_optimization: str = "fixed",
         **kwargs,
     ):
         """
@@ -66,22 +67,33 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         Args:
             block_size: Block size for quantization (must be 16 for NVFP4)
             pad_to_16x: Pad dimensions to be divisible by 16
-            scale_refinement_rounds: Number of scale refinement rounds (1=no refinement, 2+=iterative)
+            scale_refinement_rounds: Number of scale refinement rounds (for iterative mode)
+            scale_optimization: Scale optimization mode:
+                - "fixed": Scales computed once from original weights (default)
+                - "iterative": Scales recomputed periodically during optimization
+                - "joint": STE-based joint optimization of weights and scales
             **kwargs: All other args passed to BaseLearnedConverter
         """
         if block_size != 16:
             raise ValueError("NVFP4 requires block_size=16")
 
+        valid_scale_modes = ("fixed", "iterative", "joint")
+        if scale_optimization not in valid_scale_modes:
+            raise ValueError(f"scale_optimization must be one of {valid_scale_modes}, got '{scale_optimization}'")
+
         super().__init__(**kwargs)
 
         self.block_size = block_size
         self.pad_to_16x = pad_to_16x
-        self.scale_refinement_rounds = max(1, scale_refinement_rounds)
+        self.scale_optimization = scale_optimization
+        # For iterative mode, use provided rounds; for others, ignore
+        self.scale_refinement_rounds = max(1, scale_refinement_rounds) if scale_optimization == "iterative" else 1
 
         print(f"LearnedNVFP4Converter initialized on device: {self.device}")
         print(f"  - Format: NVFP4 (FP4 E2M1)")
         print(f"  - Block size: {self.block_size}")
-        if self.scale_refinement_rounds > 1:
+        print(f"  - Scale optimization: {self.scale_optimization}")
+        if self.scale_optimization == "iterative" and self.scale_refinement_rounds > 1:
             print(f"  - Scale refinement rounds: {self.scale_refinement_rounds}")
         print(
             f"  - Using optimizer: '{self.optimizer_choice}'"
@@ -278,15 +290,13 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         # Use inherited SVD computation
         U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
-        # Route to appropriate optimizer (only 'original' supports iterative scale refinement)
+        # Route to appropriate optimizer - all now support scale_optimization modes
         if self.optimizer_choice == "original":
             qdata, final_total_scale = self._optimize_original(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
         elif self.optimizer_choice == "adamw":
-            qdata = self._optimize_adamw(W_float32, total_scale, U_k, Vh_k)
-            final_total_scale = total_scale
+            qdata, final_total_scale = self._optimize_adamw(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
         elif self.optimizer_choice == "radam":
-            qdata = self._optimize_radam(W_float32, total_scale, U_k, Vh_k)
-            final_total_scale = total_scale
+            qdata, final_total_scale = self._optimize_radam(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -294,6 +304,20 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         self._cleanup_tensors(U_k, Vh_k)
 
         return qdata, final_total_scale
+
+    def _ste_fp8_scale(self, scale_float: torch.Tensor) -> torch.Tensor:
+        """Apply Straight-Through Estimator for FP8 scale quantization.
+        
+        Forward: Returns FP8-quantized scale values
+        Backward: Gradients flow through as if no quantization occurred
+        """
+        # Clamp to FP8 range
+        scale_clamped = torch.clamp(scale_float, min=1e-12, max=F8_E4M3_MAX)
+        # Quantize to FP8 and back to float32
+        scale_fp8 = _float8_round(scale_clamped)
+        # STE: detach the quantized version, add back the difference from continuous
+        # This makes forward use quantized, backward use continuous gradients
+        return scale_fp8.detach() + (scale_clamped - scale_clamped.detach())
 
     def _nvfp4_dequantize_blockwise(
         self, qdata_float: torch.Tensor, total_scale: torch.Tensor, M: int, N: int
@@ -319,11 +343,15 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """NVFP4 optimization using original gradient descent with tier-based LR.
 
-        Works in the pre-scaled continuous float space (like FP8):
+        Supports three scale_optimization modes:
+        - "fixed": Scales computed once from original weights, never updated
+        - "iterative": Scales recomputed periodically during optimization
+        - "joint": STE-based joint optimization of weights AND block scales
+
+        Works in the pre-scaled continuous float space:
         - W_q = W_float32 / scale (continuous, clamped to [-6, 6])
         - Dequant: W_dq = W_q * scale
-        - Gradient descent on W_q directly
-        - Periodically recompute scales from current W_q state (if scale_refinement_rounds > 1)
+        - Gradient descent on W_q (and optionally scales in joint mode)
         - Final: encode to FP4
 
         Returns:
@@ -337,16 +365,27 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
         W_q_refined = W_q_initial.view(M, N).clone()
 
-        # Current scale state (will be updated iteratively if enabled)
-        current_total_scale = total_scale
+        # Current scale state (will be updated iteratively or jointly if enabled)
+        current_total_scale = total_scale.clone()
+
+        # For joint mode: initialize learnable block scales from initial total_scale
+        if self.scale_optimization == "joint":
+            # block_scales_float: continuous representation of block scales
+            # total_scale = per_tensor_scale * block_scales, so:
+            block_scales_float = (total_scale / per_tensor_scale).clone()
+            best_block_scales = block_scales_float.clone()
+        else:
+            block_scales_float = None
+            best_block_scales = None
 
         best_loss = float("inf")
         best_qdata = None
-        best_total_scale = total_scale
+        best_total_scale = total_scale.clone()
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
         curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        scale_lr = curr_lr * 0.1  # Lower LR for scales in joint mode
 
         # Shape-aware multiplier
         if M == N:
@@ -371,23 +410,23 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             effective_factor = self.lr_factor
             effective_cooldown = self.lr_cooldown
 
-        # Scale refinement interval (update scales every N iterations)
-        # Only active if scale_refinement_rounds > 1
-        if self.scale_refinement_rounds > 1:
+        # Scale refinement interval (for iterative mode only)
+        if self.scale_optimization == "iterative" and self.scale_refinement_rounds > 1:
             scale_update_interval = max(1, self.num_iter // self.scale_refinement_rounds)
         else:
-            scale_update_interval = self.num_iter + 1  # Never update
+            scale_update_interval = self.num_iter + 1  # Never update for fixed/joint
 
+        mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
             range(self.num_iter),
-            desc=f"    Optimizing NVFP4 (Original-{schedule_name})",
+            desc=f"    Optimizing NVFP4 (Original-{schedule_name}{mode_suffix})",
             leave=False,
             dynamic_ncols=True,
         )
 
         for i in pbar:
-            # Iterative scale refinement: recompute scales periodically
-            if i > 0 and i % scale_update_interval == 0:
+            # Iterative scale refinement: recompute scales periodically (iterative mode only)
+            if self.scale_optimization == "iterative" and i > 0 and i % scale_update_interval == 0:
                 # Dequantize current state
                 current_dq = self._nvfp4_dequantize_blockwise(W_q_refined, current_total_scale, M, N)
                 # Recompute scales from current dequantized weights
@@ -399,8 +438,14 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 tensor_blocks_new = current_dq.reshape(M, -1, self.block_size)
                 W_q_refined = (tensor_blocks_new / current_total_scale.unsqueeze(-1)).view(M, N)
                 W_q_refined = torch.clamp(W_q_refined, -FP4_E2M1_MAX, FP4_E2M1_MAX)
-                if self.scale_refinement_rounds > 1:
+                if self.scale_optimization == "iterative":
                     pbar.set_description(f"    Optimizing NVFP4 (scale update {i // scale_update_interval + 1})")
+
+            # For joint mode: apply STE to block scales before dequantization
+            if self.scale_optimization == "joint":
+                # STE: forward uses FP8-quantized scales, backward uses continuous
+                block_scales_ste = self._ste_fp8_scale(block_scales_float)
+                current_total_scale = per_tensor_scale * block_scales_ste
 
             with torch.no_grad():
                 # Dequantize: W_dq = W_q * scale (block-wise)
@@ -426,6 +471,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 best_loss = current_loss
                 best_qdata = W_q_refined.clone()
                 best_total_scale = current_total_scale.clone()
+                if self.scale_optimization == "joint":
+                    best_block_scales = block_scales_float.clone()
                 plateau_counter = 0
                 if self.lr_adaptive_mode == "simple-reset":
                     worse_loss_counter = 0
@@ -436,12 +483,14 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             # LR update based on schedule
             if schedule_name == "exponential":
                 curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                scale_lr = curr_lr * 0.1
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
                 elif plateau_counter >= effective_patience:
                     if curr_lr > self.lr_min:
                         curr_lr = max(curr_lr * effective_factor, self.lr_min)
+                        scale_lr = curr_lr * 0.1
                         cooldown_counter = effective_cooldown
                     plateau_counter = 0
             else:  # 'adaptive' - tier-based schedule
@@ -451,6 +500,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     else worse_loss_counter
                 )
                 curr_lr = self._adaptive_lr_update(curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult)
+                scale_lr = curr_lr * 0.1
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
@@ -472,6 +522,22 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 # Clamp to FP4 range
                 W_q_refined = torch.clamp(W_q_refined, -FP4_E2M1_MAX, FP4_E2M1_MAX)
 
+                # Joint mode: also update block scales via gradient descent
+                if self.scale_optimization == "joint":
+                    # Compute gradient w.r.t. block scales
+                    # For dequant: W_dq = W_q * (per_tensor_scale * block_scales)
+                    # d(loss)/d(block_scales) ~ per_tensor_scale * sum(error * W_q) per block
+                    W_q_blocks = W_q_refined.reshape(M, -1, self.block_size)
+                    error_blocks = error.reshape(M, -1, self.block_size)
+                    # Gradient: sum of (error * W_q) per block
+                    scale_grad = torch.sum(error_blocks * W_q_blocks, dim=-1) * per_tensor_scale
+                    # Normalize gradient to avoid scale explosion
+                    scale_grad_norm = scale_grad / (scale_grad.abs().max().clamp_min(1e-8))
+                    # Update scales (gradient descent)
+                    block_scales_float = block_scales_float - scale_lr * scale_grad_norm
+                    # Clamp to valid FP8 range
+                    block_scales_float = torch.clamp(block_scales_float, min=1e-6, max=F8_E4M3_MAX)
+
         pbar.close()
 
         # Convert best continuous values to FP4 encoding
@@ -485,8 +551,12 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         total_scale: torch.Tensor,
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
-    ) -> torch.Tensor:
-        """NVFP4 optimization using AdamW optimizer."""
+        per_tensor_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """NVFP4 optimization using AdamW optimizer.
+        
+        Supports scale_optimization modes: fixed, iterative (not implemented), joint (STE).
+        """
         M, N = W_float32.shape
 
         # Start with continuous pre-scaled values (like _optimize_original)
@@ -497,18 +567,30 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
         curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
-        optimizer = AdamW([delta], lr=curr_lr)
+
+        # For joint mode: initialize learnable block scales
+        current_total_scale = total_scale.clone()
+        if self.scale_optimization == "joint":
+            block_scales_float = (total_scale / per_tensor_scale).clone().requires_grad_(True)
+            optimizer = AdamW([delta, block_scales_float], lr=curr_lr)
+            best_block_scales = block_scales_float.detach().clone()
+        else:
+            block_scales_float = None
+            optimizer = AdamW([delta], lr=curr_lr)
+            best_block_scales = None
 
         schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        best_total_scale = total_scale.clone()
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
 
+        mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
             range(self.num_iter),
-            desc=f"    Optimizing NVFP4 (AdamW-{schedule_name})",
+            desc=f"    Optimizing NVFP4 (AdamW-{schedule_name}{mode_suffix})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -517,7 +599,13 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             optimizer.zero_grad()
 
             q_refined = qdata_f32 + delta
-            current_dq = self._nvfp4_dequantize_blockwise(q_refined, total_scale, M, N)
+
+            # For joint mode: apply STE to get effective scales
+            if self.scale_optimization == "joint":
+                block_scales_ste = self._ste_fp8_scale(block_scales_float)
+                current_total_scale = per_tensor_scale * block_scales_ste
+            
+            current_dq = self._nvfp4_dequantize_blockwise(q_refined, current_total_scale, M, N)
 
             error = current_dq - W_float32
             projected_error = U_k.T @ error @ Vh_k.T
@@ -526,11 +614,19 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             loss.backward()
             optimizer.step()
 
+            # Clamp block scales to valid range after optimizer step
+            if self.scale_optimization == "joint":
+                with torch.no_grad():
+                    block_scales_float.clamp_(min=1e-6, max=F8_E4M3_MAX)
+
             current_loss_val = loss.item()
 
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                best_total_scale = current_total_scale.detach().clone()
+                if self.scale_optimization == "joint":
+                    best_block_scales = block_scales_float.detach().clone()
                 worse_loss_counter = 0
                 plateau_counter = 0
             else:
@@ -566,7 +662,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         final_q = qdata_f32 + best_delta
         final_q = torch.clamp(final_q.detach(), -FP4_E2M1_MAX, FP4_E2M1_MAX)
-        return _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
+        qdata = _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
+        return qdata, best_total_scale
 
     def _optimize_radam(
         self,
@@ -574,8 +671,12 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         total_scale: torch.Tensor,
         U_k: torch.Tensor,
         Vh_k: torch.Tensor,
-    ) -> torch.Tensor:
-        """NVFP4 optimization using RAdam optimizer."""
+        per_tensor_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """NVFP4 optimization using RAdam optimizer.
+        
+        Supports scale_optimization modes: fixed, iterative (not implemented), joint (STE).
+        """
         M, N = W_float32.shape
 
         # Start with continuous pre-scaled values (like _optimize_original)
@@ -586,18 +687,30 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
         curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
-        optimizer = RAdam([delta], lr=curr_lr)
+
+        # For joint mode: initialize learnable block scales
+        current_total_scale = total_scale.clone()
+        if self.scale_optimization == "joint":
+            block_scales_float = (total_scale / per_tensor_scale).clone().requires_grad_(True)
+            optimizer = RAdam([delta, block_scales_float], lr=curr_lr)
+            best_block_scales = block_scales_float.detach().clone()
+        else:
+            block_scales_float = None
+            optimizer = RAdam([delta], lr=curr_lr)
+            best_block_scales = None
 
         schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_delta = delta.detach().clone()
+        best_total_scale = total_scale.clone()
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
 
+        mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
             range(self.num_iter),
-            desc=f"    Optimizing NVFP4 (RAdam-{schedule_name})",
+            desc=f"    Optimizing NVFP4 (RAdam-{schedule_name}{mode_suffix})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -606,7 +719,13 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             optimizer.zero_grad()
 
             q_refined = qdata_f32 + delta
-            current_dq = self._nvfp4_dequantize_blockwise(q_refined, total_scale, M, N)
+
+            # For joint mode: apply STE to get effective scales
+            if self.scale_optimization == "joint":
+                block_scales_ste = self._ste_fp8_scale(block_scales_float)
+                current_total_scale = per_tensor_scale * block_scales_ste
+            
+            current_dq = self._nvfp4_dequantize_blockwise(q_refined, current_total_scale, M, N)
 
             error = current_dq - W_float32
             projected_error = U_k.T @ error @ Vh_k.T
@@ -615,11 +734,19 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             loss.backward()
             optimizer.step()
 
+            # Clamp block scales to valid range after optimizer step
+            if self.scale_optimization == "joint":
+                with torch.no_grad():
+                    block_scales_float.clamp_(min=1e-6, max=F8_E4M3_MAX)
+
             current_loss_val = loss.item()
 
             if current_loss_val < best_loss:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
+                best_total_scale = current_total_scale.detach().clone()
+                if self.scale_optimization == "joint":
+                    best_block_scales = block_scales_float.detach().clone()
                 worse_loss_counter = 0
                 plateau_counter = 0
             else:
@@ -655,7 +782,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         final_q = qdata_f32 + best_delta
         final_q = torch.clamp(final_q.detach(), -FP4_E2M1_MAX, FP4_E2M1_MAX)
-        return _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
+        qdata = _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
+        return qdata, best_total_scale
 
 
 

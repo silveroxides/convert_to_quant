@@ -337,7 +337,16 @@ def main():
         type=int,
         default=1,
         dest="scale_refinement_rounds",
-        help="[NVFP4] Number of scale refinement rounds (1=no refinement, 2+=iterative). (default: 1)",
+        help="[NVFP4] Number of scale refinement rounds for 'iterative' mode (default: 1)",
+    )
+    parser.add_argument(
+        "--scale-optimization",
+        type=str,
+        default="fixed",
+        dest="scale_optimization",
+        choices=["fixed", "iterative", "joint"],
+        help="[NVFP4] Scale optimization mode: 'fixed' (default, scales computed once), "
+             "'iterative' (scales recomputed periodically), 'joint' (STE-based joint optimization)",
     )
     parser.add_argument(
         "--top_p",
@@ -703,6 +712,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             early_stop_stall=args.early_stop_stall,
             # Scale optimization
             scale_refinement_rounds=args.scale_refinement_rounds,
+            scale_optimization=args.scale_optimization,
             # Input scales
             input_scales=input_scales,
             # Memory mode
