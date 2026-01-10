@@ -26,7 +26,9 @@ from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
 from ..utils.comfy_quant import should_skip_layer_for_performance
 from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
+from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
 
+@log_debug
 def convert_to_nvfp4(
     input_file: str,
     output_file: str,
@@ -79,11 +81,11 @@ def convert_to_nvfp4(
 
     Always creates .comfy_quant metadata tensors and _quantization_metadata header.
     """
-    print(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
-    print("-" * 60)
-    print("Target format: NVFP4 (FP4 E2M1 block quantization)")
-    print(f"Block size: {FP4_BLOCK_SIZE}")
-    print("-" * 60)
+    info(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
+    info("-" * 60)
+    info("Target format: NVFP4 (FP4 E2M1 block quantization)")
+    info(f"Block size: {FP4_BLOCK_SIZE}")
+    info("-" * 60)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     seed_device = device
@@ -110,9 +112,9 @@ def convert_to_nvfp4(
         import re
         try:
             exclude_regex_pattern = re.compile(exclude_layers)
-            print(f"Layer exclusion enabled: pattern '{exclude_layers}'")
+            info(f"Layer exclusion enabled: pattern '{exclude_layers}'")
         except re.error as e:
-            print(f"ERROR: Invalid regex pattern '{exclude_layers}': {e}")
+            error(f"ERROR: Invalid regex pattern '{exclude_layers}': {e}")
             return
 
     # Select converter based on --simple flag
@@ -122,7 +124,7 @@ def convert_to_nvfp4(
             pad_to_16x=True,
         )
         use_learned = False
-        print("NVFP4 Simple mode (no learned rounding optimization)")
+        info("NVFP4 Simple mode (no learned rounding optimization)")
     else:
         converter = LearnedNVFP4Converter(
             optimizer=optimizer,
@@ -162,7 +164,7 @@ def convert_to_nvfp4(
     try:
         loader = UnifiedSafetensorsLoader(input_file, low_memory=low_memory)
     except Exception as e:
-        print(f"FATAL: Error loading '{input_file}': {e}")
+        error(f"FATAL: Error loading '{input_file}': {e}")
         return
 
     all_keys = loader.keys()
@@ -175,14 +177,14 @@ def convert_to_nvfp4(
     total_weights = len(weight_keys)
 
     # Generate calibration data for bias correction
-    print("\nScanning model and generating simulated calibration data...")
+    minimal("Scanning model and generating simulated calibration data...")
     calibration_data_cache = {}
     for key in weight_keys:
         tensor = loader.get_tensor(key)
         if tensor.ndim == 2:
             in_features = tensor.shape[1]
             if in_features not in calibration_data_cache:
-                print(f"  - Found new input dimension: {in_features}.")
+                verbose(f"  - Found new input dimension: {in_features}.")
                 calibration_data_cache[in_features] = torch.randn(
                     calib_samples,
                     in_features,
@@ -190,10 +192,10 @@ def convert_to_nvfp4(
                     generator=seed_generator,
                     device=seed_device,
                 )
-    print("Simulated calibration data generated.\n")
+    info("Simulated calibration data generated.\n")
 
-    print(f"Found {total_weights} weight tensors to potentially process.")
-    print("-" * 60)
+    info(f"Found {total_weights} weight tensors to potentially process.")
+    info("-" * 60)
 
     for i, key in enumerate(weight_keys):
         tensor = loader.get_tensor(key)
@@ -210,14 +212,14 @@ def convert_to_nvfp4(
 
         # Skip non-2D tensors (NVFP4 requires 2D)
         if tensor.dim() != 2:
-            print(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: non-2D tensor)")
+            info(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: non-2D tensor)")
             output_tensors[key] = tensor
             skipped_count += 1
             continue
 
         # Skip if exclusion pattern matched
         if exclusion_reason:
-            print(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})")
+            info(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})")
             output_tensors[key] = tensor
             skipped_count += 1
             continue
@@ -226,12 +228,12 @@ def convert_to_nvfp4(
         if heur:
             should_skip, skip_reason = should_skip_layer_for_performance(tensor, FP4_BLOCK_SIZE)
             if should_skip:
-                print(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {skip_reason})")
+                info(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {skip_reason})")
                 output_tensors[key] = tensor
                 skipped_count += 1
                 continue
 
-        print(f"({i+1}/{total_weights}) Processing tensor: {key}")
+        info(f"({i+1}/{total_weights}) Processing tensor: {key}")
 
         # Quantize to NVFP4
         if use_learned:
@@ -265,15 +267,15 @@ def convert_to_nvfp4(
         if bias_key in all_keys:
             if simple:
                 # Skip bias correction for simple mode
-                print(f"  - Keeping original bias (simple mode): {bias_key}")
+                verbose(f"  - Keeping original bias (simple mode): {bias_key}")
                 output_tensors[bias_key] = loader.get_tensor(bias_key)
             else:
-                print(f"  - Adjusting corresponding bias: {bias_key}")
+                verbose(f"  - Adjusting corresponding bias: {bias_key}")
                 with torch.no_grad():
                     original_bias = loader.get_tensor(bias_key)
                     in_features = tensor.shape[1]
                     if in_features not in calibration_data_cache:
-                        print("  - WARNING: No calibration data for bias correction.")
+                        warning("  - WARNING: No calibration data for bias correction.")
                         output_tensors[bias_key] = original_bias
                     else:
                         X_calib_dev = calibration_data_cache[in_features].to(device=device)
@@ -285,7 +287,7 @@ def convert_to_nvfp4(
                         bias_correction = output_error.mean(dim=0)
                         b_new = b_orig_dev - bias_correction
                         output_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
-                        print(
+                        verbose(
                             f"    - Original bias mean : {original_bias.mean().item():.6f}\n"
                             f"    - Corrected bias mean: {output_tensors[bias_key].mean().item():.6f}"
                         )

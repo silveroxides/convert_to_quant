@@ -12,7 +12,9 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from .tensor_utils import dict_to_tensor, tensor_to_dict, normalize_tensorwise_scales
+from .tensor_utils import dict_to_tensor, tensor_to_dict, normalize_tensorwise_scales
 from ..constants import NORMALIZE_SCALES_ENABLED
+from .logging import info, verbose, warning, error, minimal
 
 
 # Block-based formats that require group_size
@@ -159,29 +161,29 @@ def edit_comfy_quant(
         layer_filter: Regex pattern to filter which layers to edit (None = all)
         save_quant_metadata: If True, generate _quantization_metadata from tensors
     """
-    print("ComfyQuant Layer & Metadata Editor")
-    print("=" * 60)
-    print(f"Input:  {input_file}")
-    print(f"Output: {output_file}")
+    info("ComfyQuant Layer & Metadata Editor")
+    info("=" * 60)
+    info(f"Input:  {input_file}")
+    info(f"Output: {output_file}")
 
     # Parse add_keys string
     add_keys = parse_add_keys_string(add_keys_str) if add_keys_str else {}
 
     if remove_keys:
-        print(f"Keys to remove: {remove_keys}")
+        info(f"Keys to remove: {remove_keys}")
     if add_keys:
-        print(f"Keys to add: {add_keys}")
+        info(f"Keys to add: {add_keys}")
     if layer_filter:
-        print(f"Layer filter: {layer_filter}")
+        info(f"Layer filter: {layer_filter}")
         try:
             layer_regex = re.compile(layer_filter)
         except re.error as e:
-            print(f"FATAL: Invalid regex pattern '{layer_filter}': {e}")
+            error(f"FATAL: Invalid regex pattern '{layer_filter}': {e}")
             return
     else:
         layer_regex = None
 
-    print("-" * 60)
+    info("-" * 60)
 
     # Load all tensors and existing header metadata
     tensors = {}
@@ -197,12 +199,12 @@ def edit_comfy_quant(
     if existing_metadata and "_quantization_metadata" in existing_metadata:
         try:
             quant_metadata = json.loads(existing_metadata["_quantization_metadata"])
-            print(
+            info(
                 f"Found _quantization_metadata header with "
                 f"{len(quant_metadata.get('layers', {}))} layer entries"
             )
         except json.JSONDecodeError as e:
-            print(f"  WARNING: Failed to parse _quantization_metadata: {e}")
+            warning(f"  WARNING: Failed to parse _quantization_metadata: {e}")
             quant_metadata = None
 
     # Track statistics for .comfy_quant tensors
@@ -235,7 +237,7 @@ def edit_comfy_quant(
         try:
             config = tensor_to_dict(tensors[key])
         except Exception as e:
-            print(f"  WARNING: Failed to decode {key}: {e}")
+            warning(f"  WARNING: Failed to decode {key}: {e}")
             continue
 
         original_config = config.copy()
@@ -342,51 +344,51 @@ def edit_comfy_quant(
             # Create the tensor
             tensors[comfy_quant_key] = dict_to_tensor(config)
             created_count += 1
-            print(f"  Created: {comfy_quant_key} (format={config.get('format', 'unknown')})")
+            verbose(f"  Created: {comfy_quant_key} (format={config.get('format', 'unknown')})")
 
     # Summary for .comfy_quant tensors
-    print("-" * 60)
-    print("Edit Summary (.comfy_quant tensors):")
-    print(f"  Total tensors:              {total_comfy_quant}")
-    print(f"  Edited:                     {edited_count}")
+    info("-" * 60)
+    info("Edit Summary (.comfy_quant tensors):")
+    info(f"  Total tensors:              {total_comfy_quant}")
+    info(f"  Edited:                     {edited_count}")
     if created_count > 0:
-        print(f"  Created from metadata:      {created_count}")
+        info(f"  Created from metadata:      {created_count}")
     if skipped_filter > 0:
-        print(f"  Skipped (filter):           {skipped_filter}")
+        info(f"  Skipped (filter):           {skipped_filter}")
     if skipped_no_change > 0:
-        print(f"  Skipped (no change):        {skipped_no_change}")
+        info(f"  Skipped (no change):        {skipped_no_change}")
     if keys_removed:
-        print("  Keys removed:")
+        info("  Keys removed:")
         for k, count in sorted(keys_removed.items()):
-            print(f"    {k}: {count} layers")
+            info(f"    {k}: {count} layers")
     if keys_added:
-        print("  Keys added:")
+        info("  Keys added:")
         for k, count in sorted(keys_added.items()):
-            print(f"    {k}: {count} layers")
+            info(f"    {k}: {count} layers")
 
     # Summary for _quantization_metadata header
     if quant_metadata:
-        print("-" * 60)
-        print("Edit Summary (_quantization_metadata header):")
+        info("-" * 60)
+        info("Edit Summary (_quantization_metadata header):")
         total_meta_layers = len(quant_metadata.get("layers", {}))
-        print(f"  Total layer entries:        {total_meta_layers}")
-        print(f"  Edited:                     {metadata_edited_count}")
+        info(f"  Total layer entries:        {total_meta_layers}")
+        info(f"  Edited:                     {metadata_edited_count}")
         if metadata_keys_removed:
-            print("  Keys removed:")
+            info("  Keys removed:")
             for k, count in sorted(metadata_keys_removed.items()):
-                print(f"    {k}: {count} entries")
+                info(f"    {k}: {count} entries")
         if metadata_keys_added:
-            print("  Keys added:")
+            info("  Keys added:")
             for k, count in sorted(metadata_keys_added.items()):
-                print(f"    {k}: {count} entries")
+                info(f"    {k}: {count} entries")
     else:
-        print("-" * 60)
-        print("Note: No _quantization_metadata header found in input file")
+        info("-" * 60)
+        info("Note: No _quantization_metadata header found in input file")
 
     # Generate metadata from .comfy_quant tensors if requested
     if save_quant_metadata:
-        print("-" * 60)
-        print("Generating _quantization_metadata from .comfy_quant tensors...")
+        info("-" * 60)
+        info("Generating _quantization_metadata from .comfy_quant tensors...")
         generated_layers = {}
         for key in tensors.keys():
             if not key.endswith(".comfy_quant"):
@@ -402,16 +404,16 @@ def edit_comfy_quant(
                     meta_entry["full_precision_matrix_mult"] = True
                 generated_layers[base_name] = meta_entry
             except Exception as e:
-                print(f"  WARNING: Failed to parse {key}: {e}")
+                warning(f"  WARNING: Failed to parse {key}: {e}")
 
         if generated_layers:
             quant_metadata = {"format_version": "1.0", "layers": generated_layers}
             quant_metadata_modified = True
-            print(f"  Generated metadata for {len(generated_layers)} layers")
+            info(f"  Generated metadata for {len(generated_layers)} layers")
         else:
-            print("  No .comfy_quant tensors found to generate metadata from")
+            info("  No .comfy_quant tensors found to generate metadata from")
 
-    print("-" * 60)
+    info("-" * 60)
 
     # Prepare save kwargs with updated metadata
     save_kwargs: Dict[str, Any] = {}
@@ -424,13 +426,13 @@ def edit_comfy_quant(
         # Update the quantization metadata with our edits
         output_metadata["_quantization_metadata"] = json.dumps(quant_metadata)
         save_kwargs["metadata"] = output_metadata
-        print("  Updated _quantization_metadata in output file")
+        info("  Updated _quantization_metadata in output file")
     elif existing_metadata:
         # No quant_metadata changes but preserve existing metadata as-is
         save_kwargs["metadata"] = existing_metadata
 
     # Save output
-    print(f"\nSaving to {output_file}...")
+    info(f"\nSaving to {output_file}...")
     try:
         os.makedirs(
             os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
@@ -439,12 +441,12 @@ def edit_comfy_quant(
         # Normalize any 1-element scale tensors to scalars
         tensors, normalized_count = normalize_tensorwise_scales(tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
-            print(f"  Normalized {normalized_count} scale tensors to scalars")
+            info(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(tensors, output_file, **save_kwargs)
 
-        print("Edit complete!")
+        info("Edit complete!")
     except Exception as e:
-        print(f"FATAL: Error saving file '{output_file}': {e}")
+        error(f"FATAL: Error saving file '{output_file}': {e}")
         return
 
 def should_skip_layer_for_performance(

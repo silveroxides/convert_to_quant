@@ -19,6 +19,7 @@ from ..constants import (
 )
 from ..utils.tensor_utils import normalize_tensorwise_scales
 from ..utils.comfy_quant import create_comfy_quant_tensor, fix_comfy_quant_params_structure
+from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
 
 def convert_int8_to_comfy_quant(
     input_file: str,
@@ -40,20 +41,20 @@ def convert_int8_to_comfy_quant(
         block_size: Block size to use in comfy_quant metadata (default 128)
         include_input_scale: If True, add input_scale tensor (1.0 fp32) when missing
     """
-    print(f"Converting INT8 model to comfy_quant format: {input_file}")
-    print("-" * 60)
-    print(f"Block size: {block_size}")
-    print("-" * 60)
+    info(f"Converting INT8 model to comfy_quant format: {input_file}")
+    info("-" * 60)
+    info(f"Block size: {block_size}")
+    info("-" * 60)
 
     # Load input tensors
     tensors: Dict[str, torch.Tensor] = {}
     try:
         with safe_open(input_file, framework="pt", device="cpu") as f:
-            print(f"Loading {len(f.keys())} tensors from source file...")
+            minimal(f"Loading {len(f.keys())} tensors from source file...")
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
     except Exception as e:
-        print(f"FATAL: Error loading '{input_file}': {e}")
+        error(f"FATAL: Error loading '{input_file}': {e}")
         return
 
     # Initialize metadata collection if enabled
@@ -115,7 +116,7 @@ def convert_int8_to_comfy_quant(
         if weight is None:
             # No weight tensor - just copy any scales through (unusual case)
             if scale_weight is not None:
-                print(f"  WARNING: {base_name} has scale_weight but no weight tensor")
+                warning(f"  WARNING: {base_name} has scale_weight but no weight tensor")
                 output_tensors[f"{base_name}.scale_weight"] = scale_weight
             if weight_scale is not None:
                 output_tensors[f"{base_name}.weight_scale"] = weight_scale
@@ -150,7 +151,7 @@ def convert_int8_to_comfy_quant(
                 detected_format = "int8_blockwise"
                 if weight_scale is None:
                     detected_block_size = block_size
-                    print(
+                    verbose(
                         f"    → Format: {detected_format} (no scale, assumed blockwise)"
                     )
                 elif weight_scale.ndim == 2:
@@ -160,17 +161,17 @@ def convert_int8_to_comfy_quant(
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        print(
+                        verbose(
                             f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})"
                         )
                     else:
                         detected_block_size = block_size
-                        print(
+                        verbose(
                             f"    → Format: {detected_format} (scale 2D, cannot identify layout)"
                         )
                 else:
                     detected_block_size = block_size
-                    print(
+                    verbose(
                         f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, assumed blockwise)"
                     )
 
@@ -199,7 +200,7 @@ def convert_int8_to_comfy_quant(
                 if scale_weight is not None:
                     output_tensors[f"{base_name}.weight_scale"] = scale_weight
                 else:
-                    print(f"  WARNING: INT8 layer {base_name} missing scale_weight")
+                    warning(f"  WARNING: INT8 layer {base_name} missing scale_weight")
 
                 # Handle scale_input -> input_scale
                 if scale_input is not None:
@@ -218,7 +219,7 @@ def convert_int8_to_comfy_quant(
                 detected_format = "int8_blockwise"
                 if scale_weight is None:
                     detected_block_size = block_size
-                    print(
+                    verbose(
                         f"    → Format: {detected_format} (no scale, assumed blockwise)"
                     )
                 elif scale_weight.ndim == 2:
@@ -228,17 +229,17 @@ def convert_int8_to_comfy_quant(
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        print(
+                        verbose(
                             f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})"
                         )
                     else:
                         detected_block_size = block_size
-                        print(
+                        verbose(
                             f"    → Format: {detected_format} (scale 2D, cannot identify layout)"
                         )
                 else:
                     detected_block_size = block_size
-                    print(
+                    verbose(
                         f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, assumed blockwise)"
                     )
 
@@ -267,11 +268,11 @@ def convert_int8_to_comfy_quant(
             output_tensors[f"{base_name}.weight"] = weight
 
             if scale_weight is not None:
-                print(
+                verbose(
                     f"  Removing dummy scale_weight from high-precision layer: {base_name}"
                 )
             if scale_input is not None:
-                print(
+                verbose(
                     f"  Removing dummy scale_input from high-precision layer: {base_name}"
                 )
 
@@ -287,29 +288,29 @@ def convert_int8_to_comfy_quant(
             output_tensors[key] = tensor
 
     # Summary
-    print("\n" + "-" * 60)
-    print("Conversion Summary:")
-    print(f"  INT8 layers:           {len(int8_layers)}")
+    info("\n" + "-" * 60)
+    info("Conversion Summary:")
+    info(f"  INT8 layers:           {len(int8_layers)}")
     if already_converted:
-        print(f"    (already converted): {len(already_converted)}")
-    print(f"  High-precision layers: {len(hp_layers)}")
-    print(f"  Other tensors:         {len(other_tensors)}")
-    print(f"  Total output tensors:  {len(output_tensors)}")
+        info(f"    (already converted): {len(already_converted)}")
+    info(f"  High-precision layers: {len(hp_layers)}")
+    info(f"  Other tensors:         {len(other_tensors)}")
+    info(f"  Total output tensors:  {len(output_tensors)}")
     if detected_formats:
-        print("  Detected formats:")
+        info("  Detected formats:")
         for fmt, count in sorted(detected_formats.items(), key=lambda x: -x[1]):
-            print(f"    {fmt}: {count} layers")
+            info(f"    {fmt}: {count} layers")
     else:
-        print(f"  INT8 format (CLI):     {detected_format}")
-        print(f"  Block size (CLI):      {detected_block_size}")
+        info(f"  INT8 format (CLI):     {detected_format}")
+        info(f"  Block size (CLI):      {detected_block_size}")
     if fixed_comfy_quant_count > 0:
-        print(
+        info(
             f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)"
         )
-    print("-" * 60)
+    info("-" * 60)
 
     # Save output
-    print(f"\nSaving to {output_file}...")
+    info(f"\nSaving to {output_file}...")
     try:
         os.makedirs(
             os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
@@ -318,10 +319,10 @@ def convert_int8_to_comfy_quant(
         # Normalize any 1-element scale tensors to scalars
         output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
-            print(f"  Normalized {normalized_count} scale tensors to scalars")
+            verbose(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(output_tensors, output_file)
 
-        print("Conversion complete!")
+        info("Conversion complete!")
     except Exception as e:
-        print(f"FATAL: Error saving file '{output_file}': {e}")
+        error(f"FATAL: Error saving file '{output_file}': {e}")
         return

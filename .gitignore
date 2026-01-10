@@ -205,3 +205,7 @@ marimo/_lsp/
 __marimo__/
 
 .continue
+
+# Test artifacts
+flux2-dev-testlayers.safetensors
+out_*.safetensors

@@ -1,51 +1,59 @@
 # AI Agent Instructions
 
-> [!IMPORTANT]
-> **Always activate the virtual environment** before running any commands.  
-> **After completing ANY task**, add an entry to [DEVELOPMENT.md](DEVELOPMENT.md):
-> - Add at the top (reverse chronological order)
-> - Include: Session Summary, Files Modified, Usage examples
+## 1. CRITICAL: Workflow Mandates
+- **Environment**: ALWAYS activate virtual environment.
+- **Documentation**: Update [DEVELOPMENT.md](DEVELOPMENT.md) after EVERY task (Session Summary, Files, Usage).
+- **Safety**: Test syntax (`--help`) before verifying.
 
----
+## 2. Documentation Map
+**Context & Status**:
+- [ACTIVE.md](ACTIVE.md) - Current work, active features, and focus areas.
+- [PLANNED.md](PLANNED.md) - Roadmap and future tasking.
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Chronological development log.
 
-## Critical Directives
+**Guides**:
+- [MANUAL.md](MANUAL.md) - End-user documentation and CLI reference.
+- [python.instructions.md](python.instructions.md) - Coding standards and strict style guide.
 
-1. **Document all work** → Update [DEVELOPMENT.md](DEVELOPMENT.md) after each task
-2. **Follow Python style** → See [python.instructions.md](python.instructions.md) (PEP 8, type hints)
-3. **Minimal ComfyUI changes** → Only modify `comfy/` files, avoid core infrastructure
-4. **Test before completing** → Syntax check, verify with `--help`, manual test if possible
+## 3. System Architecture & Workflows
 
----
+### System Map
+- **Root**:
+    - `convert_to_quant.py`: Entry shim.
+    - `constants.py`: Global constants & `MODEL_FILTERS` registry.
+- **CLI (`convert_to_quant/cli/`)**:
+    - `main.py`: Entry point, orchestrates logging, args, and dispatch.
+    - `argument_parser.py`: Dynamic arg generation from registry.
+- **Formats (`convert_to_quant/formats/`)**: _High-level logic per target format_
+    - `fp8_conversion.py`: FP8 scaled logic (Target: `float8_e4m3fn`).
+    - `nvfp4_conversion.py`: NVFP4 logic (Target: `float4_e2m1`).
+    - `int8_conversion.py`: INT8 logic (Target: `int8` + block scales).
+    - `format_migration.py`: Upgrades legacy checkpoints.
+- **Converters (`convert_to_quant/converters/`)**: _Quantization algorithms_
+    - `learned_rounding.py`: Generic optimizer (SVD, AdamW) for FP8/INT8.
+    - `learned_nvfp4.py`: Specialized NVFP4 optimizer (Block-wise).
+    - `base_converter.py`: Abstract base for optimizers.
+- **Utils (`convert_to_quant/utils/`)**:
+    - `logging.py`: Structured logging system (`setup_logging`, `@log_debug`).
+    - `comfy_quant.py`: ComfyUI metadata generation & editing.
+    - `tensor_utils.py`: Tensor normalization & dict glue.
+    - `memory_efficient_loader.py`: Robust `safe_open` wrapper.
 
-## Project Context
+### Core Workflows
+1. **Initialization**: `convert_to_quant` shim -> `cli/main.py` -> `utils.logging.setup_logging`.
+2. **Parsing**: `constants.MODEL_FILTERS` -> `cli/argument_parser.py` -> `args` object.
+3. **Dispatch**: `main.py` selects format (e.g., `--fp8` -> `formats.fp8_conversion.convert_to_fp8_scaled`).
+4. **Optimization**:
+    - Format script instantiates a Converter (e.g., `converters.LearnedRoundingConverter`).
+    - Converter runs optimization loop (SVD initialization -> AdamW tuning).
+5. **Output**: Format script gathers quantized tensors + `utils.comfy_quant.create_comfy_quant_tensor` metadata -> Saves `.safetensors`.
 
-**Quantization research workspace** for ComfyUI inference models.
+### Key Relationships
+- **Logging**: All modules import `convert_to_quant.utils.logging`.
+- **Registry**: `fp8_conversion` and `main` consume `constants.MODEL_FILTERS`.
+- **Inheritance**: `learned_rounding.py` and `learned_nvfp4.py` inherit from `base_converter.py`.
 
-| Component | Location |
-|-----------|----------|
-| Main script | `convert_to_quant/convert_to_quant.py` |
-| Kernels | `convert_to_quant/comfy/` (int8, fp8) |
-| Layout classes | `convert_to_quant/comfy/quant_ops.py` |
-
-**Supported formats**: FP8 (tensor/row/block), INT8 (blockwise)
-
----
-
-## Quick Reference
-
-| Task | Documentation |
-|------|---------------|
-| Architecture details | [.github/copilot-instructions.md](.github/copilot-instructions.md) |
-| Active work | [ACTIVE.md](ACTIVE.md) |
-| Planned features | [PLANNED.md](PLANNED.md) |
-| ComfyUI patterns | [quantization.examples.md](quantization.examples.md) |
-| End-user guide | [MANUAL.md](MANUAL.md) |
-| Past findings | [DEVELOPMENT.md](DEVELOPMENT.md) |
-
----
-
-## Common Commands
-
+## 4. Common Commands
 ```bash
 # Basic FP8
 convert_to_quant -i model.safetensors --comfy_quant
@@ -54,47 +62,29 @@ convert_to_quant -i model.safetensors --comfy_quant
 convert_to_quant -i model.safetensors --int8 --comfy_quant --heur
 ```
 
----
-
-## Key Patterns
-
-### Adding New Model Support
+## 5. Developer Guide
+**Adding New Model Support:**
+*Model filters are registry-driven. No CLI code changes required.*
+1. Edit `convert_to_quant/constants.py`.
+2. Add entry to `MODEL_FILTERS`.
 ```python
-# 1. Add exclusion list
-MODEL_AVOID_KEY_NAMES = ["norm", "bias", ...]
-
-# 2. Add CLI flag
-parser.add_argument("--my_model", action='store_true')
-
-# 3. Add logic in convert_to_fp8_scaled()
-if my_model and any(n in key for n in MODEL_AVOID_KEY_NAMES):
-    exclusion_reason = "MY_MODEL exclusion"
-```
-
-### ComfyUI Metadata Format
-```python
-# Per-layer .comfy_quant configuration (stored as JSON in torch.uint8 tensor)
-comfy_quant = {
-    "format": "float8_e4m3fn",  # or float8_e4m3fn_rowwise, float8_e4m3fn_blockwise,
-                                # int8_blockwise
-    "group_size": 64,           # Optional: for block-based formats only
-    "full_precision_matrix_mult": True  # Optional: only if True
+MODEL_FILTERS["mymodel"] = {
+    "help": "My model exclusions",
+    "category": "diffusion",
+    "exclude": ["layer1.norm", "layer2.bias"],
+    "highprec": ["sensitive_layer"]
 }
 ```
 
----
+**ComfyUI Metadata Format:**
+```python
+comfy_quant = {
+    "format": "float8_e4m3fn",  # or int8_blockwise
+    "group_size": 64,           # Optional: for block-based
+    "full_precision_matrix_mult": True
+}
+```
 
-## Gotchas
-
-- INT8 dimensions must be divisible by `block_size`
-- FP8 requires PyTorch 2.1+ and Ada/Hopper GPU
-- Scale tensors must be clamped to `1e-8` minimum
-- Triton kernels expect `(N, K)` weight format
-
----
-
-## Constraints
-
-- **No diffusers/transformers** dependencies
-- **Safetensors only** for serialization
-- **Don't modify** `model_management.py`, `sd.py`, or core loaders
+## 6. Implementation Constraints
+- ✅ **Safetensors only**: Primary format for serialization.
+- 📦 **Dependencies**: `safetensors`, `torch`, `tqdm`. Avoid adding heavy frameworks unless necessary.

@@ -74,10 +74,10 @@ def extract_filter_flags(args) -> dict:
                 f"BUG: Filter '{name}' in MODEL_FILTERS but not in argparse. "
                 f"Add --{name} to argument_parser.py"
             )
-        flags[name] = getattr(args, name)
-    return flags
+from ..utils.logging import setup_logging, info, minimal, warning
 
 def main():
+    # Parse args to get verbosity level
     parser = MultiHelpArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Convert safetensors weights to Scaled FP8 format.\n\n"
@@ -89,6 +89,8 @@ def main():
         filter_args=FILTER_ARGS,
         advanced_args=ADVANCED_ARGS,
     )
+
+
     parser.add_argument(
         "-i", "--input", type=str, required=True, help="Input safetensors file path."
     )
@@ -200,9 +202,17 @@ def main():
     parser.add_argument(
         "--input_scale",
         action="store_true",
-        help="Include input_scale tensor (fp32, 1.0) for quantized layers. Works with --convert-fp8-scaled and --convert-int8-scaled. Always enabled for T5XXL.",
+        help="Include input_scale tensor (fp32, 1.0) for quantized layers. Works with oconvert-fp8-scaled and --convert-int8-scaled. Always enabled for T5XXL.",
+    )
+    parser.add_argument(
+        "--verbose",
+        type=str,
+        default="NORMAL",
+        choices=["DEBUG", "VERBOSE", "NORMAL", "MINIMAL"],
+        help="Set verbosity: NORMAL (default), VERBOSE (increased), MINIMAL (reduced), DEBUG (all).",
     )
     # Model filter flags - generated from MODEL_FILTERS registry
+
     for filter_name, filter_cfg in MODEL_FILTERS.items():
         parser.add_argument(
             f"--{filter_name}",

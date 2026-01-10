@@ -34,7 +34,9 @@ from ..utils.tensor_utils import normalize_tensorwise_scales
 from ..utils.comfy_quant import create_comfy_quant_tensor, should_skip_layer_for_performance
 from ..utils.memory_efficient_loader import MemoryEfficientSafeOpen
 from ..pinned_transfer import get_pinned_transfer_stats
+from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
 
+@log_debug
 def convert_to_fp8_scaled(
     input_file: str,
     output_file: str,
@@ -63,6 +65,9 @@ def convert_to_fp8_scaled(
     low_memory: bool = False,
     **converter_kwargs,
 ):
+    # Ensure filter_flags is a dict
+    filter_flags = filter_flags or {}
+
     # Determine target format (priority: int8 > fp8)
     if int8:
         target_format = "int8"
@@ -71,16 +76,16 @@ def convert_to_fp8_scaled(
         target_format = "fp8"
         format_name = "FP8"
 
-    print(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
-    print("-" * 60)
+    info(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
+    info("-" * 60)
     if int8:
-        print("Target format: INT8 (block-wise quantization)")
-        print(f"INT8 Range: [{-INT8_SYMMETRIC_MAX}, {INT8_SYMMETRIC_MAX}]")
+        info("Target format: INT8 (block-wise quantization)")
+        info(f"INT8 Range: [{-INT8_SYMMETRIC_MAX}, {INT8_SYMMETRIC_MAX}]")
     else:
-        print(
+        info(
             f"Target FP8 format: {TARGET_FP8_DTYPE}\nFP8 Range: [{FP8_MIN}, {FP8_MAX}]"
         )
-    print("-" * 60)
+    info("-" * 60)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     seed_device = device
@@ -88,7 +93,7 @@ def convert_to_fp8_scaled(
     seed_generator.manual_seed(seed)
 
     if comfy_quant:
-        print(
+        info(
             "Comfy quantization mode enabled: Using comfy_quant layer names and settings."
         )
         comfy_quant = True
@@ -99,7 +104,7 @@ def convert_to_fp8_scaled(
     try:
         loader = MemoryEfficientSafeOpen(input_file, low_memory=low_memory)
     except Exception as e:
-        print(f"FATAL: Error loading '{input_file}': {e}")
+        error(f"FATAL: Error loading '{input_file}': {e}")
         return
 
     all_keys = loader.keys()
@@ -150,7 +155,7 @@ def convert_to_fp8_scaled(
             f" (block_size={fallback_block_size})" if fallback_block_size else ""
         )
         override_note += " (simple)" if fallback_simple else ""
-        print(
+        info(
             f"Fallback quantization enabled: {fallback.upper()}{override_note} for excluded layers"
         )
 
@@ -173,7 +178,7 @@ def convert_to_fp8_scaled(
             f" (scaling_mode={custom_scaling_mode})" if custom_scaling_mode else ""
         )
         override_note += " (simple)" if custom_simple else ""
-        print(
+        info(
             f"Custom layer quantization enabled: {custom_type.upper()}{override_note} for pattern '{custom_layers}'"
         )
 
@@ -183,7 +188,7 @@ def convert_to_fp8_scaled(
         try:
             custom_pattern = re.compile(custom_layers)
         except re.error as e:
-            print(f"ERROR: Invalid regex pattern '{custom_layers}': {e}")
+            error(f"ERROR: Invalid regex pattern '{custom_layers}': {e}")
             return
 
     # Compile exclude_layers regex pattern
@@ -191,12 +196,12 @@ def convert_to_fp8_scaled(
     if exclude_layers:
         try:
             exclude_pattern = re.compile(exclude_layers)
-            print(f"Layer exclusion enabled: pattern '{exclude_layers}'")
+            info(f"Layer exclusion enabled: pattern '{exclude_layers}'")
         except re.error as e:
-            print(f"ERROR: Invalid regex pattern '{exclude_layers}': {e}")
+            error(f"ERROR: Invalid regex pattern '{exclude_layers}': {e}")
             return
 
-    print("\nScanning model and generating simulated calibration data...")
+    minimal("Scanning model and generating simulated calibration data...")
     calibration_data_cache = {}
     for key in all_keys:
         if key.endswith(".weight"):
@@ -204,7 +209,7 @@ def convert_to_fp8_scaled(
             if len(shape) == 2:
                 in_features = shape[1]
                 if in_features not in calibration_data_cache:
-                    print(f"  - Found new input dimension: {in_features}.")
+                    verbose(f"  - Found new input dimension: {in_features}.")
                     calibration_data_cache[in_features] = torch.randn(
                         calib_samples,
                         in_features,
@@ -212,7 +217,7 @@ def convert_to_fp8_scaled(
                         generator=seed_generator,
                         device=seed_device,
                     )
-    print("Simulated calibration data generated.\n")
+    info("Simulated calibration data generated.\n")
 
     new_tensors: Dict[str, torch.Tensor] = {}
     weight_keys = sorted(
@@ -228,8 +233,8 @@ def convert_to_fp8_scaled(
     custom_count = 0
     fallback_count = 0
 
-    print(f"Found {total_weights} weight tensors to potentially process.")
-    print("-" * 60)
+    info(f"Found {total_weights} weight tensors to potentially process.")
+    info("-" * 60)
 
     for i, key in enumerate(weight_keys):
         exclusion_reason = ""
@@ -248,7 +253,7 @@ def convert_to_fp8_scaled(
 
         # T5XXL decoder tensors are always removed (not quantized, not kept)
         if filter_flags.get("t5xxl") and any(n in key for n in T5XXL_REMOVE_KEY_NAMES):
-            print(f"({i+1}/{total_weights}) Removing T5XXL decoder tensor: {key}")
+            info(f"({i+1}/{total_weights}) Removing T5XXL decoder tensor: {key}")
             skipped_count += 1
             continue
 
@@ -259,7 +264,7 @@ def convert_to_fp8_scaled(
             )
             if layer_settings:
                 if layer_settings.get("skip", False):
-                    print(f"({i+1}/{total_weights}) Skipping (layer-config): {key}")
+                    info(f"({i+1}/{total_weights}) Skipping (layer-config): {key}")
                     original_tensor = loader.get_tensor(key)
                     new_tensors[key] = original_tensor.to(
                         device="cpu", dtype=original_tensor.dtype
@@ -315,11 +320,11 @@ def convert_to_fp8_scaled(
             if fallback:
                 use_fallback = True
                 layer_format = fallback
-                print(
+                info(
                     f"({i+1}/{total_weights}) Processing (fallback {fallback.upper()}): {key} (was: {exclusion_reason})"
                 )
             else:
-                print(
+                info(
                     f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})"
                 )
                 original_tensor = loader.get_tensor(key)
@@ -330,20 +335,20 @@ def convert_to_fp8_scaled(
                 skipped_count += 1
                 continue
 
-        # Log what we're doing
+        # Log what we're doing - User requested NORMAL (DEFAULT) be detailed per-tensor
         if use_layer_config:
             fmt = layer_settings["format"]
-            print(f"({i+1}/{total_weights}) Processing (config {fmt}): {key}")
+            info(f"({i+1}/{total_weights}) Processing (config {fmt}): {key}")
             custom_count += 1  # Count layer_config as custom
         elif use_custom:
-            print(
+            info(
                 f"({i+1}/{total_weights}) Processing (custom {custom_type.upper()}): {key}"
             )
             custom_count += 1
         elif use_fallback:
             fallback_count += 1
         else:
-            print(f"({i+1}/{total_weights}) Processing ({format_name}): {key}")
+            info(f"({i+1}/{total_weights}) Processing ({format_name}): {key}")
 
         processed_count += 1
         original_tensor = loader.get_tensor(key)

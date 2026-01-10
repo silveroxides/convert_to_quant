@@ -18,6 +18,7 @@ from ..constants import (
     NORMALIZE_SCALES_ENABLED,
 )
 from ..utils.tensor_utils import normalize_tensorwise_scales
+from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
 
 def add_legacy_input_scale(
     input_file: str,
@@ -37,10 +38,10 @@ def add_legacy_input_scale(
         input_file: Path to input fp8_scaled safetensors file
         output_file: Path to output safetensors file
     """
-    print("Adding .scale_input to legacy fp8_scaled model")
-    print(f"Input: {input_file}")
-    print(f"Output: {output_file}")
-    print("-" * 60)
+    info("Adding .scale_input to legacy fp8_scaled model")
+    info(f"Input: {input_file}")
+    info(f"Output: {output_file}")
+    info("-" * 60)
 
     # Load input tensors and preserve original metadata
     tensors: Dict[str, torch.Tensor] = {}
@@ -56,18 +57,18 @@ def add_legacy_input_scale(
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
     except Exception as e:
-        print(f"FATAL: Error loading '{input_file}': {e}")
+        error(f"FATAL: Error loading '{input_file}': {e}")
         return
 
     # Verify this is an fp8_scaled model
     if "scaled_fp8" not in tensors:
-        print(
+        error(
             "ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)"
         )
-        print("       Use this mode only for legacy fp8_scaled format models.")
+        error("       Use this mode only for legacy fp8_scaled format models.")
         return
 
-    print("Verified: Input is fp8_scaled format")
+    info("Verified: Input is fp8_scaled format")
 
     # Find all .scale_weight keys and check for corresponding .weight and .scale_input
     scale_weight_keys = [k for k in tensors.keys() if k.endswith(".scale_weight")]
@@ -81,7 +82,7 @@ def add_legacy_input_scale(
         # Handle scaled_fp8 marker - convert to single-element vector
         if key == "scaled_fp8":
             output_tensors[key] = torch.tensor([1], dtype=tensor.dtype)
-            print("  Converted scaled_fp8 marker to single-element tensor")
+            verbose("  Converted scaled_fp8 marker to single-element tensor")
             continue
 
         # Copy all tensors through
@@ -112,19 +113,19 @@ def add_legacy_input_scale(
         added_scale_input += 1
 
     # Summary
-    print("\n" + "-" * 60)
-    print("Conversion Summary:")
-    print(f"  Total tensors input:     {len(tensors)}")
-    print(f"  Total tensors output:    {len(output_tensors)}")
-    print(f"  scale_input added:       {added_scale_input}")
+    info("\n" + "-" * 60)
+    info("Conversion Summary:")
+    info(f"  Total tensors input:     {len(tensors)}")
+    info(f"  Total tensors output:    {len(output_tensors)}")
+    info(f"  scale_input added:       {added_scale_input}")
     if already_has_input > 0:
-        print(f"  Already had scale_input: {already_has_input}")
+        info(f"  Already had scale_input: {already_has_input}")
     if skipped_non_fp8 > 0:
-        print(f"  Skipped (not FP8):       {skipped_non_fp8}")
-    print("-" * 60)
+        info(f"  Skipped (not FP8):       {skipped_non_fp8}")
+    info("-" * 60)
 
     # Save output
-    print(f"\nSaving to {output_file}...")
+    info(f"\nSaving to {output_file}...")
     try:
         os.makedirs(
             os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
@@ -133,15 +134,15 @@ def add_legacy_input_scale(
         # Normalize any 1-element scale tensors to scalars
         output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
-            print(f"  Normalized {normalized_count} scale tensors to scalars")
+            verbose(f"  Normalized {normalized_count} scale tensors to scalars")
         
         # Save with preserved metadata
         save_kwargs = {"metadata": original_metadata} if original_metadata else {}
         save_file(output_tensors, output_file, **save_kwargs)
 
-        print("Conversion complete!")
+        info("Conversion complete!")
     except Exception as e:
-        print(f"FATAL: Error saving file '{output_file}': {e}")
+        error(f"FATAL: Error saving file '{output_file}': {e}")
         return
 
 def cleanup_fp8_scaled(
@@ -166,13 +167,13 @@ def cleanup_fp8_scaled(
         marker_size: Size of scaled_fp8 marker tensor (0 or 2)
         add_scale_input: If True, add .scale_input = 1.0 for FP8 layers missing it
     """
-    print("Cleaning up legacy fp8_scaled model")
-    print(f"Input: {input_file}")
-    print(f"Output: {output_file}")
-    print(f"scaled_fp8 marker size: {marker_size}")
+    info("Cleaning up legacy fp8_scaled model")
+    info(f"Input: {input_file}")
+    info(f"Output: {output_file}")
+    info(f"scaled_fp8 marker size: {marker_size}")
     if add_scale_input:
-        print("Adding missing scale_input: Yes")
-    print("-" * 60)
+        info("Adding missing scale_input: Yes")
+    info("-" * 60)
 
     # Load input tensors and preserve original metadata
     tensors: Dict[str, torch.Tensor] = {}
@@ -188,7 +189,7 @@ def cleanup_fp8_scaled(
             for key in tqdm(f.keys(), desc="Loading tensors"):
                 tensors[key] = f.get_tensor(key)
     except Exception as e:
-        print(f"FATAL: Error loading '{input_file}': {e}")
+        error(f"FATAL: Error loading '{input_file}': {e}")
         return
 
     # Build map of weight keys to their dtypes
@@ -209,7 +210,7 @@ def cleanup_fp8_scaled(
         # Handle scaled_fp8 marker
         if key == "scaled_fp8":
             output_tensors[key] = torch.empty((marker_size,), dtype=TARGET_FP8_DTYPE)
-            print(f"  Set scaled_fp8 marker to empty(({marker_size}))")
+            verbose(f"  Set scaled_fp8 marker to empty(({marker_size}))")
             continue
 
         # Check if this is a scale tensor
@@ -221,10 +222,10 @@ def cleanup_fp8_scaled(
                     kept_scale_weight += 1
                 else:
                     removed_scale_weight += 1
-                    print(f"  Removing orphaned: {key} (weight is {weight_dtypes[base_name]})")
+                    verbose(f"  Removing orphaned: {key} (weight is {weight_dtypes[base_name]})")
             else:
                 removed_scale_weight += 1
-                print(f"  Removing orphaned: {key} (no weight found)")
+                verbose(f"  Removing orphaned: {key} (no weight found)")
             continue
 
         if key.endswith(".scale_input"):
@@ -235,10 +236,10 @@ def cleanup_fp8_scaled(
                     kept_scale_input += 1
                 else:
                     removed_scale_input += 1
-                    print(f"  Removing orphaned: {key} (weight is {weight_dtypes[base_name]})")
+                    verbose(f"  Removing orphaned: {key} (weight is {weight_dtypes[base_name]})")
             else:
                 removed_scale_input += 1
-                print(f"  Removing orphaned: {key} (no weight found)")
+                verbose(f"  Removing orphaned: {key} (no weight found)")
             continue
 
         # Keep all other tensors
@@ -255,24 +256,24 @@ def cleanup_fp8_scaled(
                     added_scale_input += 1
 
     # Summary
-    print("\n" + "-" * 60)
-    print("Cleanup Summary:")
-    print(f"  Total tensors input:      {len(tensors)}")
-    print(f"  Total tensors output:     {len(output_tensors)}")
+    info("\n" + "-" * 60)
+    info("Cleanup Summary:")
+    info(f"  Total tensors input:      {len(tensors)}")
+    info(f"  Total tensors output:     {len(output_tensors)}")
     if kept_scale_weight > 0:
-        print(f"  scale_weight kept:        {kept_scale_weight}")
+        info(f"  scale_weight kept:        {kept_scale_weight}")
     if kept_scale_input > 0:
-        print(f"  scale_input kept:         {kept_scale_input}")
+        info(f"  scale_input kept:         {kept_scale_input}")
     if added_scale_input > 0:
-        print(f"  scale_input added:        {added_scale_input}")
+        info(f"  scale_input added:        {added_scale_input}")
     if removed_scale_weight > 0:
-        print(f"  scale_weight removed:     {removed_scale_weight}")
+        info(f"  scale_weight removed:     {removed_scale_weight}")
     if removed_scale_input > 0:
-        print(f"  scale_input removed:      {removed_scale_input}")
-    print("-" * 60)
+        info(f"  scale_input removed:      {removed_scale_input}")
+    info("-" * 60)
 
     # Save output
-    print(f"\nSaving to {output_file}...")
+    info(f"\nSaving to {output_file}...")
     try:
         os.makedirs(
             os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
@@ -281,13 +282,13 @@ def cleanup_fp8_scaled(
         # Normalize any 1-element scale tensors to scalars
         output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
-            print(f"  Normalized {normalized_count} scale tensors to scalars")
+            verbose(f"  Normalized {normalized_count} scale tensors to scalars")
         
         # Save with preserved metadata
         save_kwargs = {"metadata": original_metadata} if original_metadata else {}
         save_file(output_tensors, output_file, **save_kwargs)
 
-        print("Cleanup complete!")
+        info("Cleanup complete!")
     except Exception as e:
-        print(f"FATAL: Error saving file '{output_file}': {e}")
+        error(f"FATAL: Error saving file '{output_file}': {e}")
         return

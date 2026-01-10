@@ -36,6 +36,7 @@ from ..utils.float_utils import (
     F4_E2M1_MBITS,
 )
 from ..pinned_transfer import transfer_to_gpu_pinned
+from ..utils.logging import verbose, debug, minimal
 from .base_converter import BaseLearnedConverter
 
 # Check for comfy-kitchen availability
@@ -89,18 +90,18 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         # For iterative mode, use provided rounds; for others, ignore
         self.scale_refinement_rounds = max(1, scale_refinement_rounds) if scale_optimization == "iterative" else 1
 
-        print(f"LearnedNVFP4Converter initialized on device: {self.device}")
-        print(f"  - Format: NVFP4 (FP4 E2M1)")
-        print(f"  - Block size: {self.block_size}")
-        print(f"  - Scale optimization: {self.scale_optimization}")
+        verbose(f"LearnedNVFP4Converter initialized on device: {self.device}")
+        verbose(f"  - Format: NVFP4 (FP4 E2M1)")
+        verbose(f"  - Block size: {self.block_size}")
+        verbose(f"  - Scale optimization: {self.scale_optimization}")
         if self.scale_optimization == "iterative" and self.scale_refinement_rounds > 1:
-            print(f"  - Scale refinement rounds: {self.scale_refinement_rounds}")
-        print(
+            verbose(f"  - Scale refinement rounds: {self.scale_refinement_rounds}")
+        verbose(
             f"  - Using optimizer: '{self.optimizer_choice}'"
             + (" (disabled - simple quant)" if self.no_learned_rounding else "")
         )
         if self.optimizer_choice == "original":
-            print(f"  - LR schedule: {self.lr_schedule}")
+            verbose(f"  - LR schedule: {self.lr_schedule}")
 
     def convert(
         self, W_orig: torch.Tensor
@@ -117,9 +118,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         # Transfer to GPU with pinned memory for large tensors
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
-        # Handle all-zeros tensor
+        # Determine if we should optimize
         if torch.all(W_float32 == 0):
-            print("  - Tensor is all zeros, skipping optimization.")
+            verbose("  - Tensor is all zeros, skipping optimization.")
             return self._quantize_zeros(W_float32)
 
         # Handle padding
@@ -791,15 +792,14 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         self, current_loss: float, curr_lr: float, worse_loss_counter: int
     ) -> bool:
         """Check early stopping conditions."""
-        if current_loss < self.early_stop_loss:
-            print("      - Loss is negligible. Stopping early.")
+        if self.early_stop_loss > 0 and current_loss < self.early_stop_loss:
+            self.logger.debug("      - Loss is negligible. Stopping early.")
             return True
-        if curr_lr < self.early_stop_lr:
-            print("      - Learning rate bottomed out. Stopping early.")
+        if self.early_stop_lr > 0 and curr_lr < self.early_stop_lr:
+            self.logger.debug("      - Learning rate bottomed out. Stopping early.")
             return True
-        if worse_loss_counter > self.early_stop_stall:
-            print("      - Loss has stalled. Stopping early.")
+        if self.early_stop_stall > 0 and worse_loss_counter >= self.early_stop_stall:
+            self.logger.debug("      - Loss has stalled. Stopping early.")
             return True
         return False
-
 

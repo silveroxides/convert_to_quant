@@ -21,6 +21,7 @@ from ..constants import (
 )
 from ..comfy.quant_ops import BlockWiseINT8Layout
 from ..pinned_transfer import transfer_to_gpu_pinned
+from ..utils.logging import verbose, debug, minimal
 from .base_converter import BaseLearnedConverter
 
 class LearnedRoundingConverter(BaseLearnedConverter):
@@ -68,17 +69,17 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             self.target_dtype = TARGET_FP8_DTYPE
             self.f8_max_val = FP8_MAX
 
-        print(f"LearnedRoundingConverter initialized on device: {self.device}")
-        print(f"  - Target format: {self.target_format}")
-        print(
+        verbose(f"LearnedRoundingConverter initialized on device: {self.device}")
+        verbose(f"  - Target format: {self.target_format}")
+        verbose(
             f"  - Using optimizer: '{self.optimizer_choice}'"
             + (" (disabled - simple quant)" if self.no_learned_rounding else "")
         )
         if self.optimizer_choice == "original":
-            print(f"  - LR schedule: {self.lr_schedule}")
-        print(f"  - Scaling mode: {self.scaling_mode}")
+            verbose(f"  - LR schedule: {self.lr_schedule}")
+        verbose(f"  - Scaling mode: {self.scaling_mode}")
         if self.scaling_mode in ("block", "block2d", "block3d"):
-            print(f"    - Block size: {self.block_size}")
+            verbose(f"    - Block size: {self.block_size}")
 
     def _optimize_adamw(
         self,
@@ -469,8 +470,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
+        # Determine if we should optimize
         if torch.all(W_float32 == 0):
-            print("  - Tensor is all zeros, skipping optimization.")
+            verbose("  - Tensor is all zeros, skipping optimization.")
             quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
             dequant_scale = None
 
@@ -573,8 +575,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         scale = layout_params["scale"]  # Shape: (M//block_size, N//block_size)
 
         # Optional: Apply learned rounding optimization for INT8
+        # INT8 Specific Optimization Logic
         if not self.no_learned_rounding and self.num_iter > 0:
-            print("    - Applying learned rounding optimization for INT8...")
+            verbose("    - Applying learned rounding optimization for INT8...")
             qdata, scale = self._optimize_int8_learned_rounding(W_float32, qdata, scale)
 
         # Dequantize to get the reconstructed weight for bias correction
@@ -1078,7 +1081,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 and W_float32.shape[1] > 0
                 and W_float32.shape[1] % self.block_size == 0
             ):
-                print(f"    - Using block scaling with block size {self.block_size}.")
+                verbose(f"    - Using block scaling with block size {self.block_size}.")
                 out_features, in_features = W_float32.shape
                 num_blocks = in_features // self.block_size
                 W_reshaped = W_float32.view(out_features, num_blocks, self.block_size)
@@ -1088,12 +1091,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     out_features, in_features
                 )
             else:
-                print(
+                verbose(
                     f"    - WARNING: Tensor shape {list(W_float32.shape)} not suitable for block size {self.block_size}. Falling back to 'tensor' scaling."
                 )
                 current_scaling_mode = "tensor"
 
         if current_scaling_mode == "tensor":
+            verbose(
+                f"    - Using tensor-wise FP8 scaling ({self.optimizer_choice if not self.no_learned_rounding else 'simple'})."
+            )
             w_max = W_float32.abs().max()
             scale = self.f8_max_val / w_max.clamp_min_(1e-12)
             compact_scale = scale
@@ -1104,7 +1110,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # Skip SVD optimization if no_learned_rounding is set
         if self.no_learned_rounding:
-            print("    - Simple quantization (no learned rounding).")
+            verbose("    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 W_f8 = (
                     (W_float32 * scale)
@@ -1145,7 +1151,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         with torch.no_grad():
             W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
             if compact_scale is None:
-                print(
+                verbose(
                     "    - WARNING: compact_scale is None, falling back to torch.ones for dequant_scale."
                 )
                 dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
@@ -1179,14 +1185,14 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         Good balance between accuracy and memory for most weight matrices.
         """
         M, N = W_float32.shape
-        print("    - Using row-wise FP8 scaling (1 scale per row).")
+        verbose("    - Using row-wise FP8 scaling (1 scale per row).")
 
         # Compute per-row max
         row_max = W_float32.abs().amax(dim=1, keepdim=True)  # (M, 1)
         quant_scale = self.f8_max_val / row_max.clamp_min_(1e-12)  # (M, 1)
 
         if self.no_learned_rounding:
-            print("    - Simple quantization (no learned rounding).")
+            verbose("    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 W_scaled = W_float32 * quant_scale
                 W_f8 = W_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)

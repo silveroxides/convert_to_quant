@@ -13,6 +13,17 @@ from .comfy_quant import (
     parse_add_keys_string,
     edit_comfy_quant,
     should_skip_layer_for_performance,
+    should_skip_layer_for_performance,
+)
+from .logging import (
+    setup_logging,
+    info,
+    verbose,
+    debug,
+    minimal,
+    warning,
+    error,
+    log_debug,
 )
 
 __all__ = [
@@ -27,5 +38,13 @@ __all__ = [
     "parse_add_keys_string",
     "edit_comfy_quant",
     "should_skip_layer_for_performance",
+    "setup_logging",
+    "info",
+    "verbose",
+    "debug",
+    "minimal",
+    "warning",
+    "error",
+    "log_debug",
 ]
 
