@@ -33,6 +33,7 @@ Restructured project root by moving audit scripts to a dedicated `tests/` direct
 ### 2026-01-11: Filter Flags Bug Fix
 Fixed a critical bug in `cli/main.py` where `extract_filter_flags` was missing a return statement, causing all model filters (e.g., `--qwen`, `--flux2`) to be ignored.
 - **Fixed**: `extract_filter_flags` now correctly populates and returns the flags dictionary.
+- **Removed**: `convert_to_quant/__main__.py` to ensure testing aligns with real-world CLI usage (`convert_to_quant` command).
 
 ---
 
