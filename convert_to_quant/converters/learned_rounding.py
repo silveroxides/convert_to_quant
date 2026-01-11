@@ -138,13 +138,20 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= self.lr_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{self.lr_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
+                        old_lr = curr_lr
                         curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
                         for param_group in optimizer.param_groups:
                             param_group["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {self.lr_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
             # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
 
             # Schedule-appropriate postfix: show plateau counter or worse counter
@@ -241,13 +248,20 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= self.lr_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{self.lr_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
+                        old_lr = curr_lr
                         curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
                         for param_group in optimizer.param_groups:
                             param_group["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {self.lr_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
             # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
 
             # Schedule-appropriate postfix: show plateau counter or worse counter
