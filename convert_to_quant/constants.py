@@ -218,7 +218,8 @@ MODEL_FILTERS = {
         "exclude": ZIMAGE_AVOID_KEY_NAMES,
         "highprec": ZIMAGE_REFINER_LAYER_KEYNAMES,
     },
-}
+}
+
 
 def build_exclusion_patterns(active_filters: dict) -> tuple:
     """
@@ -264,6 +265,12 @@ FP4_E2M1_MAX = 6.0
 FP4_E2M1_EPS = 0.5
 FP4_BLOCK_SIZE = 16  # NVFP4 uses 16-element blocks
 
+# MXFP8 (Microscaling FP8) constants
+# MXFP8 uses FP8 E4M3 data with E8M0 (power-of-2 exponent) block scales
+MXFP8_BLOCK_SIZE = 32  # MXFP8 uses 32-element blocks
+MXFP8_DTYPE = torch.float8_e4m3fn  # Data stored as FP8 E4M3
+E8M0_BIAS = 127  # Exponent bias for E8M0 format (value = 2^(exp - 127))
+
 # --- Adaptive LR Tier Configuration ---
 # Used by 'original' optimizer in LearnedRoundingConverter and LearnedNVFP4Converter.
 # Format: List of (counter_threshold, improvement_mult, decay_mult, min_lr)
@@ -305,6 +312,7 @@ VALID_QUANT_FORMATS = {
     "float8_e4m3fn_block3d",
     "int8_blockwise",
     "nvfp4",  # NVIDIA FP4 E2M1 block quantization
+    "mxfp8",  # Microscaling FP8 block quantization
 }
 
 # Global config: normalize 1-element scale arrays to scalars (set from CLI)

@@ -16,6 +16,7 @@ from ..constants import MODEL_FILTERS
 EXPERIMENTAL_ARGS = {
     "int8",
     "nvfp4",
+    "mxfp8",
     "fallback",
     "custom_layers",
     "custom_type",
@@ -127,6 +128,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         format_args = [
             "int8",
             "nvfp4",
+            "mxfp8",
             "fallback",
             "block_size",
             "scaling_mode",

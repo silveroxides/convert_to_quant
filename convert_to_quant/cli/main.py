@@ -26,6 +26,7 @@ from ..formats.format_migration import convert_fp8_scaled_to_comfy_quant
 from ..formats.int8_conversion import convert_int8_to_comfy_quant
 from ..formats.legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
 from ..formats.nvfp4_conversion import convert_to_nvfp4
+from ..formats.mxfp8_conversion import convert_to_mxfp8
 from ..utils.comfy_quant import edit_comfy_quant
 from ..pinned_transfer import set_verbose as set_pinned_verbose
 import json
@@ -115,6 +116,11 @@ def main():
         "--nvfp4",
         action="store_true",
         help="Use NVFP4 (FP4 E2M1) block quantization. Requires Blackwell GPU (SM >= 10.0/12.0) for inference.",
+    )
+    parser.add_argument(
+        "--mxfp8",
+        action="store_true",
+        help="Use MXFP8 (Microscaling FP8) block quantization. Requires Blackwell GPU (SM >= 10.0) for inference.",
     )
     parser.add_argument(
         "--fallback",
@@ -739,6 +745,81 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             scale_optimization=args.scale_optimization,
             # Input scales
             input_scales=input_scales,
+            # Memory mode
+            low_memory=args.low_memory,
+        )
+        return
+
+    # Handle MXFP8 quantization mode (separate workflow)
+    if args.mxfp8:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            # Build filename: {simple_|learned_}mxfp8[mixed]
+            prefix = "simple_" if args.simple else "learned_"
+            # Check for filters or custom-layers
+            filter_flags = extract_filter_flags(args)
+            has_filters = any(filter_flags.values())
+            has_custom = bool(args.custom_layers)
+            mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+            args.output = f"{base}_{prefix}mxfp8{mixed_suffix}.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        # Compute seed early (same logic as FP8/NVFP4)
+        seed = (
+            int(torch.randint(0, 2**32 - 1, ()).item())
+            if args.manual_seed == -1
+            else args.manual_seed
+        )
+        print(f"Using seed: {seed}")
+
+        # Extract filter flags with validation
+        filter_flags = extract_filter_flags(args)
+
+        # Call convert_to_mxfp8 with explicit args
+        convert_to_mxfp8(
+            args.input,
+            args.output,
+            # Filter flags
+            filter_flags=filter_flags,
+            exclude_layers=args.exclude_layers,
+            # Quantization options
+            simple=args.simple,
+            num_iter=args.num_iter,
+            heur=args.heur,
+            calib_samples=args.calib_samples,
+            seed=seed,
+            # Optimizer/LR options
+            optimizer=args.optimizer,
+            lr=args.lr,
+            lr_schedule=args.lr_schedule,
+            top_p=args.top_p,
+            min_k=args.min_k,
+            max_k=args.max_k,
+            full_matrix=args.full_matrix,
+            # LR schedule tuning
+            lr_gamma=args.lr_gamma,
+            lr_patience=args.lr_patience,
+            lr_factor=args.lr_factor,
+            lr_min=args.lr_min,
+            lr_cooldown=args.lr_cooldown,
+            lr_threshold=args.lr_threshold,
+            lr_adaptive_mode=args.lr_adaptive_mode,
+            lr_shape_influence=args.lr_shape_influence,
+            lr_threshold_mode=args.lr_threshold_mode,
+            # Early stopping
+            early_stop_loss=args.early_stop_loss,
+            early_stop_lr=args.early_stop_lr,
+            early_stop_stall=args.early_stop_stall,
+            # Scale optimization
+            scale_refinement_rounds=args.scale_refinement_rounds,
+            scale_optimization=args.scale_optimization,
             # Memory mode
             low_memory=args.low_memory,
         )

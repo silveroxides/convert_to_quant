@@ -1,5 +1,60 @@
 # Development Log
 
+## 2026-01-12: MXFP8 (Microscaling FP8) Quantization Support
+
+### Session Summary
+Implemented MXFP8 block quantization format with E8M0 (power-of-2) block scaling. MXFP8 uses 32-element blocks with FP8 E4M3 data and E8M0 exponent-only scales, targeting Blackwell GPUs (SM >= 10.0).
+
+---
+
+### Features Added
+
+| Feature | Description |
+|---------|-------------|
+| `--mxfp8` CLI argument | New experimental quantization format |
+| Simple mode | `--mxfp8 --simple` for raw quantization |
+| Learned rounding | SVD-based optimization with all LR schedules |
+| Exclusion filters | Works with all existing filters (`--distillation_large`, etc.) |
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `converters/mxfp8_converter.py` | Simple MXFP8 quantization (requires comfy_kitchen) |
+| `converters/learned_mxfp8.py` | Learned rounding optimization |
+| `formats/mxfp8_conversion.py` | High-level conversion flow |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `MXFP8_BLOCK_SIZE`, `MXFP8_DTYPE`, `E8M0_BIAS` |
+| `utils/float_utils.py` | Added `e8m0_to_f32`, `mxfp8_to_blocked`, `mxfp8_from_blocked` |
+| `cli/main.py` | Added `--mxfp8` argument and dispatcher |
+| `cli/argument_parser.py` | Added mxfp8 to `EXPERIMENTAL_ARGS` |
+| `converters/__init__.py` | Exported MXFP8 converters |
+
+### Bug Fixed During Development
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Learned mode: `loss=0.000e+00` | `_mxfp8_dequantize_blockwise` worked in pure float32 | Added `.to(MXFP8_DTYPE).float()` discretization step |
+
+### Output Format
+```
+.weight         -> float8_e4m3fn (FP8 E4M3)
+.weight_scale   -> uint8 (E8M0 stored as uint8)
+.comfy_quant    -> JSON metadata tensor
+```
+
+### Requirements
+- `comfy_kitchen` with MXFP8 support (fork with NVIDIA additions)
+- PyTorch 2.10+ for `torch.nn.functional.scaled_mm` with `ScalingType`/`SwizzleType`
+- SM >= 10.0 (Blackwell) for hardware-accelerated inference
+
+---
+
+
 ## 2026-01-11: Fix Missing Console Logging Output
 
 ### Session Summary

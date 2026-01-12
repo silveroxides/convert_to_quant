@@ -235,9 +235,100 @@ def from_blocked(blocked_matrix: torch.Tensor, num_rows: int, num_cols: int) -> 
     step5 = step4.permute(0, 2, 1, 3)
     unblocked = step5.reshape(padded_rows, padded_cols)
 
-    return unblocked[:num_rows, :num_cols]
+    return unblocked[:num_rows, :num_cols]
+
 
 def fp4_x2_to_f32(packed_fp4: torch.Tensor) -> torch.Tensor:
     """Unpack and dequantize FP4 E2M1 values to float32."""
     unpacked = unpack_uint4(packed_fp4)
     return _floatx_unpacked_to_f32(unpacked, F4_E2M1_EBITS, F4_E2M1_MBITS)
+
+
+# =============================================================================
+# E8M0 Conversion Functions (for MXFP8)
+# E8M0 is a power-of-2 exponent format: value = 2^(exp - 127)
+# =============================================================================
+
+E8M0_BIAS = 127
+
+
+def e8m0_to_f32(x: torch.Tensor) -> torch.Tensor:
+    """Convert E8M0 (uint8 exponent) to float32.
+
+    E8M0 represents pure power-of-2 values: 2^(exp - 127).
+
+    Args:
+        x: uint8 tensor with E8M0 exponent values
+
+    Returns:
+        float32 tensor with decoded values
+    """
+    assert x.dtype == torch.uint8, "Input must be uint8"
+    biased_exp = x.to(torch.int32)
+    result = biased_exp << MBITS_F32
+    # Handle zero exponent (represents zero)
+    result = torch.where(biased_exp == 0, torch.zeros_like(result), result)
+    return result.view(torch.float32)
+
+
+def f32_to_e8m0(x: torch.Tensor) -> torch.Tensor:
+    """Convert float32 to E8M0 (power-of-2 exponent).
+
+    Rounds to nearest power of 2.
+
+    Args:
+        x: float32 tensor (must be positive)
+
+    Returns:
+        uint8 tensor with E8M0 exponent values
+    """
+    assert x.dtype == torch.float32, "Input must be float32"
+    x_int = x.view(torch.int32)
+    biased_exp = (x_int >> MBITS_F32) & 0xFF
+
+    # Get mantissa for rounding decision (round to nearest power of 2)
+    mantissa = x_int & _n_ones(MBITS_F32)
+    round_up = mantissa >= (1 << (MBITS_F32 - 1))
+    biased_exp = biased_exp + round_up.to(torch.int32)
+
+    biased_exp = torch.clamp(biased_exp, 0, 255)
+    return biased_exp.to(torch.uint8)
+
+
+# =============================================================================
+# MXFP8 Blocked Layout Functions
+# MXFP8 uses same cuBLAS tiled layout as NVFP4, but different block size
+# =============================================================================
+
+def mxfp8_to_blocked(input_matrix: torch.Tensor, flatten: bool = True) -> torch.Tensor:
+    """
+    Rearrange E8M0 block scales to cuBLAS tiled layout for MXFP8.
+
+    Uses the same layout transformation as NVFP4 (to_blocked).
+
+    Args:
+        input_matrix: Input tensor of shape (num_rows, num_blocks)
+        flatten: If True, return flattened tensor
+
+    Returns:
+        Rearranged tensor for cuBLAS block layout
+    """
+    return to_blocked(input_matrix, flatten=flatten)
+
+
+def mxfp8_from_blocked(blocked_matrix: torch.Tensor, num_rows: int, num_cols: int) -> torch.Tensor:
+    """
+    Reverse cuBLAS tiled layout back to normal (H, num_blocks) layout for MXFP8.
+
+    Uses the same reverse transformation as NVFP4 (from_blocked).
+
+    Args:
+        blocked_matrix: Swizzled tensor from cuBLAS layout
+        num_rows: Desired output rows (unpadded)
+        num_cols: Desired output num_blocks (unpadded)
+
+    Returns:
+        Unswizzled tensor of shape (num_rows, num_cols)
+    """
+    return from_blocked(blocked_matrix, num_rows, num_cols)
+
