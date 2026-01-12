@@ -176,23 +176,26 @@ def convert_to_mxfp8(
     ])
     total_weights = len(weight_keys)
 
-    # Generate calibration data for bias correction
-    minimal("Scanning model and generating simulated calibration data...")
     calibration_data_cache = {}
-    for key in weight_keys:
-        tensor = loader.get_tensor(key)
-        if tensor.ndim == 2:
-            in_features = tensor.shape[1]
-            if in_features not in calibration_data_cache:
-                verbose(f"  - Found new input dimension: {in_features}.")
-                calibration_data_cache[in_features] = torch.randn(
-                    calib_samples,
-                    in_features,
-                    dtype=COMPUTE_DTYPE,
-                    generator=seed_generator,
-                    device=seed_device,
-                )
-    info("Simulated calibration data generated.\n")
+    if not simple:
+        # Generate calibration data for bias correction
+        minimal("Scanning model and generating simulated calibration data...")
+        for key in weight_keys:
+            tensor = loader.get_tensor(key)
+            if tensor.ndim == 2:
+                in_features = tensor.shape[1]
+                if in_features not in calibration_data_cache:
+                    verbose(f"  - Found new input dimension: {in_features}.")
+                    calibration_data_cache[in_features] = torch.randn(
+                        calib_samples,
+                        in_features,
+                        dtype=COMPUTE_DTYPE,
+                        generator=seed_generator,
+                        device=seed_device,
+                    )
+        info("Simulated calibration data generated.\n")
+    else:
+        info("Skipping calibration data generation (simple mode).\n")
 
     info(f"Found {total_weights} weight tensors to potentially process.")
     info("-" * 60)
