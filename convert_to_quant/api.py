@@ -113,6 +113,7 @@ class ConversionConfig:
     include_input_scale: bool = False
     save_quant_metadata: bool = False
     low_memory: bool = False
+    force_cpu: bool = False  # Force CPU device (bypasses torch.cuda.is_available)
     
     # Logging
     verbose: str = "NORMAL"
@@ -324,6 +325,7 @@ def convert(config: ConversionConfig) -> ConversionResult:
                 early_stop_loss=config.early_stop_loss,
                 early_stop_lr=config.early_stop_lr,
                 early_stop_stall=config.early_stop_stall,
+                force_cpu=config.force_cpu,
             )
         
         return ConversionResult(

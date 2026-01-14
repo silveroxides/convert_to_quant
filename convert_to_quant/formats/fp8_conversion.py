@@ -63,6 +63,7 @@ def convert_to_fp8_scaled(
     layer_config: Optional[Dict[str, Any]] = None,
     layer_config_fullmatch: bool = False,
     low_memory: bool = False,
+    force_cpu: bool = False,
     **converter_kwargs,
 ):
     # Ensure filter_flags is a dict
@@ -87,7 +88,7 @@ def convert_to_fp8_scaled(
         )
     info("-" * 60)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu" if force_cpu else ("cuda" if torch.cuda.is_available() else "cpu")
     seed_device = device
     seed_generator = torch.Generator(device=seed_device)
     seed_generator.manual_seed(seed)
