@@ -9,7 +9,8 @@ import json
 import struct
 import torch
 from safetensors import safe_open
-from typing import Dict, Optional
+from typing import Dict, Optional, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class UnifiedSafetensorsLoader:
     """Unified safetensors loader supporting both preload and streaming modes.
@@ -22,6 +23,10 @@ class UnifiedSafetensorsLoader:
         - Loads tensors on-demand via get_tensor()
         - Caller should delete tensors after processing
 
+    In fast-load mode (fast_load=True):
+        - Uses mmap and concurrent futures for parallel batch loading
+        - Much faster for large files with many tensors
+
     Usage:
         with UnifiedSafetensorsLoader("model.safetensors", low_memory=True) as loader:
             for key in loader.keys():
@@ -30,15 +35,17 @@ class UnifiedSafetensorsLoader:
                 loader.mark_processed(key)  # Frees memory in low_memory mode
     """
 
-    def __init__(self, filename: str, low_memory: bool = False):
+    def __init__(self, filename: str, low_memory: bool = False, fast_load: bool = True):
         """Initialize the loader.
 
         Args:
             filename: Path to safetensors file
             low_memory: If True, use streaming mode; if False, preload all tensors
+            fast_load: If True and not low_memory, use parallel mmap loading (default: True)
         """
         self.filename = filename
         self.low_memory = low_memory
+        self.fast_load = fast_load and not low_memory  # fast_load only applies to preload mode
         self._tensors: Dict[str, torch.Tensor] = {}
         self._all_keys = []
         self._file = None
@@ -51,14 +58,54 @@ class UnifiedSafetensorsLoader:
             self._file = open(filename, "rb")
             self._all_keys = [k for k in self._header.keys() if k != "__metadata__"]
             print(f"Low-memory mode: found {len(self._all_keys)} tensors (streaming)")
+        elif self.fast_load:
+            # Fast-load mode: use mmap and concurrent loading
+            self._header, self._header_size = self._read_header()
+            self._all_keys = [k for k in self._header.keys() if k != "__metadata__"]
+            print(f"Fast-load mode: loading {len(self._all_keys)} tensors with mmap...")
+            self._load_tensors_fast()
         else:
-            # Standard mode: preload all tensors
+            # Standard mode: preload all tensors sequentially
             with safe_open(filename, framework="pt", device="cpu") as f:
                 self._all_keys = list(f.keys())
                 print(f"Loading {len(self._all_keys)} tensors from source file...")
                 from tqdm import tqdm
                 for key in tqdm(self._all_keys, desc="Loading tensors"):
                     self._tensors[key] = f.get_tensor(key)
+
+    def _load_tensors_fast(self, max_workers: int = 8):
+        """Load all tensors in parallel using mmap."""
+        from tqdm import tqdm
+        
+        with open(self.filename, "rb") as f:
+            # Memory-map the file for fast random access
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            
+            def load_tensor(key: str) -> tuple:
+                """Load a single tensor from mmap."""
+                metadata = self._header[key]
+                offset_start, offset_end = metadata["data_offsets"]
+                data_offset = self._header_size + 8 + offset_start
+                data_length = offset_end - offset_start
+                
+                if data_length > 0:
+                    # Read directly from mmap
+                    tensor_bytes = bytearray(mm[data_offset:data_offset + data_length])
+                    tensor = self._deserialize_tensor(tensor_bytes, metadata)
+                else:
+                    tensor = self._deserialize_tensor(None, metadata)
+                
+                return key, tensor
+            
+            # Load tensors in parallel
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(load_tensor, key): key for key in self._all_keys}
+                
+                for future in tqdm(as_completed(futures), total=len(futures), desc="Loading tensors"):
+                    key, tensor = future.result()
+                    self._tensors[key] = tensor
+            
+            mm.close()
 
     def __enter__(self):
         return self
