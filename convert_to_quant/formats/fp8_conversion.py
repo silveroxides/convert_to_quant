@@ -47,6 +47,7 @@ def convert_to_fp8_scaled(
     calib_samples: int,
     seed: int,
     int8: bool = False,
+    primary_format: Optional[str] = None,  # Override: "nvfp4", "mxfp8", or None (use int8 flag)
     fallback: Optional[str] = None,
     custom_layers: Optional[str] = None,
     exclude_layers: Optional[str] = None,
@@ -70,8 +71,11 @@ def convert_to_fp8_scaled(
     # Ensure filter_flags is a dict
     filter_flags = filter_flags or {}
 
-    # Determine target format (priority: int8 > fp8)
-    if int8:
+    # Determine target format (priority: primary_format > int8 > fp8)
+    if primary_format:
+        target_format = primary_format
+        format_name = primary_format.upper()
+    elif int8:
         target_format = "int8"
         format_name = "INT8"
     else:

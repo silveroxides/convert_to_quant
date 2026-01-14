@@ -664,166 +664,194 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         )
         return
 
-    # Handle NVFP4 quantization mode (separate workflow)
+    # Handle NVFP4 quantization mode (separate workflow OR unified if mixing formats)
     if args.nvfp4:
-        if not args.output:
-            base = os.path.splitext(args.input)[0]
-            # Build filename: {simple_|learned_}nvfp4[mixed]
-            prefix = "simple_" if args.simple else "learned_"
-            # Check for filters or custom-layers
-            filter_flags = extract_filter_flags(args)
-            has_filters = any(filter_flags.values())
-            has_custom = bool(args.custom_layers)
-            mixed_suffix = "mixed" if (has_filters or has_custom) else ""
-            args.output = f"{base}_{prefix}nvfp4{mixed_suffix}.safetensors"
+        # Check if we need mixed format support
+        needs_mixing = args.custom_type or args.fallback
+        
+        if needs_mixing:
+            # Route through unified path for mixed format support
+            print("NVFP4 with custom/fallback: using unified quantization path")
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                args.output = f"{base}_nvfp4_mixed.safetensors"
+            # Fall through to convert_to_fp8_scaled with target_format="nvfp4"
+            args.int8 = False  # Ensure not INT8
+            # Continue to main FP8 path below with nvfp4 as target_format
+        else:
+            # Use dedicated NVFP4 path for simple cases
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                # Build filename: {simple_|learned_}nvfp4[mixed]
+                prefix = "simple_" if args.simple else "learned_"
+                # Check for filters or custom-layers
+                filter_flags = extract_filter_flags(args)
+                has_filters = any(filter_flags.values())
+                has_custom = bool(args.custom_layers)
+                mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+                args.output = f"{base}_{prefix}nvfp4{mixed_suffix}.safetensors"
 
-        if not os.path.exists(args.input):
-            print(f"Error: Input file not found: {args.input}")
-            return
-
-        if os.path.abspath(args.input) == os.path.abspath(args.output):
-            print("Error: Output file cannot be same as input.")
-            return
-
-        # Compute seed early (same logic as FP8)
-        seed = (
-            int(torch.randint(0, 2**32 - 1, ()).item())
-            if args.manual_seed == -1
-            else args.manual_seed
-        )
-        print(f"Using seed: {seed}")
-
-        # Extract filter flags with validation
-        filter_flags = extract_filter_flags(args)
-
-        # Load input scales if provided
-        input_scales = None
-        if args.input_scales_path:
-            if not os.path.exists(args.input_scales_path):
-                print(f"Error: Input scales file not found: {args.input_scales_path}")
+            if not os.path.exists(args.input):
+                print(f"Error: Input file not found: {args.input}")
                 return
-            input_scales = load_input_scales(args.input_scales_path)
-            print(f"Loaded {len(input_scales)} input scales from: {args.input_scales_path}")
 
-        # Call convert_to_nvfp4 with explicit args (no **kwargs footgun)
-        convert_to_nvfp4(
-            args.input,
-            args.output,
-            # Filter flags
-            filter_flags=filter_flags,
-            exclude_layers=args.exclude_layers,
-            # Quantization options
-            simple=args.simple,
-            num_iter=args.num_iter,
-            heur=args.heur,
-            calib_samples=args.calib_samples,
-            seed=seed,
-            # Optimizer/LR options
-            optimizer=args.optimizer,
-            lr=args.lr,
-            lr_schedule=args.lr_schedule,
-            top_p=args.top_p,
-            min_k=args.min_k,
-            max_k=args.max_k,
-            full_matrix=args.full_matrix,
-            # LR schedule tuning
-            lr_gamma=args.lr_gamma,
-            lr_patience=args.lr_patience,
-            lr_factor=args.lr_factor,
-            lr_min=args.lr_min,
-            lr_cooldown=args.lr_cooldown,
-            lr_threshold=args.lr_threshold,
-            lr_adaptive_mode=args.lr_adaptive_mode,
-            lr_shape_influence=args.lr_shape_influence,
-            lr_threshold_mode=args.lr_threshold_mode,
-            # Early stopping
-            early_stop_loss=args.early_stop_loss,
-            early_stop_lr=args.early_stop_lr,
-            early_stop_stall=args.early_stop_stall,
-            # Scale optimization
-            scale_refinement_rounds=args.scale_refinement_rounds,
-            scale_optimization=args.scale_optimization,
-            # Input scales
-            input_scales=input_scales,
-            # Memory mode
-            low_memory=args.low_memory,
-        )
-        return
+            if os.path.abspath(args.input) == os.path.abspath(args.output):
+                print("Error: Output file cannot be same as input.")
+                return
 
-    # Handle MXFP8 quantization mode (separate workflow)
-    if args.mxfp8:
-        if not args.output:
-            base = os.path.splitext(args.input)[0]
-            # Build filename: {simple_|learned_}mxfp8[mixed]
-            prefix = "simple_" if args.simple else "learned_"
-            # Check for filters or custom-layers
+            # Compute seed early (same logic as FP8)
+            seed = (
+                int(torch.randint(0, 2**32 - 1, ()).item())
+                if args.manual_seed == -1
+                else args.manual_seed
+            )
+            print(f"Using seed: {seed}")
+
+            # Extract filter flags with validation
             filter_flags = extract_filter_flags(args)
-            has_filters = any(filter_flags.values())
-            has_custom = bool(args.custom_layers)
-            mixed_suffix = "mixed" if (has_filters or has_custom) else ""
-            args.output = f"{base}_{prefix}mxfp8{mixed_suffix}.safetensors"
 
-        if not os.path.exists(args.input):
-            print(f"Error: Input file not found: {args.input}")
+            # Load input scales if provided
+            input_scales = None
+            if args.input_scales_path:
+                if not os.path.exists(args.input_scales_path):
+                    print(f"Error: Input scales file not found: {args.input_scales_path}")
+                    return
+                input_scales = load_input_scales(args.input_scales_path)
+                print(f"Loaded {len(input_scales)} input scales from: {args.input_scales_path}")
+
+            # Call convert_to_nvfp4 with explicit args (no **kwargs footgun)
+            convert_to_nvfp4(
+                args.input,
+                args.output,
+                # Filter flags
+                filter_flags=filter_flags,
+                exclude_layers=args.exclude_layers,
+                # Quantization options
+                simple=args.simple,
+                num_iter=args.num_iter,
+                heur=args.heur,
+                calib_samples=args.calib_samples,
+                seed=seed,
+                # Optimizer/LR options
+                optimizer=args.optimizer,
+                lr=args.lr,
+                lr_schedule=args.lr_schedule,
+                top_p=args.top_p,
+                min_k=args.min_k,
+                max_k=args.max_k,
+                full_matrix=args.full_matrix,
+                # LR schedule tuning
+                lr_gamma=args.lr_gamma,
+                lr_patience=args.lr_patience,
+                lr_factor=args.lr_factor,
+                lr_min=args.lr_min,
+                lr_cooldown=args.lr_cooldown,
+                lr_threshold=args.lr_threshold,
+                lr_adaptive_mode=args.lr_adaptive_mode,
+                lr_shape_influence=args.lr_shape_influence,
+                lr_threshold_mode=args.lr_threshold_mode,
+                # Early stopping
+                early_stop_loss=args.early_stop_loss,
+                early_stop_lr=args.early_stop_lr,
+                early_stop_stall=args.early_stop_stall,
+                # Scale optimization
+                scale_refinement_rounds=args.scale_refinement_rounds,
+                scale_optimization=args.scale_optimization,
+                # Input scales
+                input_scales=input_scales,
+                # Memory mode
+                low_memory=args.low_memory,
+            )
             return
 
-        if os.path.abspath(args.input) == os.path.abspath(args.output):
-            print("Error: Output file cannot be same as input.")
+    # Handle MXFP8 quantization mode (separate workflow OR unified if mixing formats)
+    if args.mxfp8:
+        # Check if we need mixed format support
+        needs_mixing = args.custom_type or args.fallback
+        
+        if needs_mixing:
+            # Route through unified path for mixed format support
+            print("MXFP8 with custom/fallback: using unified quantization path")
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                args.output = f"{base}_mxfp8_mixed.safetensors"
+            # Fall through to convert_to_fp8_scaled with target_format="mxfp8"
+            args.int8 = False  # Ensure not INT8
+            # Continue to main FP8 path below with mxfp8 as target_format
+        else:
+            # Use dedicated MXFP8 path for simple cases
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                # Build filename: {simple_|learned_}mxfp8[mixed]
+                prefix = "simple_" if args.simple else "learned_"
+                # Check for filters or custom-layers
+                filter_flags = extract_filter_flags(args)
+                has_filters = any(filter_flags.values())
+                has_custom = bool(args.custom_layers)
+                mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+                args.output = f"{base}_{prefix}mxfp8{mixed_suffix}.safetensors"
+
+            if not os.path.exists(args.input):
+                print(f"Error: Input file not found: {args.input}")
+                return
+
+            if os.path.abspath(args.input) == os.path.abspath(args.output):
+                print("Error: Output file cannot be same as input.")
+                return
+
+            # Compute seed early (same logic as FP8/NVFP4)
+            seed = (
+                int(torch.randint(0, 2**32 - 1, ()).item())
+                if args.manual_seed == -1
+                else args.manual_seed
+            )
+            print(f"Using seed: {seed}")
+
+            # Extract filter flags with validation
+            filter_flags = extract_filter_flags(args)
+
+            # Call convert_to_mxfp8 with explicit args
+            convert_to_mxfp8(
+                args.input,
+                args.output,
+                # Filter flags
+                filter_flags=filter_flags,
+                exclude_layers=args.exclude_layers,
+                # Quantization options
+                simple=args.simple,
+                num_iter=args.num_iter,
+                heur=args.heur,
+                calib_samples=args.calib_samples,
+                seed=seed,
+                # Optimizer/LR options
+                optimizer=args.optimizer,
+                lr=args.lr,
+                lr_schedule=args.lr_schedule,
+                top_p=args.top_p,
+                min_k=args.min_k,
+                max_k=args.max_k,
+                full_matrix=args.full_matrix,
+                # LR schedule tuning
+                lr_gamma=args.lr_gamma,
+                lr_patience=args.lr_patience,
+                lr_factor=args.lr_factor,
+                lr_min=args.lr_min,
+                lr_cooldown=args.lr_cooldown,
+                lr_threshold=args.lr_threshold,
+                lr_adaptive_mode=args.lr_adaptive_mode,
+                lr_shape_influence=args.lr_shape_influence,
+                lr_threshold_mode=args.lr_threshold_mode,
+                # Early stopping
+                early_stop_loss=args.early_stop_loss,
+                early_stop_lr=args.early_stop_lr,
+                early_stop_stall=args.early_stop_stall,
+                # Scale optimization
+                scale_refinement_rounds=args.scale_refinement_rounds,
+                scale_optimization=args.scale_optimization,
+                # Memory mode
+                low_memory=args.low_memory,
+            )
             return
-
-        # Compute seed early (same logic as FP8/NVFP4)
-        seed = (
-            int(torch.randint(0, 2**32 - 1, ()).item())
-            if args.manual_seed == -1
-            else args.manual_seed
-        )
-        print(f"Using seed: {seed}")
-
-        # Extract filter flags with validation
-        filter_flags = extract_filter_flags(args)
-
-        # Call convert_to_mxfp8 with explicit args
-        convert_to_mxfp8(
-            args.input,
-            args.output,
-            # Filter flags
-            filter_flags=filter_flags,
-            exclude_layers=args.exclude_layers,
-            # Quantization options
-            simple=args.simple,
-            num_iter=args.num_iter,
-            heur=args.heur,
-            calib_samples=args.calib_samples,
-            seed=seed,
-            # Optimizer/LR options
-            optimizer=args.optimizer,
-            lr=args.lr,
-            lr_schedule=args.lr_schedule,
-            top_p=args.top_p,
-            min_k=args.min_k,
-            max_k=args.max_k,
-            full_matrix=args.full_matrix,
-            # LR schedule tuning
-            lr_gamma=args.lr_gamma,
-            lr_patience=args.lr_patience,
-            lr_factor=args.lr_factor,
-            lr_min=args.lr_min,
-            lr_cooldown=args.lr_cooldown,
-            lr_threshold=args.lr_threshold,
-            lr_adaptive_mode=args.lr_adaptive_mode,
-            lr_shape_influence=args.lr_shape_influence,
-            lr_threshold_mode=args.lr_threshold_mode,
-            # Early stopping
-            early_stop_loss=args.early_stop_loss,
-            early_stop_lr=args.early_stop_lr,
-            early_stop_stall=args.early_stop_stall,
-            # Scale optimization
-            scale_refinement_rounds=args.scale_refinement_rounds,
-            scale_optimization=args.scale_optimization,
-            # Memory mode
-            low_memory=args.low_memory,
-        )
-        return
 
     # Handle legacy input scale addition mode (separate workflow)
     if args.legacy_input_add:
@@ -1050,6 +1078,13 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         layer_config_data = load_layer_config(args.layer_config)
 
     # Call convert_to_fp8_scaled with explicit args (no **kwargs footgun)
+    # Determine primary_format for NVFP4/MXFP8 mixed mode (when they fall through here)
+    primary_format = None
+    if args.nvfp4 and (args.custom_type or args.fallback):
+        primary_format = "nvfp4"
+    elif args.mxfp8 and (args.custom_type or args.fallback):
+        primary_format = "mxfp8"
+    
     convert_to_fp8_scaled(
         args.input,
         output_file,
@@ -1061,6 +1096,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         seed=seed,
         # Format options
         int8=args.int8,
+        primary_format=primary_format,
         fallback=args.fallback,
         # Custom layer options
         custom_layers=args.custom_layers,
