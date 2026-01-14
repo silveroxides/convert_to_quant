@@ -1,9 +1,46 @@
 # Development Log
 
-## 2026-01-12: MXFP8 (Microscaling FP8) Quantization Support
+## 2026-01-14: MXFP8/NVFP4 Custom Layer and Fallback Support
 
 ### Session Summary
-Implemented MXFP8 block quantization format with E8M0 (power-of-2) block scaling. MXFP8 uses 32-element blocks with FP8 E4M3 data and E8M0 exponent-only scales, targeting Blackwell GPUs (SM >= 10.0).
+Extended `--custom-type` and `--fallback` CLI arguments to support `mxfp8` and `nvfp4` formats, enabling mixed-precision quantization with these newer formats.
+
+---
+
+### Features Added
+
+| Feature | Description |
+|---------|-------------|
+| `--custom-type mxfp8/nvfp4` | Use MXFP8 or NVFP4 for custom layer regex matches |
+| `--fallback mxfp8/nvfp4` | Use MXFP8 or NVFP4 for excluded layers instead of keeping original precision |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `cli/main.py` | Extended `--fallback` and `--custom-type` choices to include `mxfp8`, `nvfp4` |
+| `cli/argument_parser.py` | Added `fallback` to fallback_args display list for `--help-experimental` |
+| `formats/fp8_conversion.py` | Added MXFP8/NVFP4 converter imports, updated `create_converter_for_format()` to instantiate correct converter class, added format-specific return value unpacking and tensor storage (NVFP4 dual scaling), extended `block_based_formats` for metadata |
+
+### Technical Details
+
+Different converters have different return signatures:
+- FP8/INT8: `(q_tensor, scale, dequant_w)`
+- MXFP8: `(qdata, block_scales_e8m0, dequant_w)`
+- NVFP4: `(packed_qdata, block_scales, per_tensor_scale, dequant_w)`
+
+NVFP4 stores dual scales as `.weight_scale` (FP8 block scales) and `.weight_scale_2` (per-tensor float32 scale).
+
+### Git
+
+```bash
+git checkout feature/mxfp8-nvfp4-custom-fallback
+# Commit: 17620f0
+```
+
+---
+
+## 2026-01-12: MXFP8 (Microscaling FP8) Quantization Support
 
 ---
 
