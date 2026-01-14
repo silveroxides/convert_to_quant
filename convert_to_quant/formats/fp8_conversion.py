@@ -122,8 +122,10 @@ def convert_to_fp8_scaled(
     converter_kwargs["target_format"] = target_format
     converter_kwargs["no_learned_rounding"] = no_learned_rounding
 
-    # Extract block_size for comfy_quant format
-    block_size = converter_kwargs.get("block_size", 64)
+    # Get format-aware block_size default (converters handle their own fixed sizes)
+    # This is only used for metadata/display; converters use their __init__ defaults
+    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64}
+    block_size = converter_kwargs.get("block_size") or format_block_sizes.get(target_format, 64)
 
     # Helper function to create converter for a specific format type
     def create_converter_for_format(fmt: str, overrides: dict = None, is_primary: bool = True):
@@ -149,12 +151,12 @@ def convert_to_fp8_scaled(
         if fmt == "mxfp8":
             # MXFP8 has fixed block_size=32, remove incompatible kwargs
             mxfp8_kwargs = {k: v for k, v in kwargs.items() 
-                           if k not in ("target_format", "scaling_mode")}
+                           if k not in ("target_format", "scaling_mode", "block_size")}
             return LearnedMXFP8Converter(**mxfp8_kwargs)
         elif fmt == "nvfp4":
             # NVFP4 has fixed block_size=16, remove incompatible kwargs
             nvfp4_kwargs = {k: v for k, v in kwargs.items() 
-                           if k not in ("target_format", "scaling_mode")}
+                           if k not in ("target_format", "scaling_mode", "block_size")}
             return LearnedNVFP4Converter(**nvfp4_kwargs)
         else:
             return LearnedRoundingConverter(**kwargs)
