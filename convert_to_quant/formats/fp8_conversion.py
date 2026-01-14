@@ -29,6 +29,8 @@ from ..constants import (
     NORMALIZE_SCALES_ENABLED,
 )
 from ..converters.learned_rounding import LearnedRoundingConverter
+from ..converters.learned_mxfp8 import LearnedMXFP8Converter
+from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..config.layer_config import get_layer_settings
 from ..utils.tensor_utils import normalize_tensorwise_scales
 from ..utils.comfy_quant import create_comfy_quant_tensor, should_skip_layer_for_performance
@@ -120,14 +122,25 @@ def convert_to_fp8_scaled(
     block_size = converter_kwargs.get("block_size", 64)
 
     # Helper function to create converter for a specific format type
-    def create_converter_for_format(
-        fmt: str, overrides: dict = None
-    ) -> LearnedRoundingConverter:
+    def create_converter_for_format(fmt: str, overrides: dict = None):
+        """Create appropriate converter instance for the given format."""
         kwargs = converter_kwargs.copy()
         kwargs["target_format"] = fmt
         if overrides:
             kwargs.update(overrides)
-        return LearnedRoundingConverter(**kwargs)
+        
+        if fmt == "mxfp8":
+            # MXFP8 has fixed block_size=32, remove incompatible kwargs
+            mxfp8_kwargs = {k: v for k, v in kwargs.items() 
+                           if k not in ("target_format", "scaling_mode")}
+            return LearnedMXFP8Converter(**mxfp8_kwargs)
+        elif fmt == "nvfp4":
+            # NVFP4 has fixed block_size=16, remove incompatible kwargs
+            nvfp4_kwargs = {k: v for k, v in kwargs.items() 
+                           if k not in ("target_format", "scaling_mode")}
+            return LearnedNVFP4Converter(**nvfp4_kwargs)
+        else:
+            return LearnedRoundingConverter(**kwargs)
 
     # Helper function to get format metadata
     def get_format_info(fmt: str) -> dict:
@@ -135,6 +148,8 @@ def convert_to_fp8_scaled(
         format_map = {
             "int8": {"dtype": TARGET_INT8_DTYPE, "name": "INT8"},
             "fp8": {"dtype": TARGET_FP8_DTYPE, "name": "FP8"},
+            "mxfp8": {"dtype": torch.uint8, "name": "MXFP8"},
+            "nvfp4": {"dtype": torch.uint8, "name": "NVFP4"},
         }
         return format_map.get(fmt, format_map["fp8"])
 
@@ -401,8 +416,23 @@ def convert_to_fp8_scaled(
 
         # Determine format type for this layer
         is_int8 = layer_format == "int8"
+        is_mxfp8 = layer_format == "mxfp8"
+        is_nvfp4 = layer_format == "nvfp4"
 
-        q_tensor, dequant_s, dequant_w = converter.convert(original_tensor)
+        # Call converter and unpack based on format type
+        # Different converters have different return signatures
+        if is_mxfp8:
+            # MXFP8: (qdata_fp8, block_scales_e8m0, dequant_w)
+            q_tensor, block_scales, dequant_w = converter.convert(original_tensor)
+            dequant_s = block_scales  # For bias correction compatibility
+        elif is_nvfp4:
+            # NVFP4: (packed_qdata, block_scales_fp8, per_tensor_scale, dequant_w)
+            q_tensor, block_scales, per_tensor_scale, dequant_w = converter.convert(original_tensor)
+            dequant_s = block_scales  # For bias correction compatibility
+        else:
+            # FP8/INT8: (q_tensor, scale, dequant_w)
+            q_tensor, dequant_s, dequant_w = converter.convert(original_tensor)
+
         new_tensors[key] = q_tensor.to(device="cpu")
         base_name = key[: key.rfind(".weight")]
         bias_key = f"{base_name}.bias"
@@ -420,8 +450,33 @@ def convert_to_fp8_scaled(
             comfy_quant_format = None
             block_size_for_meta = None
 
-            # Use appropriate scale key name based on format
-            if is_int8:
+            # Use appropriate scale key name and format based on quantization type
+            if is_mxfp8:
+                # MXFP8 format - E8M0 block scales
+                new_tensors[f"{base_name}.weight_scale"] = block_scales.to(device="cpu")
+                comfy_quant_format = "mxfp8"
+                block_size_for_meta = 32  # MXFP8 fixed block size
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    "mxfp8",
+                    block_size=32,
+                    full_precision_matrix_mult=layer_full_precision_mm
+                    if layer_full_precision_mm
+                    else None,
+                )
+            elif is_nvfp4:
+                # NVFP4 format - dual scaling (block + per-tensor)
+                new_tensors[f"{base_name}.weight_scale"] = block_scales.to(device="cpu")
+                new_tensors[f"{base_name}.weight_scale_2"] = per_tensor_scale.to(device="cpu", dtype=torch.float32)
+                comfy_quant_format = "nvfp4"
+                block_size_for_meta = 16  # NVFP4 fixed block size
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    "nvfp4",
+                    block_size=16,
+                    full_precision_matrix_mult=layer_full_precision_mm
+                    if layer_full_precision_mm
+                    else None,
+                )
+            elif is_int8:
                 new_tensors[f"{base_name}.weight_scale"] = (
                     dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                 )
@@ -496,7 +551,7 @@ def convert_to_fp8_scaled(
             if save_quant_metadata:
                 # Reconstruct the dict that was used to create the tensor
                 meta_entry = {"format": comfy_quant_format}
-                block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise"}
+                block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise", "mxfp8", "nvfp4"}
                 if (
                     block_size_for_meta is not None
                     and comfy_quant_format in block_based_formats

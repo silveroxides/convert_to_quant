@@ -126,7 +126,7 @@ def main():
         "--fallback",
         type=str,
         default=None,
-        choices=["fp8", "int8"],
+        choices=["fp8", "int8", "mxfp8", "nvfp4"],
         help="Fallback quantization type for excluded layers (instead of keeping original precision).",
     )
     parser.add_argument(
@@ -148,7 +148,7 @@ def main():
         type=str,
         default=None,
         dest="custom_type",
-        choices=["fp8", "int8"],
+        choices=["fp8", "int8", "mxfp8", "nvfp4"],
         help="Quantization type for custom layer matches.",
     )
     # Custom-type parameter overrides

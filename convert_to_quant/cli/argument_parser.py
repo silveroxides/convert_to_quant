@@ -161,7 +161,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Fallback Layer Options:")
         print("-" * 40)
 
-        fallback_args = ["fallback_block_size", "fallback_simple"]
+        fallback_args = ["fallback", "fallback_block_size", "fallback_simple"]
         for action in self._all_actions:
             if self._get_dest_name(action) in fallback_args:
                 line = self._format_action_help(action)
