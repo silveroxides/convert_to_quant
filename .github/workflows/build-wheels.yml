@@ -15,13 +15,15 @@ jobs:
   build:
     name: Build wheel and sdist
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.9'  # Use minimum supported version to catch compat issues
 
       - name: Install build dependencies
         run: |
@@ -30,6 +32,13 @@ jobs:
 
       - name: Build wheel and sdist
         run: python -m build
+
+      - name: Get version from wheel
+        id: get_version
+        run: |
+          VERSION=$(ls dist/*.whl | sed 's/.*-\([0-9]*\.[0-9]*\.[0-9]*\)-.*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -60,7 +69,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install wheel
+      - name: Install wheel (no deps)
         shell: bash
         run: |
           pip install dist/*.whl
@@ -75,33 +84,60 @@ jobs:
           fi
           echo "✓ torch not installed (as expected)"
 
-      - name: Verify entry point
-        run: convert_to_quant --help
-
-      - name: Verify import
+      - name: Verify package importable
         shell: bash
         run: |
           python -c "import convert_to_quant; print('Version:', getattr(convert_to_quant, '__version__', 'N/A'))"
 
+      - name: Install runtime dependencies for CLI test
+        shell: bash
+        run: |
+          pip install safetensors tqdm
+          # Install CPU-only torch for testing (smaller, faster)
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Verify CLI entry point
+        run: convert_to_quant --help
+
   release:
     name: Create GitHub Release
-    needs: test
+    needs: [build, test]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if version changed
+        id: version_check
+        run: |
+          # Get current and previous version from pyproject.toml
+          CURRENT=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          git show HEAD~1:pyproject.toml > /tmp/prev_pyproject.toml 2>/dev/null || echo 'version = "0.0.0"' > /tmp/prev_pyproject.toml
+          PREVIOUS=$(grep '^version = ' /tmp/prev_pyproject.toml | sed 's/version = "\(.*\)"/\1/' || echo "0.0.0")
+          echo "Current: $CURRENT, Previous: $PREVIOUS"
+          if [ "$CURRENT" != "$PREVIOUS" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "version=$CURRENT" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download build artifacts
+        if: steps.version_check.outputs.changed == 'true'
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
       - name: Create Release
+        if: steps.version_check.outputs.changed == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version_check.outputs.version }}
           files: dist/*
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
