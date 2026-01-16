@@ -252,7 +252,7 @@ LORA_PREFIXES = [
     "lora_te1_",               # SDXL TE1
     "lora_te2_",               # SDXL TE2
     "lycoris_",                # SimpleTuner LyCORIS
-]
+]
 
 def normalize_layer_name(name: str) -> str:
     """

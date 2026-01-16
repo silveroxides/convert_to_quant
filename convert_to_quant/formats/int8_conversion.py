@@ -188,7 +188,7 @@ def convert_int8_to_comfy_quant(
                     output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
                     # Collect metadata if enabled
-                    if save_quant_metadata:
+                    if save_quant_metadata and quant_metadata_layers is not None:
                         meta_entry = {"format": detected_format}
                         # int8 is always blockwise in this context, so check is simple or implicit
                         if detected_block_size is not None:
@@ -255,7 +255,7 @@ def convert_int8_to_comfy_quant(
                 output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
                 # Collect metadata if enabled
-                if save_quant_metadata:
+                if save_quant_metadata and quant_metadata_layers is not None:
                     meta_entry = {"format": detected_format}
                     if detected_block_size is not None:
                         meta_entry["group_size"] = detected_block_size

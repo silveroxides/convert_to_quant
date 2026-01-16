@@ -12,7 +12,6 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from .tensor_utils import dict_to_tensor, tensor_to_dict, normalize_tensorwise_scales
-from .tensor_utils import dict_to_tensor, tensor_to_dict, normalize_tensorwise_scales
 from ..constants import NORMALIZE_SCALES_ENABLED
 from .logging import info, verbose, warning, error, minimal
 
