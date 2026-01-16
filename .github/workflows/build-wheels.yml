@@ -84,17 +84,17 @@ jobs:
           fi
           echo "✓ torch not installed (as expected)"
 
-      - name: Verify package importable
-        shell: bash
-        run: |
-          python -c "import convert_to_quant; print('Version:', getattr(convert_to_quant, '__version__', 'N/A'))"
-
       - name: Install runtime dependencies for CLI test
         shell: bash
         run: |
           pip install safetensors tqdm
           # Install CPU-only torch for testing (smaller, faster)
           pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Verify package importable
+        shell: bash
+        run: |
+          python -c "import convert_to_quant; print('Version:', getattr(convert_to_quant, '__version__', 'N/A'))"
 
       - name: Verify CLI entry point
         run: convert_to_quant --help
