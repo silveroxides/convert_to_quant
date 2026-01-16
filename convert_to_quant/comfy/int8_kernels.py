@@ -4,7 +4,6 @@ import triton.language as tl
 from triton import Config
 from typing import Tuple
 
-
 """
 INT8 Quantization Kernels with Multiple Implementation Variants
 
@@ -12,7 +11,7 @@ This module provides two different INT8 matmul implementations:
 1. "v1" - Original per-block scaling (from int8_matmul.py)
    - Uses per-block weight scales indexed as b_s[offs_n * k]
    - Simpler indexing, autotuned for smaller tile sizes
-   
+
 2. "v2" - Row-major 2D weight scaling (from int8_kernels.py)
    - Uses 2D weight scale array indexed as b_s[pid_n, i]
    - More explicit 2D indexing, optimized for larger tiles
@@ -25,7 +24,7 @@ Based on DeepSeek scaled FP8 matmul and Jetfire paper:
 https://arxiv.org/abs/2403.12422
 https://github.com/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
 
-                                                     N dimension →  
+                                                     N dimension →
                                                INT8 weights                 scaler per block
                                                ┌-----┬-----┬─────┬─────┐    ┌-----┬-----┬─────┬─────┐
                                                : b00 : b01 : b02 | b03 |    :     :     :     |     |
@@ -40,17 +39,17 @@ https://github.com/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
                                                : b00 : b01 :
      ├─── blk ───┤                             ├-----┼-----┤
                                                : b10 : b11 :
-            K dimension →                      └-----┴-----┘                                
+            K dimension →                      └-----┴-----┘
      INT8 activations
      ┌-----┬-----┬─────┬─────┐   ┌-----┬-----┐ ┌-----┬-----┐   ┌-----------┐   ┌-----┬-----┐   ┌-----┬-----┐
      : a00 : a01 : a02 | a03 |   : a00 : a01 : :  @  :  @  :   :   a_s00   :   :     :     :   :acc00:acc01:
-     ├-----┼-----┼─────┼─────┤   ├-----┼-----┤ ├-----┼-----┤ * ├-----------┤ * :b_s00:b_s10: = ├-----┼-----┤ 
+     ├-----┼-----┼─────┼─────┤   ├-----┼-----┤ ├-----┼-----┤ * ├-----------┤ * :b_s00:b_s10: = ├-----┼-----┤
  M   : a10 : a11 : a12 | a13 |   : a10 : a11 : :  @  :  @  :   :   a_s10   :   :     :     :   :acc10:acc11:
 dim  ├-----┼-----┼─────┼─────┤   └-----┴-----┘ └-----┴-----┘   └-----------┘   └-----┴-----┘   └-----┴-----┘
  ↓   | a20 | a21 | a22 | a23 |   INT8 matmul acc in INT32      rescale the FP32 intermediate   accumulate
      ├─────┼─────┼─────┼─────┤   then cast to FP32             "rank 1" hadamard scaler        intermediate
-     | a30 | a31 | a32 | a33 |  
-     └─────┴─────┴─────┴─────┘  
+     | a30 | a31 | a32 | a33 |
+     └─────┴─────┴─────┴─────┘
      scaler per block
      ┌-----------┬───────────┐
      :   a_s00   :   a_s01   |
@@ -93,7 +92,6 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     y = y.to(y_ptr.dtype.element_ty)
     tl.store(y_ptr + offs, y)
     tl.store(s_ptr + pid, s)
-
 
 def act_quant(
     x: torch.Tensor, block_size: int = 128
@@ -145,7 +143,6 @@ def act_dequant_kernel(x_ptr, s_ptr, y_ptr, BLOCK_SIZE: tl.constexpr):
     y = x * s
     y = y.to(y_ptr.dtype.element_ty)
     tl.store(y_ptr + offs, y)
-
 
 def act_dequant(
     x: torch.Tensor,
@@ -219,7 +216,6 @@ def weight_quant_kernel(x_ptr, y_ptr, s_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask=mask)
     tl.store(s_ptr + pid_m * n + pid_n, s)
 
-
 def weight_quant(
     x: torch.Tensor, block_size: int = 128
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -284,7 +280,6 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     y = x * s
     tl.store(y_ptr + offs, y, mask=mask)
 
-
 def weight_dequant(
     x: torch.Tensor,
     s: torch.Tensor,
@@ -320,7 +315,6 @@ def weight_dequant(
     )
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
     return y
-
 
 int8_gemm_configs = [
     Config(
@@ -497,7 +491,6 @@ def int8_gemm_addmm_kernel(
     mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
     tl.store(c_ptrs, c, mask=mask)
 
-
 def int8_gemm(
     a: torch.Tensor,
     a_s: torch.Tensor,
@@ -558,7 +551,6 @@ def int8_gemm(
         BLOCK_SIZE_K=input_block_size,
     )
     return c
-
 
 def int8_addmm(
     a: torch.Tensor,
@@ -923,7 +915,6 @@ def int8_gemm_addmm_quant_kernel(
     scale_mask = (offs_m_scale[:, None] < M) & (offs_n_scale[None, :] < n_scale_stride)
     tl.store(scale_ptrs, block_scale, mask=scale_mask)
 
-
 def int8_gemm_quant(
     a: torch.Tensor,
     a_s: torch.Tensor,
@@ -1001,7 +992,6 @@ def int8_gemm_quant(
         c_s = c_s.reshape(*batch_shape, n_blocks)
 
     return c, c_s
-
 
 def int8_addmm_quant(
     a: torch.Tensor,
@@ -1238,7 +1228,6 @@ def int8_gelu_kernel(
     # Store output scales
     output_scale_ptrs = output_scale_ptr + offs_sm[:, None] * SN + offs_sn[None, :]
     tl.store(output_scale_ptrs, output_scales, mask=scale_mask)
-
 
 def int8_gelu(
     x: torch.Tensor, s_x: torch.Tensor, block_size: int = 128

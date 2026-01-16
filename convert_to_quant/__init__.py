@@ -1,26 +1,17 @@
 """
-convert_to_quant - Quantization toolkit for neural network weights.
+convert_to_quant - Quantization toolkit for safetensors models.
 
-Supports FP8 and INT8 block-wise quantization formats
-with learned rounding optimization for minimal accuracy loss.
+Provides tools for converting model weights to FP8/INT8 quantized formats
+with optional learned rounding optimization for ComfyUI inference.
 """
 
 try:
-    from importlib.metadata import version as _get_version
-
-    __version__ = _get_version("convert_to_quant")
+    from importlib.metadata import version
+    __version__ = version("convert_to_quant")
 except Exception:
-    __version__ = "0.0.0.dev"  # Fallback for development/uninstalled mode
+    __version__ = "0.0.0"  # Fallback when not installed as package
 
-from .convert_to_quant import (  # pyrefly: ignore - intentional re-exports
-    LearnedRoundingConverter,
-    convert_to_fp8_scaled,
-    main,
-)
+from .convert_to_quant import main
 
-__all__ = [
-    "__version__",
-    "LearnedRoundingConverter",
-    "convert_to_fp8_scaled",
-    "main",
-]
+__all__ = ["main", "__version__"]
+

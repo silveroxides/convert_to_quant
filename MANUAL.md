@@ -103,6 +103,7 @@ python convert_to_quant.py \
 | `--int8` | False | Use INT8 block-wise quantization instead of FP8 |
 | `--kernel_backend` | `blockwise` | Kernel backend for INT8 quantization: `blockwise` (2D tile-level scales) or `lodewise` (per-output-lane scales) |
 | `--full_precision_matrix_mult` | False | Add `full_precision_matrix_mult=True` to `.comfy_quant` metadata |
+| `--nvfp4` | False | Use NVFP4 (FP4 E2M1) block quantization (requires Blackwell GPU for inference) |
 
 ### Quantization Options
 
@@ -122,11 +123,14 @@ These flags keep certain layers in high precision (not quantized):
 | Argument | Description |
 |----------|-------------|
 | `--t5xxl` | T5-XXL text encoder (removes decoder, keeps norm/bias layers high precision) |
+| `--mistral` | Mistral text encoder exclusions |
+| `--visual` | Visual encoder: skip MLP layers (down/up/gate proj) |
 
 #### Diffusion Models (Flux-style)
 
 | Argument | Description |
 |----------|-------------|
+| `--flux2` | Flux.2: keep modulation/guidance/time/final layers high-precision |
 | `--distillation_large` | Keep: `distilled_guidance_layer`, `final_layer`, `img_in`, `txt_in` |
 | `--distillation_small` | Keep: `distilled_guidance_layer` only |
 | `--nerf_large` | Keep: `distilled_guidance_layer`, `nerf_blocks`, `nerf_image_embedder`, `txt_in` |
@@ -158,7 +162,9 @@ These flags keep certain layers in high precision (not quantized):
 | `--top_p` | `0.01` | Proportion of SVD principal components to use |
 | `--min_k` | `1` | Minimum number of SVD components |
 | `--max_k` | `16` | Maximum number of SVD components |
+
 | `--full_matrix` | False | Use full SVD instead of low-rank approximation |
+| `--scale-refinement` | `1` | [NVFP4] Number of scale refinement rounds (default: 1) |
 
 ### Learning Rate Schedule Options
 

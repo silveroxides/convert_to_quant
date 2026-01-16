@@ -96,8 +96,11 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 
 | Model | Flag | Notes |
 |-------|------|-------|
+| Flux.2 | `--flux2` | Keep modulation/guidance/time/final high-precision |
 | Chroma / Radiance | `--distillation_large` / `--nerf_large` | Distillation layers excluded |
 | T5-XXL Text Encoder | `--t5xxl` | Decoder removed |
+| Mistral Text Encoder | `--mistral` | Norms/biases excluded |
+| Visual Encoder | `--visual` | MLP layers excluded |
 | Hunyuan Video | `--hunyuan` | Attention norms excluded |
 | WAN Video | `--wan` | Time embeddings excluded |
 | Qwen Image | `--qwen` | Image layers excluded |
@@ -108,10 +111,9 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 ## Documentation
 
 - 📖 **[MANUAL.md](MANUAL.md)** - Complete usage guide with examples and troubleshooting
-- 📋 **[AGENTS.md](AGENTS.md)** - Development workflows for AI coding agents
-- ✨ **[ACTIVE.md](ACTIVE.md)** - Current implementations and status
-- 📋 **[PLANNED.md](PLANNED.md)** - Roadmap and planned features
-- 🧪 **[DEVELOPMENT.md](DEVELOPMENT.md)** - Research notes and findings
+- 📋 **[AGENTS.md](AGENTS.md)** - Developer guide & registry architecture
+- ✨ **[ACTIVE.md](ACTIVE.md)** - Current status and active implementations
+- 🧪 **[DEVELOPMENT.md](DEVELOPMENT.md)** - Changelog and research notes
 - 🔗 **[quantization.examples.md](quantization.examples.md)** - ComfyUI integration patterns
 
 ---
@@ -121,11 +123,14 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 ```
 convert_to_quant/
 ├── convert_to_quant/            # Main package
-│   ├── convert_to_quant.py      # Core quantization implementation
-│   └── comfy/                   # ComfyUI-compatible components
-│       ├── quant_ops.py         # Layout system & QuantizedTensor
-│       ├── int8_kernels.py      # INT8 Triton kernels
-│       └── float.py             # FP8 utilities
+│   ├── cli/                     # CLI entry point & argument parsing
+│   ├── converters/              # Core quantization logic (FP8, INT8, NVFP4)
+│   ├── formats/                 # Format-specific conversion flows
+│   ├── comfy/                   # ComfyUI integration components
+│   ├── config/                  # Layer configuration & templates
+│   ├── utils/                   # Shared utilities (tensor, memory)
+│   ├── constants.py             # Model Filter Registry & constants
+│   └── convert_to_quant.py      # Backward-compatibility wrapper
 ├── pyproject.toml               # Package configuration
 ├── MANUAL.md                    # User documentation
 └── ...

@@ -1,6 +1,597 @@
 # Development Log
 
+## 2026-01-14: MXFP8/NVFP4 Custom Layer and Fallback Support
+
+### Session Summary
+Extended `--custom-type` and `--fallback` CLI arguments to support `mxfp8` and `nvfp4` formats, enabling mixed-precision quantization with these newer formats.
+
+---
+
+### Features Added
+
+| Feature | Description |
+|---------|-------------|
+| `--custom-type mxfp8/nvfp4` | Use MXFP8 or NVFP4 for custom layer regex matches |
+| `--fallback mxfp8/nvfp4` | Use MXFP8 or NVFP4 for excluded layers instead of keeping original precision |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `cli/main.py` | Extended `--fallback` and `--custom-type` choices to include `mxfp8`, `nvfp4` |
+| `cli/argument_parser.py` | Added `fallback` to fallback_args display list for `--help-experimental` |
+| `formats/fp8_conversion.py` | Added MXFP8/NVFP4 converter imports, updated `create_converter_for_format()` to instantiate correct converter class, added format-specific return value unpacking and tensor storage (NVFP4 dual scaling), extended `block_based_formats` for metadata |
+
+### Technical Details
+
+Different converters have different return signatures:
+- FP8/INT8: `(q_tensor, scale, dequant_w)`
+- MXFP8: `(qdata, block_scales_e8m0, dequant_w)`
+- NVFP4: `(packed_qdata, block_scales, per_tensor_scale, dequant_w)`
+
+NVFP4 stores dual scales as `.weight_scale` (FP8 block scales) and `.weight_scale_2` (per-tensor float32 scale).
+
+### Git
+
+```bash
+git checkout feature/mxfp8-nvfp4-custom-fallback
+# Commit: 17620f0
+```
+
+---
+
+## 2026-01-12: MXFP8 (Microscaling FP8) Quantization Support
+
+---
+
+### Features Added
+
+| Feature | Description |
+|---------|-------------|
+| `--mxfp8` CLI argument | New experimental quantization format |
+| Simple mode | `--mxfp8 --simple` for raw quantization |
+| Learned rounding | SVD-based optimization with all LR schedules |
+| Exclusion filters | Works with all existing filters (`--distillation_large`, etc.) |
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `converters/mxfp8_converter.py` | Simple MXFP8 quantization (requires comfy_kitchen) |
+| `converters/learned_mxfp8.py` | Learned rounding optimization |
+| `formats/mxfp8_conversion.py` | High-level conversion flow |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `MXFP8_BLOCK_SIZE`, `MXFP8_DTYPE`, `E8M0_BIAS` |
+| `utils/float_utils.py` | Added `e8m0_to_f32`, `mxfp8_to_blocked`, `mxfp8_from_blocked` |
+| `cli/main.py` | Added `--mxfp8` argument and dispatcher |
+| `cli/argument_parser.py` | Added mxfp8 to `EXPERIMENTAL_ARGS` |
+| `converters/__init__.py` | Exported MXFP8 converters |
+
+### Bug Fixed During Development
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Learned mode: `loss=0.000e+00` | `_mxfp8_dequantize_blockwise` used unrounded float32 (zero error) | Added `W_q_initial` rounding for non-zero start loss + differentiable dequantize for valid gradients (fixed earlier broken gradient attempt) |
+
+### Output Format
+```
+.weight         -> float8_e4m3fn (FP8 E4M3)
+.weight_scale   -> uint8 (E8M0 stored as uint8)
+.comfy_quant    -> JSON metadata tensor
+```
+
+### Requirements
+- `comfy_kitchen` with MXFP8 support (fork with NVIDIA additions)
+- PyTorch 2.10+ for `torch.nn.functional.scaled_mm` with `ScalingType`/`SwizzleType`
+- SM >= 10.0 (Blackwell) for hardware-accelerated inference
+
+---
+
+
+## 2026-01-11: Fix Missing Console Logging Output
+
+### Session Summary
+Fixed bug where no layer progress output `(X/Y) Processing...` or skip confirmations appeared during FP8/INT8 quantization. The logging framework was never initialized because `setup_logging(args.verbose)` was imported but never called.
+
+---
+
+### Bug Fixed
+
+| File | Bug | Impact |
+|------|-----|--------|
+| `cli/main.py` | `setup_logging(args.verbose)` never called after `parser.parse_args()` | All `info()`, `verbose()`, `debug()` calls silently dropped |
+
+### Fix
+Added `setup_logging(args.verbose)` call at line 591, immediately after argument parsing.
+
+### Symptoms (before fix)
+- No `(1/N) Processing tensor: ...` output
+- No `(1/N) Skipping tensor: ... (Reason: qwen keep in high precision)` for filtered layers like `img_in`
+- Only raw `print()` statements and tqdm progress bars visible
+
+---
+
+## 2026-01-11: Documentation & Package Execution Parity
+
+### Session Summary
+Updated project documentation (`AGENTS.md`, `walkthrough.md`) with a comprehensive system map and workflow descriptions. Refined implementation constraints in `AGENTS.md` based on user feedback.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `AGENTS.md` | Added System Architecture & Workflows section; corrected Implementation Constraints (removed irrelevant core mods/heavy deps rules) |
+| `walkthrough.md` | Documented package execution fix and documentation updates |
+| `task.md` | Marked documentation tasks as complete |
+
+### Verification
+
+- Documentation: ✅ `AGENTS.md` reflects current codebase structure and accurate constraints
+
+### 2026-01-11: Test Suite Organization
+Restructured project root by moving audit scripts to a dedicated `tests/` directory.
+
+- **Changes**:
+    - `tests/`: Created directory.
+    - `audit_test_runner.py` -> `tests/test_functional.py`: Renamed and updated paths.
+    - `audit_check_args.py` -> `tests/test_cli_consistency.py`: Renamed and updated paths.
+    - `.gitignore`: Added `flux2-dev-testlayers.safetensors` and `out_*.safetensors`.
+
+### 2026-01-11: Filter Flags Bug Fix
+Fixed a critical bug in `cli/main.py` where `extract_filter_flags` was missing a return statement, causing all model filters (e.g., `--qwen`, `--flux2`) to be ignored.
+- **Fixed**: `extract_filter_flags` now correctly populates and returns the flags dictionary.
+- **Removed**: `convert_to_quant/__main__.py` to ensure testing aligns with real-world CLI usage (`convert_to_quant` command).
+
+---
+
+## 2026-01-08: Critical FP8 Clamp Fix (Quality Issue)
+
+### Session Summary
+Fixed critical missing `.clamp()` calls before `.to(TARGET_FP8_DTYPE)` in most FP8 conversion paths. This could cause values outside FP8 range (±448 for E4M3FN) to overflow, producing NaN or incorrect quantization.
+
+---
+
+### Bugs Fixed
+
+| Line | Method | Path | Fix |
+|------|--------|------|-----|
+| 1122 | `_convert_fp8` | learned | Added `.clamp(-self.f8_max_val, self.f8_max_val)` |
+| 1167 | `_convert_fp8_rowwise` | simple | Added `.clamp()` |
+| 1196 | `_convert_fp8_rowwise` | learned | Added `.clamp()` |
+| 1240 | `_convert_fp8_block2d` | simple | Added `.clamp()` |
+| 1284 | `_convert_fp8_block2d` | learned | Added `.clamp()` |
+
+### Impact
+This was likely causing quality degradation in all learned rounding quantizations.
+
+---
+
+## 2026-01-08: Fix Refactoring Bugs (Static Analysis)
+
+### Session Summary
+Fixed critical runtime bugs discovered via static analysis (flake8, mypy). These bugs were introduced during the modular refactoring.
+
+---
+
+### Bugs Fixed
+
+| File | Bug | Impact |
+|------|-----|--------|
+| `formats/format_migration.py` | Missing `import re` | Crash when using `--hp-filter` |
+| `formats/nvfp4_conversion.py` | Passed `tensor.shape` instead of `tensor` to `should_skip_layer_for_performance()` | Crash when using `--heur` with `--nvfp4` |
+| `formats/int8_conversion.py` | Undefined name `fix_comfy_quant_params_structure` | Crash during INT8-to-comfy_quant conversion |
+
+### Verification
+
+- flake8 F821 (undefined name): ✅ 0 errors (was 1)
+- flake8 F401 (unused imports): 21 warnings (cosmetic, non-breaking)
+- All format modules import successfully
+
+---
+
+## 2026-01-08: NVFP4 Iterative Scale Refinement
+
+### Session Summary
+Added iterative scale refinement for NVFP4 quantization. After learned rounding converges, block scales are recomputed from the optimized weights and optimization reruns with the new scales. This allows scales to better fit the learned values.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/learned_nvfp4.py` | Added `scale_refinement_rounds` parameter, `_compute_block_scales()` helper, refinement loop in `convert()` |
+| `formats/nvfp4_conversion.py` | Pass `scale_refinement_rounds` to converter |
+| `cli/main.py` | Added `--scale-refinement` CLI argument |
+| `cli/argument_parser.py` | Added to `ADVANCED_ARGS` for `--help-advanced` |
+
+### Usage
+
+```bash
+# Default: no refinement (rounds=1)
+convert_to_quant -i model.safetensors --nvfp4
+
+# With 2 refinement rounds
+convert_to_quant -i model.safetensors --nvfp4 --scale-refinement 2
+```
+
+### Verification
+
+- Syntax check: ✅ All modules pass
+- Functional tests: ✅ All 6 tests pass (`test_cli_args.py`)
+
+---
+
+
+## 2026-01-07: NVFP4 Comfy-Kitchen Compatibility
+
+### Session Summary
+Fixed NVFP4 quantization discrepancies to match comfy-kitchen exactly. Added kernel delegation when comfy-kitchen is available.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/nvfp4_converter.py` | Uses `ck.quantize_nvfp4()`/`ck.dequantize_nvfp4()` when available; fixed PyTorch fallback |
+| `converters/learned_nvfp4.py` | Added comfy-kitchen check, removed `F8_E4M3_EPS` min clamp, added zero-block handling |
+
+### Discrepancies Fixed
+
+| Issue | Before | After |
+|-------|--------|-------|
+| Block scale clamp | `min=F8_E4M3_EPS, max=F8_E4M3_MAX` | `max=F8_E4M3_MAX` only |
+| Zero block handling | Divide-by-zero possible | Safe division with mask |
+| Kernel usage | Pure PyTorch only | comfy-kitchen when available |
+
+### Verification
+
+- Syntax check: ✅ All modules pass
+- Functional tests: ✅ All 6 tests pass (`test_cli_args.py`)
+
+---
+
+
+## 2026-01-07: Converter Class Unification (Complete)
+
+### Session Summary
+Created `BaseLearnedConverter` ABC to extract shared infrastructure. Both `LearnedRoundingConverter` and `LearnedNVFP4Converter` now inherit from it.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/base_converter.py` | **NEW** - Abstract base class with shared `__init__` (17 params), SVD, LR, cleanup |
+| `converters/learned_nvfp4.py` | Inherits from base, only defines `block_size`, `pad_to_16x` (-80 lines) |
+| `converters/learned_rounding.py` | Inherits from base, only defines `scaling_mode`, `block_size`, `target_format` (-150 lines) |
+| `converters/__init__.py` | Added `BaseLearnedConverter` export |
+
+### Deduplication Summary
+
+- **6 SVD computation blocks** → `_compute_svd_components()`
+- **Inline LR tier logic** → `_adaptive_lr_update()`  
+- **gc.collect/empty_cache patterns** → `_cleanup_tensors()`
+- **Shape-aware plateau params** → `_compute_shape_aware_plateau_params()`
+
+### Verification
+
+- Syntax check: ✅ All modules pass
+- Functional tests: ✅ All 6 tests pass (`test_cli_args.py`)
+
+### Git
+
+```bash
+git checkout feature/converter-unification
+# Commits: 59df2e3, d243d96
+```
+
+---
+
+## 2026-01-07: Memory-Efficient Tensor Loading (`--low-memory`)
+
+### Session Summary
+Added `--low-memory` CLI flag to support streaming tensor loading for large models. Addresses OOM issues when quantizing 60GB+ models with limited RAM.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `utils/memory_efficient_loader.py` | **NEW** - `UnifiedSafetensorsLoader` with dual-mode: preload (fast) or streaming (low RAM) |
+| `cli/main.py` | Added `--low-memory` flag, passed to FP8 and NVFP4 converters |
+| `formats/fp8_conversion.py` | Added `low_memory` param, uses `UnifiedSafetensorsLoader` for all tensor access |
+| `formats/nvfp4_conversion.py` | Same - unified loader integration |
+
+### Usage
+
+```bash
+# Standard mode (fast, uses 2x model size in RAM)
+convert_to_quant -i model.safetensors --int8 --comfy_quant
+
+# Low-memory mode (streaming, ~1x model size in RAM)
+convert_to_quant -i model.safetensors --int8 --comfy_quant --low-memory
+```
+
+### Technical Details
+
+- `UnifiedSafetensorsLoader` provides consistent interface for both modes
+- In standard mode: preloads all tensors (existing behavior)
+- In low-memory mode: loads tensors on-demand via `get_tensor()`, cleans up with `mark_processed()`
+- Format migration scripts (int8_conversion, format_migration) not updated - they're 1:1 transformations without 2x memory issue
+
+### Verification
+
+- Syntax check: ✅ All modules pass
+- CLI --help: ✅ `--low-memory` flag visible
+
+---
+
+## 2026-01-06: DRY Refactor - Centralized Utilities
+
+### Session Summary
+Refactored duplicated code patterns identified during code structure audit. Centralized LR tier configuration, calibration data generation, and bias correction utilities.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `ADAPTIVE_LR_TIERS_IMPROVE`, `ADAPTIVE_LR_TIERS_DECAY` constants |
+| `utils/tensor_utils.py` | Added `generate_calibration_data()`, `adaptive_lr_update()`, `compute_bias_correction()` |
+| `utils/__init__.py` | Updated exports for new utilities |
+| `converters/learned_rounding.py` | Replaced ~35 lines of inline tier logic with call to `adaptive_lr_update()` |
+| `converters/learned_nvfp4.py` | Replaced `_adaptive_lr_update()` method with thin wrapper to shared utility |
+| `cli/main.py` | Simplified `nvfp4_excluded` list to cleaner `nvfp4_included` set pattern |
+
+### New Utilities
+
+```python
+# tensor_utils.py - shared utilities
+generate_calibration_data(tensors, calib_samples, seed, device)  # Calibration data generator
+adaptive_lr_update(curr_lr, improved, counter, worse_count, small_mult)  # Tier-based LR update
+compute_bias_correction(orig_weight, dequant_weight, bias, calib_data, device)  # Bias correction
+```
+
+### Verification
+
+- Syntax check: ✅ All 6 modified files pass
+- CLI --help: ✅ All options display correctly
+- CLI --help-filters: ✅ Model filters work as expected
+
+---
+
+## 2026-01-06: Model Filter Registry Refactor
+
+### Session Summary
+Refactored scattered model filter flags into centralized `MODEL_FILTERS` registry. Adding a new filter now requires editing only `constants.py` instead of 6 files.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `MODEL_FILTERS` dict registry + `build_exclusion_patterns()` helper |
+| `cli/argument_parser.py` | `FILTER_ARGS` now generated from registry keys, help sections use registry categories |
+| `cli/main.py` | Filter argument definitions now generated via loop from registry |
+| `formats/fp8_conversion.py` | 50-line conditional block replaced with 26-line registry-driven loop |
+| `formats/nvfp4_conversion.py` | Same pattern - exclusion list built from registry |
+| `convert_to_quant.py` | Added `MODEL_FILTERS`, `build_exclusion_patterns` to exports |
+
+### Adding New Filter
+
+```python
+# In constants.py - single file change
+MODEL_FILTERS["mymodel"] = {
+    "help": "My model exclusions",
+    "category": "diffusion",
+    "highprec": ["layer1", "layer2"],
+}
+```
+
+### Verification
+
+- Syntax check: ✅ All 6 files pass
+- CLI --help-filters: ✅ Filters display correctly from registry
+
+---
+
+## 2026-01-06: NVFP4 Console Output & Bias Correction
+
+### Session Summary
+Rewrote `nvfp4_conversion.py` to add legacy-style console outputs and bias correction. Now matches FP8 conversion flow with calibration scanning, layer progress, bias correction, and final shapes.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `formats/nvfp4_conversion.py` | Complete rewrite: added `calib_samples`/`seed` params, calibration data generation, `(i+1)/(total)` layer progress, bias correction using dequantized weights, final shape outputs |
+
+### New Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `calib_samples` | 3072 | Number of random samples for bias correction |
+| `seed` | 42 | Seed for reproducibility |
+
+### Verification
+
+- Syntax check: ✅ Passed
+
+---
+
+## 2026-01-06: Fix Console Output Formatting in Converters
+
+### Session Summary
+Fixed SVD print statement formatting in `learned_rounding.py` to match the legacy reference script. Added `    - ` indentation prefix to 6 print statements.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/learned_rounding.py` | Added `    - ` prefix to SVD print statements at lines 1236, 1240, 1336, 1340, 1448, 1453 |
+
+### Before/After
+
+```diff
+-print("Using torch.linalg.svd with full_matrices=True")
++print("    - Using torch.linalg.svd with full_matrices=True")
+
+-print("Trying svd_lowrank")
++print("    - Trying svd_lowrank")
+```
+
+### Verification
+
+- Syntax check: ✅ Passed
+
+---
+
+## 2026-01-06: NVFP4 Format Fixes (Match NVIDIA Official)
+
+### Session Summary
+Fixed NVFP4 output format to match NVIDIA FLUX.2-dev-NVFP4 structure. Added `--input-scales` CLI option for calibrated activation scales.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `formats/nvfp4_conversion.py` | Block scale as `float8_e4m3fn` (not uint8), per-tensor scale as scalar `[]` (not `[1]`), added `input_scales` param |
+| `cli/main.py` | Added `load_input_scales()` helper, `--input-scales` CLI arg (loads JSON or safetensors) |
+| `repair_nvfp4_metadata.py` | Squeeze `weight_scale_2` from `[1]` to `[]`, added dtype warning |
+
+### Usage
+
+```bash
+# Quantize with calibrated input scales
+convert_to_quant -i model.safetensors --nvfp4 --input-scales scales.json
+
+# Or from another NVFP4 model
+convert_to_quant -i model.safetensors --nvfp4 --input-scales reference_nvfp4.safetensors
+```
+
+### Format Comparison
+
+| Tensor | Before | After (NVIDIA-compatible) |
+|--------|--------|--------------------------|
+| `.weight_scale` | uint8 | float8_e4m3fn |
+| `.weight_scale_2` | `[1]` | `[]` (scalar) |
+| `.input_scale` | missing | `[]` (scalar, optional) |
+
+---
+
+## 2026-01-05: NVFP4 (E2M1) Quantization Support
+
+### Session Summary
+Added NVIDIA FP4 E2M1 block quantization with two converters: raw (`NVFP4Converter`) and optimized (`LearnedNVFP4Converter` with SVD). Full CLI integration with `--nvfp4` flag.
+
+---
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `utils/float_utils.py` | FP4 encode/decode, uint4 packing, cuBLAS tiled layout |
+| `converters/nvfp4_converter.py` | Raw NVFP4Converter (simple quantization) |
+| `converters/learned_nvfp4.py` | LearnedNVFP4Converter (SVD optimization, LR schedules) |
+| `formats/nvfp4_conversion.py` | File conversion using converter_kwargs pattern |
+| `INFERENCE.md` | Runtime/comfy-kitchen reference |
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `constants.py` | Added `FP4_E2M1_MAX`, `FP4_BLOCK_SIZE`, `nvfp4` format |
+| `cli/argument_parser.py` | Added `nvfp4` to EXPERIMENTAL_ARGS |
+| `cli/main.py` | Added `--nvfp4` dispatcher with `nvfp4_kwargs` pattern |
+
+### Usage
+
+```bash
+convert_to_quant -i model.safetensors --nvfp4 --comfy_quant  # Optimized
+convert_to_quant -i model.safetensors --nvfp4 --simple       # Raw
+```
+
+### Git
+
+```bash
+git checkout feature/nvfp4-support
+```
+
+---
+
+## 2026-01-04: Modular Refactoring of convert_to_quant.py
+
+### Session Summary
+Refactored 5138-line `convert_to_quant.py` into modular subdirectory structure to enable focused editing and prevent context window exhaustion.
+
+---
+
+### New Module Structure
+
+```
+convert_to_quant/
+├── __init__.py                  # Package entry (dynamic version from importlib.metadata)
+├── convert_to_quant.py          # Slim entry point (~125 lines, re-exports for backward compat)
+├── constants.py                 # All *_AVOID_KEY_NAMES, dtype constants (~150 lines)
+├── converters/
+│   └── learned_rounding.py      # LearnedRoundingConverter class (~1473 lines)
+├── cli/
+│   ├── argument_parser.py       # MultiHelpArgumentParser (~280 lines)
+│   └── main.py                  # main() function (~870 lines)
+├── formats/
+│   ├── fp8_conversion.py        # convert_to_fp8_scaled (~640 lines)
+│   ├── format_migration.py      # convert_fp8_scaled_to_comfy_quant (~346 lines)
+│   ├── int8_conversion.py       # convert_int8_to_comfy_quant (~304 lines)
+│   └── legacy_utils.py          # add_legacy_input_scale, cleanup_fp8_scaled (~250 lines)
+├── config/
+│   └── layer_config.py          # load_layer_config, get_layer_settings (~220 lines)
+└── utils/
+    ├── tensor_utils.py          # dict_to_tensor, normalize_tensorwise_scales (~70 lines)
+    └── comfy_quant.py           # create_comfy_quant_tensor, edit_comfy_quant (~350 lines)
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant.py` | Reduced from 5138 to ~125 lines (re-exports only) |
+| `__init__.py` | Uses `importlib.metadata.version()` with fallback |
+
+### Verification
+
+- All modules import successfully
+- CLI `--help` output works correctly
+- pyproject.toml entry point unchanged
+
+### Git
+
+```bash
+git checkout feature/modular-refactor
+git push origin feature/modular-refactor  # PR available
+```
+
+---
+
 ## 2026-01-04: Pinned Memory GPU Transfers
+
 
 ### Session Summary
 Added pinned memory for faster CPU→GPU tensor transfers during quantization.
