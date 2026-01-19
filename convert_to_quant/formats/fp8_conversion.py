@@ -31,6 +31,7 @@ from ..constants import (
 from ..converters.learned_rounding import LearnedRoundingConverter
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
+from ..converters.int8_converter import INT8Block32Converter
 from ..config.layer_config import get_layer_settings
 from ..utils.tensor_utils import normalize_tensorwise_scales
 from ..utils.comfy_quant import create_comfy_quant_tensor, should_skip_layer_for_performance
@@ -161,6 +162,10 @@ def convert_to_fp8_scaled(
             nvfp4_kwargs = {k: v for k, v in kwargs.items()
                            if k not in ("target_format", "scaling_mode", "block_size")}
             return LearnedNVFP4Converter(**nvfp4_kwargs)
+        elif fmt == "int8" and kwargs.get("block_size") == 32 and kwargs.get("no_learned_rounding"):
+            # INT8 block32 with simple mode: use CUDA backend with swizzled scales
+            info("Using INT8 block-32 CUDA backend (--int8 --block_size 32 --simple)")
+            return INT8Block32Converter(pad_to_32x=True)
         else:
             return LearnedRoundingConverter(**kwargs)
 
@@ -440,6 +445,7 @@ def convert_to_fp8_scaled(
         is_int8 = layer_format == "int8"
         is_mxfp8 = layer_format == "mxfp8"
         is_nvfp4 = layer_format == "nvfp4"
+        is_int8_block32 = isinstance(converter, INT8Block32Converter)
 
         # Call converter and unpack based on format type
         # Different converters have different return signatures
@@ -451,6 +457,10 @@ def convert_to_fp8_scaled(
             # NVFP4: (packed_qdata, block_scales_fp8, per_tensor_scale, dequant_w)
             q_tensor, block_scales, per_tensor_scale, dequant_w = converter.convert(original_tensor)
             dequant_s = block_scales  # For bias correction compatibility
+        elif is_int8_block32:
+            # INT8 block32: (q_tensor, block_scales_swizzled, dequant_w)
+            q_tensor, block_scales, dequant_w = converter.convert(original_tensor)
+            dequant_s = block_scales
         else:
             # FP8/INT8: (q_tensor, scale, dequant_w)
             q_tensor, dequant_s, dequant_w = converter.convert(original_tensor)
@@ -497,6 +507,22 @@ def convert_to_fp8_scaled(
                     full_precision_matrix_mult=layer_full_precision_mm
                     if layer_full_precision_mm
                     else None,
+                )
+            elif is_int8_block32:
+                # INT8 block32 format - swizzled FP32 scales
+                new_tensors[f"{base_name}.weight_scale"] = block_scales.to(device="cpu")
+                comfy_quant_format = "int8_block32"
+                block_size_for_meta = 32  # Fixed block size for CUDA backend
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    "int8_block32",
+                    block_size=32,
+                    full_precision_matrix_mult=layer_full_precision_mm
+                    if layer_full_precision_mm
+                    else None,
+                )
+                # Always add input_scale for INT8 (matches reference behavior)
+                new_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                    1.0, dtype=torch.float32, device="cpu"
                 )
             elif is_int8:
                 new_tensors[f"{base_name}.weight_scale"] = (

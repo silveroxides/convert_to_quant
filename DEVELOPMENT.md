@@ -1,9 +1,40 @@
 # Development Log
 
-## 2026-01-18: Metadata Preservation in Conversion Functions
+## 2026-01-19: INT8 Block-32 CUDA Backend Support
 
 ### Session Summary
-Added metadata preservation to all conversion functions. Previously, input file metadata was discarded during quantization, potentially breaking model usability if essential inference metadata was lost.
+Added INT8 block-32 quantization using comfy-kitchen CUDA backend. This produces swizzled FP32 scales (SWIZZLE_32_4_4) for `scaled_mm_v2` matmul integration. Triggered via `--int8 --block_size 32 --simple`.
+
+---
+
+### Changes
+
+| File | Changes |
+|------|---------|
+| `converters/int8_converter.py` | **NEW** - `INT8Block32Converter` class with `quantize()`, `dequantize()`, and `convert()` methods |
+| `converters/__init__.py` | Added exports for `INT8Block32Converter`, `quantize_int8_block32`, `dequantize_int8_block32` |
+| `constants.py` | Added `INT8_BLOCK32_SIZE`, `INT8_BLOCK32_SCALE_DTYPE`, `int8_block32` format |
+| `formats/fp8_conversion.py` | Added import, dispatch logic in `create_converter_for_format()`, format metadata handling |
+
+### Usage
+
+```bash
+# INT8 block-32 with CUDA backend (simple mode, swizzled scales)
+convert_to_quant -i model.safetensors --int8 --block_size 32 --simple --comfy_quant
+
+# INT8 block-128 with Triton backend (learned rounding, standard scales)
+convert_to_quant -i model.safetensors --int8 --block_size 128 --comfy_quant
+```
+
+### Technical Details
+
+- Block 32 uses `ck.quantize_int8_block32()` from comfy-kitchen CUDA backend
+- Produces FP32 scales in cuBLAS SWIZZLE_32_4_4 format for `scaled_mm_v2`
+- Block 128 continues using Triton kernels via `LearnedRoundingConverter`
+
+---
+
+## 2026-01-18: Metadata Preservation in Conversion Functions
 
 ---
 

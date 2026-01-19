@@ -271,6 +271,11 @@ MXFP8_BLOCK_SIZE = 32  # MXFP8 uses 32-element blocks
 MXFP8_DTYPE = torch.float8_e4m3fn  # Data stored as FP8 E4M3
 E8M0_BIAS = 127  # Exponent bias for E8M0 format (value = 2^(exp - 127))
 
+# INT8 Block-32 constants (for CUDA backend with swizzled scales)
+# Uses FP32 block scales in cuBLAS SWIZZLE_32_4_4 format
+INT8_BLOCK32_SIZE = 32  # Block size for CUDA backend
+INT8_BLOCK32_SCALE_DTYPE = torch.float32  # FP32 scales in swizzled layout
+
 # --- Adaptive LR Tier Configuration ---
 # Used by 'original' optimizer in LearnedRoundingConverter and LearnedNVFP4Converter.
 # Format: List of (counter_threshold, improvement_mult, decay_mult, min_lr)
@@ -311,6 +316,7 @@ VALID_QUANT_FORMATS = {
     "float8_e4m3fn_blockwise",
     "float8_e4m3fn_block3d",
     "int8_blockwise",
+    "int8_block32",  # INT8 block-32 with swizzled FP32 scales (CUDA backend)
     "nvfp4",  # NVIDIA FP4 E2M1 block quantization
     "mxfp8",  # Microscaling FP8 block quantization
 }
