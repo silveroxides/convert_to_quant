@@ -990,13 +990,13 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     fallback_needs_block_size = args.fallback == "int8"
 
     # Validate block_size for primary format
-    if primary_needs_block_size and args.block_size is None:
-        print("Error: --block_size is required when using INT8 quantization.")
+    if primary_needs_block_size and args.block_size is None and args.scaling_mode != "tensor":
+        print("Error: --block_size is required when using INT8 quantization (unless --scaling_mode tensor).")
         print("       Example: --block_size 128")
         sys.exit(1)
 
     # Validate custom-block-size for custom format
-    if args.custom_type and custom_needs_block_size and args.custom_block_size is None:
+    if args.custom_type and custom_needs_block_size and args.custom_block_size is None and args.custom_scaling_mode != "tensor":
         print(
             f"Error: --custom-block-size is required when using --custom-type {args.custom_type}."
         )
@@ -1004,6 +1004,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         sys.exit(1)
 
     # Validate fallback-block-size for fallback format
+    # Note: Fallback scaling mode logic might need similar update if supported
     if args.fallback and fallback_needs_block_size and args.fallback_block_size is None:
         print(
             f"Error: --fallback-block-size is required when using --fallback {args.fallback}."
@@ -1043,7 +1044,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         prefix = "simple_" if args.simple else "learned_"
         if args.int8:
             format_str = "int8"
-            scaling_str = f"_bs{args.block_size}"
+            scaling_str = f"_bs{args.block_size}" if args.block_size else "_tensor"
         else:
             format_str = "fp8"
             scaling_str = f"_{args.scaling_mode}"

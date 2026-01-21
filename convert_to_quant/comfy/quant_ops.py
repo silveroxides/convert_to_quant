@@ -1147,6 +1147,8 @@ LAYOUTS = {
     "RowWiseFP8Layout": RowWiseFP8Layout,
     "BlockWiseFP8Layout": BlockWiseFP8Layout,
     "BlockWiseINT8Layout": BlockWiseINT8Layout,
+    "TensorWiseINT8Layout": TensorWiseINT8Layout,
+    "int8_tensorwise": TensorWiseINT8Layout,
 }
 
 

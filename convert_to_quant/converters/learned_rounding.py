@@ -19,7 +19,7 @@ from ..constants import (
     FP8_MAX,
     INT8_SYMMETRIC_MAX,
 )
-from ..comfy.quant_ops import BlockWiseINT8Layout
+from ..comfy.quant_ops import BlockWiseINT8Layout, TensorWiseINT8Layout
 from ..pinned_transfer import transfer_to_gpu_pinned
 from ..utils.logging import verbose, debug, minimal
 from .base_converter import BaseLearnedConverter
@@ -53,8 +53,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.block_size = block_size
         self.target_format = target_format
 
-        # INT8 always uses block-wise scaling
-        if target_format == "int8":
+        # INT8 always uses block-wise scaling unless tensor mode is requested
+        if target_format == "int8" and scaling_mode != "tensor":
             scaling_mode = "block"
         # Normalize block3d alias to block
         if scaling_mode == "block3d":
@@ -576,6 +576,26 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         - Scale is per-block (2D grid): shape (M//block_size, N//block_size)
         - Requires dimensions divisible by block_size
         """
+        # Handle Tensor-wise INT8 (simple quantization)
+        if self.scaling_mode == "tensor":
+            qdata, layout_params = TensorWiseINT8Layout.quantize(W_float32)
+            scale = layout_params["scale"]
+            
+            # Dequantize for check/bias correction
+            dequantized_weight = TensorWiseINT8Layout.dequantize(qdata, scale, COMPUTE_DTYPE)
+            
+            # Clean up
+            del W_float32
+            gc.collect()
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+
+            return (
+                qdata,
+                scale.to(device=self.device, dtype=SCALE_DTYPE),
+                dequantized_weight,
+            )
+
         M, N = W_float32.shape
 
         # Validate dimensions are divisible by block_size

@@ -142,6 +142,10 @@ def convert_to_fp8_scaled(
         """
         kwargs = converter_kwargs.copy()
         kwargs["target_format"] = fmt
+        # Explicitly pass scaling_mode and block_size via get() to avoid NameError
+        # and ensure they are present even if somehow missing from copy
+        kwargs["scaling_mode"] = converter_kwargs.get("scaling_mode", "tensor")
+        kwargs["block_size"] = converter_kwargs.get("block_size")
 
         # Custom/fallback should NOT inherit global no_learned_rounding
         # They use their own --custom-simple / --fallback-simple flags
@@ -502,12 +506,20 @@ def convert_to_fp8_scaled(
                 new_tensors[f"{base_name}.weight_scale"] = (
                     dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                 )
-                comfy_quant_format = "int8_blockwise"
-                block_size_for_meta = layer_block_size
-                # Use int8_blockwise format
+                
+                if converter.scaling_mode == "tensor":
+                    comfy_quant_format = "int8_tensorwise"
+                    block_size_for_meta = None
+                    layer_block_size_arg = None
+                else:
+                    comfy_quant_format = "int8_blockwise"
+                    block_size_for_meta = layer_block_size
+                    layer_block_size_arg = layer_block_size
+
+                # Use determined format
                 comfy_quant_tensor = create_comfy_quant_tensor(
-                    "int8_blockwise",
-                    block_size=layer_block_size,
+                    comfy_quant_format,
+                    block_size=layer_block_size_arg,
                     full_precision_matrix_mult=layer_full_precision_mm
                     if layer_full_precision_mm
                     else None,
