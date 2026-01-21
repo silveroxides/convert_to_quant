@@ -272,7 +272,8 @@ class QuantizedTensor(torch.Tensor):
 
 # ==============================================================================
 # Generic Utilities (Layout-Agnostic Operations)
-# ==============================================================================
+# ==============================================================================
+
 
 def _create_transformed_qtensor(qt, transform_fn):
     new_data = transform_fn(qt._qdata)
@@ -710,6 +711,128 @@ class BlockWiseFP8Layout(QuantizedLayout):
         )
 
 
+
+# ==============================================================================
+# Tensor-Wise INT8 Layout (Global scale)
+# ==============================================================================
+class TensorWiseINT8Layout(QuantizedLayout):
+    """
+    Tensor-wise INT8 quantization layout.
+
+    Storage format:
+    - qdata: INT8 tensor (torch.int8)
+    - scale: Global scaling factor (float32) - stored as dequant scale
+    - orig_dtype: Original dtype
+    """
+
+    @classmethod
+    def quantize(cls, tensor, scale=None, **kwargs):
+        """
+        Quantize a tensor with global scaling (per-tensor).
+        """
+        orig_dtype = tensor.dtype
+        
+        # Calculate scale if not provided
+        if scale is None:
+            # Per-tensor abs max
+            amax = tensor.abs().max()
+            # Scale s = amax / 127.0
+            scale = amax / 127.0
+            scale = torch.maximum(scale, torch.tensor(1e-8, device=scale.device, dtype=scale.dtype))
+        
+        # Quantize: x_int = clamp(round(x / scale))
+        tensor_scaled = tensor / scale
+        tensor_scaled = torch.clamp(tensor_scaled, -127.0, 127.0)
+        qdata = tensor_scaled.round().to(torch.int8)
+
+        # Ensure parameters are on the same device as the tensor
+        scale = scale.to(torch.float32)
+        
+        layout_params = {
+            "scale": scale,
+            "orig_dtype": orig_dtype,
+        }
+        return qdata, layout_params
+
+    @staticmethod
+    def dequantize(qdata, scale, orig_dtype, **kwargs):
+        """Dequantize INT8 tensor with global scaling."""
+        return qdata.to(orig_dtype) * scale.to(orig_dtype)
+
+    @classmethod
+    def get_plain_tensors(cls, qtensor):
+        return qtensor._qdata, qtensor._layout_params["scale"]
+
+
+@register_layout_op(torch.ops.aten.linear.default, TensorWiseINT8Layout)
+def int8_linear_tensorwise(func, args, kwargs):
+    """
+    Handle linear for TensorWiseINT8Layout.
+    Supports:
+    - Input: TensorWiseINT8Layout (activations)
+    - Weight: TensorWiseINT8Layout (weights)
+    - Bias: Optional
+    
+    If inputs are compatible and we have a backend key (cublas), use it.
+    """
+    input_q = args[0]
+    weight_q = args[1]
+    bias = args[2] if len(args) > 2 else kwargs.get("bias", None)
+
+    # Check mixed inputs
+    if not isinstance(input_q, QuantizedTensor) or not isinstance(weight_q, QuantizedTensor):
+        # Fallback if mixed (e.g. float input, int8 weight)
+        return QuantizedTensor._dequant_and_fallback(func, args, kwargs)
+
+    if input_q.layout_type != TensorWiseINT8Layout or weight_q.layout_type != TensorWiseINT8Layout:
+        # Check compatibility: we could potentially support BlockWise + TensorWise?
+        # For now strict matching.
+        return QuantizedTensor._dequant_and_fallback(func, args, kwargs)
+
+    # Both are TensorWise INT8
+    # Check for backend support
+    from .int8_kernels import HAS_CUBLAS_INT8
+    # Need to check if cublas_gemm_int8 was imported successfully in the module
+    # or import it here if exposed.
+    # Note: int8_kernels (the facade) doesn't expose it unless we modify it to export the symbol itself
+    # or we import from comfy_kitchen directly if available.
+    
+    # We'll try dynamic import for safety
+    try:
+        from .int8_kernels import cublas_gemm_int8
+        backend_available = True
+    except ImportError:
+        backend_available = False
+
+    if backend_available and HAS_CUBLAS_INT8 and input_q.is_cuda and weight_q.is_cuda:
+        # Use cuBLAS INT8 GEMM: C_int32 = A_int8 @ B_int8
+        # Then scale: C_out = C_int32 * scale_a * scale_b
+        
+        a = input_q._qdata
+        # Weight tensor weight_q._qdata is (Out, In). 
+        # For A(M, K) @ W.T(K, N), we need B to be (K, N).
+        # W is (N, K). W.T is (K, N).
+        # B needs to be contiguous for cublas call.
+        b = weight_q._qdata.t().contiguous()
+        
+        c_int32 = cublas_gemm_int8(a, b)
+        
+        # Apply scales
+        scale_a = input_q._layout_params["scale"]
+        scale_b = weight_q._layout_params["scale"]
+        
+        total_scale = scale_a * scale_b
+        result = c_int32.to(input_q._layout_params["orig_dtype"]) * total_scale
+        
+        if bias is not None:
+            result = result + bias
+            
+        return result
+
+    # Fallback
+    return QuantizedTensor._dequant_and_fallback(func, args, kwargs)
+
+
 # ==============================================================================
 # Block-Wise INT8 Layout + Operation Handlers
 # ==============================================================================
@@ -1016,7 +1139,8 @@ QUANT_ALGOS = {
         "group_size": 128,  # Fallback if per-tensor metadata missing
         "asymmetric_layout": True,
     },
-}
+}
+
 
 LAYOUTS = {
     "TensorCoreFP8Layout": TensorCoreFP8Layout,
@@ -1321,7 +1445,8 @@ def blockwise_fp8_func(func, args, kwargs):
 
 # ==============================================================================
 # Block-Wise INT8 Operation Handlers
-# ==============================================================================
+# ==============================================================================
+
 
 def _int8_gemm_pytorch_fallback(
     a_int8, a_scale, b_int8, b_scale, block_size, bias=None
