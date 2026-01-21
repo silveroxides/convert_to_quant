@@ -581,6 +581,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             qdata, layout_params = TensorWiseINT8Layout.quantize(W_float32)
             scale = layout_params["scale"]
             
+            # Optimization loop for INT8 tensor-wise
+            if not self.no_learned_rounding and self.num_iter > 0:
+                verbose("    - Applying learned rounding optimization for INT8 (tensor)...")
+                qdata, scale = self._optimize_int8_learned_rounding(W_float32, qdata, scale)
+
             # Dequantize for check/bias correction
             dequantized_weight = TensorWiseINT8Layout.dequantize(qdata, scale, COMPUTE_DTYPE)
             
@@ -726,9 +731,13 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             optimizer.zero_grad()
 
             q_refined = qdata_float + delta
-            current_dq = self._int8_dequantize_blockwise(
-                q_refined, scale, M, N, block_size
-            )
+            
+            if self.scaling_mode == "tensor":
+                current_dq = q_refined * scale
+            else:
+                current_dq = self._int8_dequantize_blockwise(
+                    q_refined, scale, M, N, block_size
+                )
 
             error = current_dq - W_float32
             projected_error = U_k.T @ error @ Vh_k.T
@@ -833,9 +842,13 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             optimizer.zero_grad()
 
             q_refined = qdata_float + delta
-            current_dq = self._int8_dequantize_blockwise(
-                q_refined, scale, M, N, block_size
-            )
+            
+            if self.scaling_mode == "tensor":
+                current_dq = q_refined * scale
+            else:
+                current_dq = self._int8_dequantize_blockwise(
+                    q_refined, scale, M, N, block_size
+                )
 
             error = current_dq - W_float32
             projected_error = U_k.T @ error @ Vh_k.T
@@ -965,9 +978,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         )
         for i in pbar:
             with torch.no_grad():
-                current_dq = self._int8_dequantize_blockwise(
-                    q_refined, scale, M, N, block_size
-                )
+                if self.scaling_mode == "tensor":
+                    current_dq = q_refined * scale
+                else:
+                    current_dq = self._int8_dequantize_blockwise(
+                        q_refined, scale, M, N, block_size
+                    )
                 error = current_dq - W_float32
                 projected_error = U_k.T @ error @ Vh_k.T
                 loss = torch.linalg.norm(projected_error)
@@ -1079,15 +1095,19 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 # So we need to MULTIPLY the weight-space gradient by scale to get Q-space gradient
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
 
-                # Transform gradient through block-wise structure
-                # Reshape grad to blocks, multiply by scale (chain rule), then reshape back
-                grad_blocked = grad_direction.reshape(
-                    M // block_size, block_size, N // block_size, block_size
-                )
-                grad_blocked = grad_blocked.permute(0, 2, 1, 3)
-                scale_broadcast = scale.unsqueeze(-1).unsqueeze(-1)
-                grad_scaled = grad_blocked * scale_broadcast
-                grad_scaled = grad_scaled.permute(0, 2, 1, 3).reshape(M, N)
+                # Transform gradient through scaling structure
+                if self.scaling_mode == "tensor":
+                    # Tensor-wise: simple multiplication
+                    grad_scaled = grad_direction * scale
+                else:
+                    # Block-wise: Reshape grad to blocks, multiply by scale (chain rule), then reshape back
+                    grad_blocked = grad_direction.reshape(
+                        M // block_size, block_size, N // block_size, block_size
+                    )
+                    grad_blocked = grad_blocked.permute(0, 2, 1, 3)
+                    scale_broadcast = scale.unsqueeze(-1).unsqueeze(-1)
+                    grad_scaled = grad_blocked * scale_broadcast
+                    grad_scaled = grad_scaled.permute(0, 2, 1, 3).reshape(M, N)
 
                 q_refined -= curr_lr * grad_scaled
 
