@@ -4,6 +4,8 @@
 ### Session Summary
 Added Hybrid MXFP8 conversion support (`--make-hybrid-mxfp8`), which adds a tensorwise scale fallback to standard MXFP8 models. This enables compatibility with Ada Lovelace (SM 8.9) GPUs which lack native MXFP8 hardware support but can use the tensorwise scale for standard FP8 operations. Also clarified `--edit-quant` functionality for updating existing keys.
 
+Additionally, updated `ComfyUI-QuantOps` to support loading and inference of Hybrid MXFP8 models using `comfy-kitchen` integration.
+
 ---
 
 ### New CLI Arguments
@@ -26,6 +28,10 @@ Added Hybrid MXFP8 conversion support (`--make-hybrid-mxfp8`), which adds a tens
    - Verified `--edit-quant --add-keys` correctly updates existing keys in both layer config and header metadata.
    - Updated help text to clarify "add or update" behavior.
 
+3. **ComfyUI-QuantOps Integration**:
+   - Updated `fp8_ops.py` to handle `HybridMXFP8Layout`, reading `.weight_scalar` from state dict.
+   - Updated `loader_nodes.py` to add `hybrid_mxfp8` to format options and enable `HybridFP8Ops`.
+
 ### Files Modified
 
 | File | Changes |
@@ -34,6 +40,8 @@ Added Hybrid MXFP8 conversion support (`--make-hybrid-mxfp8`), which adds a tens
 | `cli/main.py` | Added CLI args and dispatch logic for hybrid conversion |
 | `cli/argument_parser.py` | Added new args to help sections |
 | `constants.py` | Added `hybrid_mxfp8` to `VALID_QUANT_FORMATS` |
+| `ComfyUI-QuantOps/fp8_ops.py` | Added Hybrid MXFP8 layout handling and scalar loading |
+| `ComfyUI-QuantOps/nodes/loader_nodes.py` | Added format option to loaders |
 
 ### Usage
 

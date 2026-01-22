@@ -351,11 +351,30 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         cooldown_counter = 0
         curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
 
-        # Shape-aware multiplier
-        small_mult = 0.95 if M == N else 1.0
+        if M == N:
+            small_mult = 0.95
+        else:
+            small_mult = 1.0
+        
         schedule_name = self.lr_schedule
 
-        effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
+        # Shape-aware plateau parameters (matching learned_rounding.py)
+        aspect_ratio = max(M, N) / min(M, N)
+
+        if schedule_name == "plateau" and self.lr_shape_influence > 0:
+            # Scale factor based on aspect ratio, modulated by influence
+            ar_factor = math.sqrt(aspect_ratio)
+            blend = self.lr_shape_influence
+
+            effective_patience = self.lr_patience
+            raw_factor = self.lr_factor
+            aggressive_factor = raw_factor**ar_factor
+            effective_factor = raw_factor + (aggressive_factor - raw_factor) * blend
+            effective_cooldown = self.lr_cooldown
+        else:
+            effective_patience = self.lr_patience
+            effective_factor = self.lr_factor
+            effective_cooldown = self.lr_cooldown
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
@@ -375,7 +394,16 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 loss = torch.linalg.norm(projected_error)
 
             current_loss = loss.item()
-            improved = self._check_improvement(current_loss, best_loss)
+            
+            # Check improvement (matching learned_rounding.py logic)
+            if self.lr_threshold > 0:
+                if self.lr_threshold_mode == "rel":
+                     improved = current_loss < best_loss * (1.0 - self.lr_threshold)
+                else:
+                     improved = (best_loss - current_loss) > self.lr_threshold
+            else:
+                improved = current_loss < best_loss
+
             prev_worse_counter = worse_loss_counter
 
             if improved:
@@ -396,11 +424,18 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= effective_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
+                        old_lr = curr_lr
                         curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         cooldown_counter = effective_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss:.3e})")
             else:  # 'adaptive'
                 counter_for_tier = (
                     prev_worse_counter
@@ -411,22 +446,63 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
-            pbar.set_postfix({
-                "loss": f"{current_loss:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-                "worse": f"{worse_loss_counter}",
-            })
+            # Postfix
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse": f"{worse_loss_counter}",
+                })
 
-            # Early stopping
-            if self._check_early_stop(current_loss, curr_lr, worse_loss_counter):
+            # Early stopping conditions (explicit match to learned_rounding.py)
+            if (
+                current_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if (
+                    curr_lr < self.early_stop_lr * 1.75
+                    and worse_loss_counter > self.early_stop_stall * 0.95
+                ):
+                    print("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
+                elif (
+                    current_loss < self.early_stop_loss
+                    and curr_lr < self.early_stop_lr * 1.75
+                ):
+                    print("\n      - Learning Rate has bottomed out and loss is negligible. Stopping.")
+                elif (
+                    worse_loss_counter > self.early_stop_stall * 0.95
+                    and current_loss > self.early_stop_loss * 2
+                ):
+                    print("\n      - Loss is negligible and loss has stalled. Stopping.")
+                elif current_loss < self.early_stop_loss:
+                    print("\n      - Loss is negligible. Stopping.")
+                elif curr_lr < self.early_stop_lr:
+                    print("\n      - Learning Rate has bottomed out. Stopping.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("\n      - Loss has stalled. Stopping.")
                 break
 
-            # Gradient step
+            # Gradient step with proper scaling
             with torch.no_grad():
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-                W_q_refined -= curr_lr * grad_direction
-                W_q_refined = torch.clamp(W_q_refined, -self.fp8_max, self.fp8_max)
+                
+                # Apply 1/scale factor to gradient (scale = block_scales_f32)
+                # Reshape grad to blocks, divide by scale, reshape back
+                grad_blocked = grad_direction.reshape(M, num_blocks, self.block_size)
+                grad_scaled = grad_blocked / current_block_scales_f32.unsqueeze(-1)
+                grad_scaled = grad_scaled.reshape(M, N)
+                
+                W_q_refined -= curr_lr * grad_scaled
+                # Note: No clamp inside the loop, consistent with learned_rounding.py
 
         pbar.close()
 
@@ -517,21 +593,49 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= self.lr_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{self.lr_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
+                        old_lr = curr_lr
                         curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
                         for pg in optimizer.param_groups:
                             pg["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {self.lr_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
 
-            pbar.set_postfix({
-                "loss": f"{current_loss_val:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-            })
+            # Postfix
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{self.lr_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
 
-            if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("\n      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("\n      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -623,21 +727,49 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= self.lr_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{self.lr_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
+                        old_lr = curr_lr
                         curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
                         for pg in optimizer.param_groups:
                             pg["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {self.lr_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
 
-            pbar.set_postfix({
-                "loss": f"{current_loss_val:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-            })
+            # Postfix
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{self.lr_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
 
-            if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("\n      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("\n      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
