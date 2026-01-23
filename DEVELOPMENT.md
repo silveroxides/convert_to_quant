@@ -1,4 +1,28 @@
 
+## 2026-01-23: Restored Original Adaptive Mode in Learned Rounding
+
+### Session Summary
+Restored the original inline tier-based adaptive LR schedule from `learned_rounding_before_refactor.py` to all learned rounding optimizers. The previous refactored abstraction (`adaptive_lr_update()`) was causing issues. Also implemented new dimension-aware `small_mult` formula.
+
+### Changes Made
+
+1. **Restored Original Adaptive Mode Logic**: Replaced calls to centralized `_adaptive_lr_update()` with original inline tier-based logic in all 4 `_optimize_original` methods.
+
+2. **New Dimension-Aware `small_mult` Formula**:
+   - Square: `math.gamma((M ** (1/3) / M) + 1)`
+   - Tall (M > N): `math.pow(100, M / N^2)`
+   - Wide (M < N): `math.pow(10, N / M^2)`
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `converters/learned_rounding.py` | Restored inline adaptive mode in `_optimize_original()` and `_optimize_int8_original()` |
+| `converters/learned_mxfp8.py` | Restored inline adaptive mode in `_optimize_original()` |
+| `converters/learned_nvfp4.py` | Restored inline adaptive mode in `_optimize_original()` |
+
+---
+
 ## 2026-01-22: Hybrid MXFP8 Support & Edit Quant Enhancements
 
 ### Session Summary

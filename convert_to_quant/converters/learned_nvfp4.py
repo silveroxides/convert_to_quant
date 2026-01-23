@@ -388,11 +388,13 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
         scale_lr = curr_lr * 0.1  # Lower LR for scales in joint mode
 
-        # Shape-aware multiplier
+        # Dimension-aware small_mult for adaptive LR schedule
         if M == N:
-            small_mult = 0.95
-        else:
-            small_mult = 1.0
+            small_mult = math.gamma((M ** (1/3) / M) + 1)
+        elif M > N:
+            small_mult = math.pow(100, M / math.pow(N, 2))
+        else:  # M < N
+            small_mult = math.pow(10, N / math.pow(M, 2))
 
         schedule_name = self.lr_schedule
 
@@ -500,7 +502,45 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     if (improved and self.lr_adaptive_mode == "no-reset")
                     else worse_loss_counter
                 )
-                curr_lr = self._adaptive_lr_update(curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult)
+
+                # Original inline tier-based adaptive LR logic
+                if improved and counter_for_tier < 50:
+                    curr_lr = min(curr_lr * (1.25 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 50 and counter_for_tier < 75:
+                    curr_lr = min(curr_lr * (1.375 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 75 and counter_for_tier < 100:
+                    curr_lr = min(curr_lr * (1.5 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 100 and counter_for_tier < 125:
+                    curr_lr = min(curr_lr * (1.75 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 125 and counter_for_tier < 150:
+                    curr_lr = min(curr_lr * (2.0 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 150 and counter_for_tier < 200:
+                    curr_lr = min(curr_lr * (2.25 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 200 and counter_for_tier < 250:
+                    curr_lr = min(curr_lr * (2.5 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 250 and counter_for_tier < 300:
+                    curr_lr = min(curr_lr * (2.75 * small_mult), 100.0)
+                elif improved and counter_for_tier >= 300:
+                    curr_lr = min(curr_lr * (3.0 * small_mult), 100.0)
+                elif not improved and worse_loss_counter < 26:
+                    curr_lr = max(curr_lr * (0.95 * small_mult), 9e-8)
+                elif worse_loss_counter >= 26 and worse_loss_counter < 51:
+                    curr_lr = max(curr_lr * (0.97 * small_mult), 8e-8)
+                elif worse_loss_counter >= 51 and worse_loss_counter < 76:
+                    curr_lr = max(curr_lr * (0.985 * small_mult), 7e-8)
+                elif worse_loss_counter >= 76 and worse_loss_counter < 101:
+                    curr_lr = max(curr_lr * (0.9875 * small_mult), 6e-8)
+                elif worse_loss_counter >= 101 and worse_loss_counter < 151:
+                    curr_lr = max(curr_lr * (0.98875 * small_mult), 5e-8)
+                elif worse_loss_counter >= 151 and worse_loss_counter < 201:
+                    curr_lr = max(curr_lr * (0.99 * small_mult), 4e-8)
+                elif worse_loss_counter >= 201 and worse_loss_counter < 251:
+                    curr_lr = max(curr_lr * (0.99125 * small_mult), 3e-8)
+                elif worse_loss_counter >= 251 and worse_loss_counter < 301:
+                    curr_lr = max(curr_lr * (0.9925 * small_mult), 2e-8)
+                else:  # worse_loss_counter >= 301
+                    curr_lr = max(curr_lr * (0.995 * small_mult), 5e-9)
+
                 scale_lr = curr_lr * 0.1
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
