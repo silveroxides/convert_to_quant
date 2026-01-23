@@ -185,17 +185,17 @@ def convert_to_nvfp4(
         minimal("Scanning model and generating simulated calibration data...")
         for key in weight_keys:
             shape = loader.get_shape(key)
-        if len(shape) == 2:
-            in_features = shape[1]
-            if in_features not in calibration_data_cache:
-                verbose(f"  - Found new input dimension: {in_features}.")
-                calibration_data_cache[in_features] = torch.randn(
-                    calib_samples,
-                    in_features,
-                    dtype=COMPUTE_DTYPE,
-                    generator=seed_generator,
-                    device=seed_device,
-                )
+            if len(shape) == 2:
+                in_features = shape[1]
+                if in_features not in calibration_data_cache:
+                    verbose(f"  - Found new input dimension: {in_features}.")
+                    calibration_data_cache[in_features] = torch.randn(
+                        calib_samples,
+                        in_features,
+                        dtype=COMPUTE_DTYPE,
+                        generator=seed_generator,
+                        device=seed_device,
+                    )
     info("Simulated calibration data generated.\n")
 
     info(f"Found {total_weights} weight tensors to potentially process.")
