@@ -349,7 +349,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
 
         # Dimension-aware small_mult for adaptive LR schedule
         if M == N:
@@ -540,7 +540,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = AdamW([delta], lr=curr_lr)
 
         current_block_scales_f32 = block_scales_f32.clone()
@@ -674,7 +674,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = RAdam([delta], lr=curr_lr)
 
         current_block_scales_f32 = block_scales_f32.clone()

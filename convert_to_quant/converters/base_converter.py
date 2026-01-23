@@ -32,7 +32,8 @@ class BaseLearnedConverter(ABC):
     def __init__(
         self,
         optimizer: str = "original",
-        num_iter: int = 500,
+        num_iter: int = 1000,
+        lr: float = 8.077300000003e-3,
         top_p: float = 0.01,
         min_k: int = 1,
         max_k: int = 16,
@@ -90,6 +91,7 @@ class BaseLearnedConverter(ABC):
         # Optimizer configuration
         self.optimizer_choice = optimizer
         self.num_iter = num_iter
+        self.lr = lr
         self.no_learned_rounding = no_learned_rounding
         self.optimizer_kwargs = kwargs
 

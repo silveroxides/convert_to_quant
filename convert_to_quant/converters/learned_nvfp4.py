@@ -385,7 +385,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         scale_lr = curr_lr * 0.1  # Lower LR for scales in joint mode
 
         # Dimension-aware small_mult for adaptive LR schedule
@@ -570,7 +570,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
 
         # For joint mode: initialize learnable block scales
         current_total_scale = total_scale.clone()
@@ -690,7 +690,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
 
         # For joint mode: initialize learnable block scales
         current_total_scale = total_scale.clone()

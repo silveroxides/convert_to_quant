@@ -91,7 +91,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         """FP8 optimization using AdamW optimizer with manual LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = AdamW([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -201,7 +201,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         """FP8 optimization using RAdam optimizer with manual LR scheduling."""
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = RAdam([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -315,7 +315,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         # Tensor dimensions for adaptive LR schedule
         M, N = W_float32.shape[0], W_float32.shape[1]
 
@@ -679,7 +679,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = AdamW([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -786,7 +786,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = RAdam([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -898,7 +898,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         # Dimension-aware small_mult for adaptive LR schedule
         if M == N:
             small_mult = math.gamma((M ** (1/3) / M) + 1)
