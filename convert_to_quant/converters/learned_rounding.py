@@ -21,7 +21,7 @@ from ..constants import (
 )
 from ..comfy.quant_ops import BlockWiseINT8Layout
 from ..pinned_transfer import transfer_to_gpu_pinned
-from ..utils.logging import verbose, debug, minimal
+from ..utils.logging import info, verbose, debug, minimal
 from .base_converter import BaseLearnedConverter
 
 class LearnedRoundingConverter(BaseLearnedConverter):
@@ -206,11 +206,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if curr_lr <= self.early_stop_lr:
-                    print("\n      - Learning rate bottomed out. Stopping early.")
+                    info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping early.")
+                    info("\n      - Loss has stalled. Stopping early.")
                 elif best_loss <= self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping early.")
+                    info("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -340,11 +340,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if curr_lr <= self.early_stop_lr:
-                    print("\n      - Learning rate bottomed out. Stopping early.")
+                    info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping early.")
+                    info("\n      - Loss has stalled. Stopping early.")
                 elif best_loss <= self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping early.")
+                    info("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -501,23 +501,23 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     curr_lr <= self.early_stop_lr * 1.75
                     and worse_loss_counter > self.early_stop_stall * 0.95
                 ):
-                    print("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
+                    info("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
                 elif (
                     current_loss <= self.early_stop_loss
                     and curr_lr <= self.early_stop_lr * 1.75
                 ):
-                    print("\n      - Learning Rate has bottomed out and loss is negligible. Stopping.")
+                    info("\n      - Learning Rate has bottomed out and loss is negligible. Stopping.")
                 elif (
                     worse_loss_counter > self.early_stop_stall * 0.95
                     and current_loss > self.early_stop_loss * 2
                 ):
-                    print("\n      - Loss is negligible and loss has stalled. Stopping.")
+                    info("\n      - Loss is negligible and loss has stalled. Stopping.")
                 elif current_loss <= self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping.")
+                    info("\n      - Loss is negligible. Stopping.")
                 elif curr_lr <= self.early_stop_lr:
-                    print("\n      - Learning Rate has bottomed out. Stopping.")
+                    info("\n      - Learning Rate has bottomed out. Stopping.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping.")
+                    info("\n      - Loss has stalled. Stopping.")
                 break
 
             with torch.no_grad():
@@ -820,11 +820,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if curr_lr <= self.early_stop_lr:
-                    print("\n      - Learning rate bottomed out. Stopping early.")
+                    info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping early.")
+                    info("\n      - Loss has stalled. Stopping early.")
                 elif best_loss <= self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping early.")
+                    info("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -943,11 +943,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if curr_lr <= self.early_stop_lr:
-                    print("\n      - Learning rate bottomed out. Stopping early.")
+                    info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping early.")
+                    info("\n      - Loss has stalled. Stopping early.")
                 elif best_loss <= self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping early.")
+                    info("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -1103,25 +1103,25 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     curr_lr <= self.early_stop_lr * 1.75
                     and worse_loss_counter > self.early_stop_stall * 0.95
                 ):
-                    print("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
+                    info("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
                 elif (
                     current_loss <= self.early_stop_loss
                     and curr_lr <= self.early_stop_lr * 1.75
                 ):
-                    print(
+                    info(
                         "      - Learning Rate has bottomed out and loss is negligible. Stopping."
                     )
                 elif (
                     worse_loss_counter > self.early_stop_stall * 0.95
                     and current_loss > self.early_stop_loss * 2
                 ):
-                    print("\n      - Loss is negligible and loss has stalled. Stopping.")
+                    info("\n      - Loss is negligible and loss has stalled. Stopping.")
                 elif current_loss <= self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping.")
+                    info("\n      - Loss is negligible. Stopping.")
                 elif curr_lr <= self.early_stop_lr:
-                    print("\n      - Learning Rate has bottomed out. Stopping.")
+                    info("\n      - Learning Rate has bottomed out. Stopping.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping.")
+                    info("\n      - Loss has stalled. Stopping.")
                 break
 
             with torch.no_grad():
@@ -1340,12 +1340,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # Validate dimensions
         if M % bs != 0 or N % bs != 0:
-            print(
+            info(
                 f"    - WARNING: Dimensions ({M}, {N}) not divisible by block_size={bs}. Falling back to row-wise."
             )
             return self._convert_fp8_rowwise(W_float32)
 
-        print(f"    - Using 2D block-wise FP8 scaling with block size {bs}.")
+        info(f"    - Using 2D block-wise FP8 scaling with block size {bs}.")
 
         # Reshape to 2D blocks
         W_blocked = W_float32.reshape(M // bs, bs, N // bs, bs).permute(
@@ -1355,7 +1355,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12)  # (M//bs, N//bs)
 
         if self.no_learned_rounding:
-            print("\n    - Simple quantization (no learned rounding).")
+            info("\n    - Simple quantization (no learned rounding).")
             with torch.no_grad():
                 # Apply scale per-block
                 scale_broadcast = quant_scale.unsqueeze(-1).unsqueeze(
