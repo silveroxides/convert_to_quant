@@ -36,7 +36,7 @@ from ..utils.float_utils import (
     F4_E2M1_MBITS,
 )
 from ..pinned_transfer import transfer_to_gpu_pinned
-from ..utils.logging import verbose, debug, minimal
+from ..utils.logging import info, verbose, debug, minimal
 from .base_converter import BaseLearnedConverter
 
 # Check for comfy-kitchen availability
@@ -851,13 +851,13 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
     ) -> bool:
         """Check early stopping conditions."""
         if self.early_stop_loss > 0 and current_loss <= self.early_stop_loss:
-            print("\n      - Loss is negligible. Stopping early.")
+            info("\n      - Loss is negligible. Stopping early.")
             return True
         if self.early_stop_lr > 0 and curr_lr <= self.early_stop_lr:
-            print("\n      - Learning rate bottomed out. Stopping early.")
+            info("\n      - Learning rate bottomed out. Stopping early.")
             return True
         if self.early_stop_stall > 0 and worse_loss_counter >= self.early_stop_stall:
-            print("\n      - Loss has stalled. Stopping early.")
+            info("\n      - Loss has stalled. Stopping early.")
             return True
         return False
 

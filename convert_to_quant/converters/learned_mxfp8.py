@@ -480,23 +480,23 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                     curr_lr < self.early_stop_lr * 1.75
                     and worse_loss_counter > self.early_stop_stall * 0.95
                 ):
-                    print("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
+                    info("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
                 elif (
                     current_loss < self.early_stop_loss
                     and curr_lr < self.early_stop_lr * 1.75
                 ):
-                    print("\n      - Learning Rate has bottomed out and loss is negligible. Stopping.")
+                    info("\n      - Learning Rate has bottomed out and loss is negligible. Stopping.")
                 elif (
                     worse_loss_counter > self.early_stop_stall * 0.95
                     and current_loss > self.early_stop_loss * 2
                 ):
-                    print("\n      - Loss is negligible and loss has stalled. Stopping.")
+                    info("\n      - Loss is negligible and loss has stalled. Stopping.")
                 elif current_loss < self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping.")
+                    info("\n      - Loss is negligible. Stopping.")
                 elif curr_lr < self.early_stop_lr:
-                    print("\n      - Learning Rate has bottomed out. Stopping.")
+                    info("\n      - Learning Rate has bottomed out. Stopping.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping.")
+                    info("\n      - Loss has stalled. Stopping.")
                 break
 
             # Gradient step with proper scaling
@@ -661,11 +661,11 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if curr_lr < self.early_stop_lr:
-                    print("\n      - Learning rate bottomed out. Stopping early.")
+                    info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping early.")
+                    info("\n      - Loss has stalled. Stopping early.")
                 elif best_loss < self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping early.")
+                    info("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -817,11 +817,11 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if curr_lr < self.early_stop_lr:
-                    print("\n      - Learning rate bottomed out. Stopping early.")
+                    info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
-                    print("\n      - Loss has stalled. Stopping early.")
+                    info("\n      - Loss has stalled. Stopping early.")
                 elif best_loss < self.early_stop_loss:
-                    print("\n      - Loss is negligible. Stopping early.")
+                    info("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -837,12 +837,12 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
     ) -> bool:
         """Check early stopping conditions."""
         if self.early_stop_loss > 0 and current_loss <= self.early_stop_loss:
-            print("\n      - Loss is negligible. Stopping early.")
+            info("\n      - Loss is negligible. Stopping early.")
             return True
         if self.early_stop_lr > 0 and curr_lr <= self.early_stop_lr:
-            print("\n      - Learning rate bottomed out. Stopping early.")
+            info("\n      - Learning rate bottomed out. Stopping early.")
             return True
         if self.early_stop_stall > 0 and worse_loss_counter >= self.early_stop_stall:
-            print("\n      - Stalled. Stopping early.")
+            info("\n      - Stalled. Stopping early.")
             return True
         return False

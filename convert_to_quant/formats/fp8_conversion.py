@@ -239,23 +239,23 @@ def convert_to_fp8_scaled(
             return
 
     calibration_data_cache = {}
-    if not no_learned_rounding:
-        minimal("Scanning model and generating simulated calibration data...")
-        for key in all_keys:
-            if key.endswith(".weight"):
-                shape = loader.get_shape(key)
-                if len(shape) == 2:
-                    in_features = shape[1]
-                    if in_features not in calibration_data_cache:
-                        verbose(f"  - Found new input dimension: {in_features}.")
-                        calibration_data_cache[in_features] = torch.randn(
-                            calib_samples,
-                            in_features,
-                            dtype=COMPUTE_DTYPE,
-                            generator=seed_generator,
-                            device=seed_device,
-                        )
-        info("Simulated calibration data generated.\n")
+    # Generate calibration data for bias correction (always, even in simple mode)
+    minimal("Scanning model and generating simulated calibration data...")
+    for key in all_keys:
+        if key.endswith(".weight"):
+            shape = loader.get_shape(key)
+            if len(shape) == 2:
+                in_features = shape[1]
+                if in_features not in calibration_data_cache:
+                    verbose(f"  - Found new input dimension: {in_features}.")
+                    calibration_data_cache[in_features] = torch.randn(
+                        calib_samples,
+                        in_features,
+                        dtype=COMPUTE_DTYPE,
+                        generator=seed_generator,
+                        device=seed_device,
+                    )
+    info("Simulated calibration data generated.\n")
 
     new_tensors: Dict[str, torch.Tensor] = {}
     weight_keys = sorted(
@@ -392,7 +392,7 @@ def convert_to_fp8_scaled(
         original_tensor = loader.get_tensor(key)
 
         if original_tensor.numel() == 0 or original_tensor.ndim != 2:
-            print(f"  - Skipping empty or non-2D tensor: {key}")
+            info(f"  - Skipping empty or non-2D tensor: {key}")
             new_tensors[key] = original_tensor.to(
                 device="cpu", dtype=original_tensor.dtype
             )
@@ -406,7 +406,7 @@ def convert_to_fp8_scaled(
                 original_tensor, block_size
             )
             if should_skip:
-                print(f"  - Skipping for performance: {skip_perf_reason}")
+                info(f"  - Skipping for performance: {skip_perf_reason}")
                 new_tensors[key] = original_tensor.to(
                     device="cpu", dtype=original_tensor.dtype
                 )
@@ -610,13 +610,9 @@ def convert_to_fp8_scaled(
         )
 
         if bias_key in all_keys:
-            if layer_uses_simple:
-                # Skip bias correction for simple mode (saves memory, avoids OOM on large layers)
-                print(f"  - Keeping original bias (simple mode): {bias_key}")
-                new_tensors[bias_key] = loader.get_tensor(bias_key)
-            else:
-                print(f"  - Adjusting corresponding bias: {bias_key}")
-                with torch.no_grad():
+            # Apply bias correction even in simple mode for better accuracy
+            info(f"  - Adjusting corresponding bias: {bias_key}")
+            with torch.no_grad():
                     original_bias = loader.get_tensor(bias_key)
                     in_features = original_tensor.shape[1]
                     if in_features not in calibration_data_cache:
@@ -674,14 +670,14 @@ def convert_to_fp8_scaled(
         if scale_key in new_tensors:
             new_scale = new_tensors[scale_key]
             if dequant_s.ndim == 1:
-                print(
+                info(
                     f"    - Final Dequant Scale value: {new_scale}\n    - Final Weight shape       : {q_tensor.shape}"
                 )
             else:
-                print(
+                info(
                     f"    - Final Dequant Scale shape: {new_scale.shape}\n    - Final Weight shape       : {q_tensor.shape}"
                 )
-        print("-" * 60)
+        info("-" * 60)
 
     # Copy remaining tensors (bias, norms, etc.)
     for key in all_keys:
@@ -718,7 +714,7 @@ def convert_to_fp8_scaled(
             else torch.empty((2), dtype=TARGET_FP8_DTYPE)
         )
 
-    print(f"Saving {len(new_tensors)} tensors to {output_file}")
+    info(f"Saving {len(new_tensors)} tensors to {output_file}")
     try:
         os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
 
@@ -727,7 +723,7 @@ def convert_to_fp8_scaled(
         if save_quant_metadata and quant_metadata_layers:
             full_metadata = {"format_version": "1.0", "layers": quant_metadata_layers}
             output_metadata["_quantization_metadata"] = json.dumps(full_metadata)
-            print(
+            info(
                 f"  Adding quantization metadata for {len(quant_metadata_layers)} layers"
             )
         save_kwargs = {"metadata": output_metadata} if output_metadata else {}
@@ -735,16 +731,16 @@ def convert_to_fp8_scaled(
         # Normalize any 1-element scale tensors to scalars
         new_tensors, normalized_count = normalize_tensorwise_scales(new_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
-            print(f"  Normalized {normalized_count} scale tensors to scalars")
+            info(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(new_tensors, output_file, **save_kwargs)
 
-        print("Conversion complete!")
+        info("Conversion complete!")
     except Exception as e:
-        print(f"FATAL: Error saving file '{output_file}': {e}")
+        error(f"FATAL: Error saving file '{output_file}': {e}")
         return
 
-    print("-" * 60)
-    print("Summary:")
+    info("-" * 60)
+    info("Summary:")
     summary_parts = [
         f"  - Original tensor count : {len(all_keys)}",
         f"  - Weights processed     : {processed_count}",
@@ -759,5 +755,5 @@ def convert_to_fp8_scaled(
             f"  - Final tensor count    : {len(new_tensors)}",
         ]
     )
-    print("\n".join(summary_parts))
-    print("-" * 60)
+    info("\n".join(summary_parts))
+    info("-" * 60)

@@ -179,23 +179,22 @@ def convert_to_nvfp4(
     ])
     total_weights = len(weight_keys)
 
-    # Generate calibration data for bias correction
+    # Generate calibration data for bias correction (always, even in simple mode)
     calibration_data_cache = {}
-    if not simple:
-        minimal("Scanning model and generating simulated calibration data...")
-        for key in weight_keys:
-            shape = loader.get_shape(key)
-            if len(shape) == 2:
-                in_features = shape[1]
-                if in_features not in calibration_data_cache:
-                    verbose(f"  - Found new input dimension: {in_features}.")
-                    calibration_data_cache[in_features] = torch.randn(
-                        calib_samples,
-                        in_features,
-                        dtype=COMPUTE_DTYPE,
-                        generator=seed_generator,
-                        device=seed_device,
-                    )
+    minimal("Scanning model and generating simulated calibration data...")
+    for key in weight_keys:
+        shape = loader.get_shape(key)
+        if len(shape) == 2:
+            in_features = shape[1]
+            if in_features not in calibration_data_cache:
+                verbose(f"  - Found new input dimension: {in_features}.")
+                calibration_data_cache[in_features] = torch.randn(
+                    calib_samples,
+                    in_features,
+                    dtype=COMPUTE_DTYPE,
+                    generator=seed_generator,
+                    device=seed_device,
+                )
     info("Simulated calibration data generated.\n")
 
     info(f"Found {total_weights} weight tensors to potentially process.")
@@ -275,13 +274,9 @@ def convert_to_nvfp4(
         # Bias correction (matching FP8 logic)
         bias_key = f"{base_key}.bias"
         if bias_key in all_keys:
-            if simple:
-                # Skip bias correction for simple mode
-                verbose(f"  - Keeping original bias (simple mode): {bias_key}")
-                output_tensors[bias_key] = loader.get_tensor(bias_key)
-            else:
-                verbose(f"  - Adjusting corresponding bias: {bias_key}")
-                with torch.no_grad():
+            # Apply bias correction even in simple mode for better accuracy
+            verbose(f"  - Adjusting corresponding bias: {bias_key}")
+            with torch.no_grad():
                     original_bias = loader.get_tensor(bias_key)
                     in_features = tensor.shape[1]
                     if in_features not in calibration_data_cache:
@@ -316,9 +311,9 @@ def convert_to_nvfp4(
         quant_metadata[base_key] = metadata
 
         # Final shape outputs
-        print(f"    - Final Weight shape      : {list(qdata.shape)}")
-        print(f"    - Final Block Scale shape : {list(block_scales.shape)}")
-        print("-" * 60)
+        info(f"    - Final Weight shape      : {list(qdata.shape)}")
+        info(f"    - Final Block Scale shape : {list(block_scales.shape)}")
+        info("-" * 60)
 
         quantized_count += 1
 
@@ -350,16 +345,16 @@ def convert_to_nvfp4(
         full_metadata = {"format_version": "1.0", "layers": quant_metadata}
         output_metadata["_quantization_metadata"] = json.dumps(full_metadata)
 
-    print(f"\nSaving {len(output_tensors)} tensors to {output_file}")
+    info(f"\nSaving {len(output_tensors)} tensors to {output_file}")
 
     os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
     save_file(output_tensors, output_file, metadata=output_metadata if output_metadata else None)
 
-    print("-" * 60)
-    print("Summary:")
-    print(f"  - Original tensor count : {len(all_keys)}")
-    print(f"  - Weights processed     : {quantized_count}")
-    print(f"  - Weights skipped       : {skipped_count}")
-    print(f"  - Final tensor count    : {len(output_tensors)}")
-    print("-" * 60)
-    print("Conversion complete!")
+    info("-" * 60)
+    info("Summary:")
+    info(f"  - Original tensor count : {len(all_keys)}")
+    info(f"  - Weights processed     : {quantized_count}")
+    info(f"  - Weights skipped       : {skipped_count}")
+    info(f"  - Final tensor count    : {len(output_tensors)}")
+    info("-" * 60)
+    info("Conversion complete!")
