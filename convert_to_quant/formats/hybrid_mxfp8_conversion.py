@@ -23,17 +23,17 @@ from ..utils.logging import info, warning, error, verbose
 
 def _compute_tensorwise_scale(block_scales: torch.Tensor) -> torch.Tensor:
     """Compute optimal tensorwise scale from E8M0 block scales.
-    
+
     Uses the maximum block scale to ensure all values fit within FP8 range.
     """
     # Input validation
     if block_scales.dim() != 2:
         # If flattened, try to proceed if 1D
         if block_scales.dim() == 1:
-            pass 
+            pass
         else:
             raise ValueError(f"block_scales must be 1D or 2D, got {block_scales.dim()}D")
-            
+
     if block_scales.numel() == 0:
         raise ValueError("block_scales cannot be empty")
 
@@ -91,10 +91,10 @@ def convert_to_hybrid_mxfp8(
     # Process tensors
     output_tensors = {}
     converted_count = 0
-    
+
     # Track keys to iterate (copy of keys since we might add new ones)
     keys_to_process = list(tensors.keys())
-    
+
     for key in keys_to_process:
         # Pass through existing tensors by default
         if key not in output_tensors:
@@ -103,7 +103,7 @@ def convert_to_hybrid_mxfp8(
         # Look for .comfy_quant tensors to identify quantized layers
         if key.endswith(".comfy_quant"):
             base_key = key[:-12]
-            
+
             try:
                 config = tensor_to_dict(tensors[key])
             except Exception as e:
@@ -122,7 +122,7 @@ def convert_to_hybrid_mxfp8(
 
             # Compute or retrieve tensorwise scale
             scalar = None
-            
+
             if tensor_scales_path:
                 # Retrieve from external model
                 if base_key in tensor_scales:
@@ -136,7 +136,7 @@ def convert_to_hybrid_mxfp8(
                         scalar = scalar.max().reshape(())
                 else:
                     warning(f"Missing external scale for {base_key}, falling back to computed")
-            
+
             if scalar is None:
                 # Compute from block scales
                 block_scales = tensors[scale_key]
@@ -145,11 +145,11 @@ def convert_to_hybrid_mxfp8(
             # Store as .weight_scalar
             scalar_key = f"{base_key}.weight_scalar"
             output_tensors[scalar_key] = scalar
-            
+
             # Update .comfy_quant config
             config["format"] = "hybrid_mxfp8"
             output_tensors[key] = dict_to_tensor(config)
-            
+
             converted_count += 1
             verbose(f"Converted {base_key} to hybrid_mxfp8 (scalar={scalar.item():.6f})")
 
@@ -157,7 +157,7 @@ def convert_to_hybrid_mxfp8(
     output_metadata = {}
     if input_metadata:
         output_metadata = dict(input_metadata)
-        
+
     if "_quantization_metadata" in output_metadata:
         try:
             quant_meta = json.loads(output_metadata["_quantization_metadata"])
@@ -166,7 +166,7 @@ def convert_to_hybrid_mxfp8(
                     # If we converted this layer, update metadata
                     if f"{layer_name}.weight_scalar" in output_tensors:
                         layer_meta["format"] = "hybrid_mxfp8"
-            
+
             output_metadata["_quantization_metadata"] = json.dumps(quant_meta)
         except Exception as e:
             warning(f"Failed to update quantization metadata header: {e}")
@@ -174,7 +174,7 @@ def convert_to_hybrid_mxfp8(
     info("-" * 60)
     info(f"Converted {converted_count} layers to Hybrid MXFP8")
     info(f"Saving to {output_file}...")
-    
+
     os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
     save_file(output_tensors, output_file, metadata=output_metadata)
     info("Done!")

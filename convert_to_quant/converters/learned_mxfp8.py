@@ -359,7 +359,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             small_mult = math.pow(100, M / math.pow(N, 2))
         else:  # M < N
             small_mult = math.pow(10, N / math.pow(M, 2))
-        
+
         schedule_name = self.lr_schedule
 
         # Shape-aware plateau parameters (matching learned_rounding.py)
@@ -398,7 +398,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 loss = torch.linalg.norm(projected_error)
 
             current_loss = loss.item()
-            
+
             # Check improvement (matching learned_rounding.py logic)
             if self.lr_threshold > 0:
                 if self.lr_threshold_mode == "rel":
@@ -502,13 +502,13 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             # Gradient step with proper scaling
             with torch.no_grad():
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-                
+
                 # Apply 1/scale factor to gradient (scale = block_scales_f32)
                 # Reshape grad to blocks, divide by scale, reshape back
                 grad_blocked = grad_direction.reshape(M, num_blocks, self.block_size)
                 grad_scaled = grad_blocked / current_block_scales_f32.unsqueeze(-1)
                 grad_scaled = grad_scaled.reshape(M, N)
-                
+
                 W_q_refined -= curr_lr * grad_scaled
                 # Note: No clamp inside the loop, consistent with learned_rounding.py
 

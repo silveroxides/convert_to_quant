@@ -90,6 +90,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
         """FP8 optimization using AdamW optimizer with manual LR scheduling."""
+        M, N = W_float32.shape
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
         curr_lr = self.lr
@@ -223,6 +224,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
         """FP8 optimization using RAdam optimizer with manual LR scheduling."""
+        M, N = W_float32.shape
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
         curr_lr = self.lr
