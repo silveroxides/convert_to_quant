@@ -153,7 +153,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 else:
                     if plateau_counter > 0:
                          debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
-            # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             # Schedule-appropriate postfix: show plateau counter or worse counter
             if schedule_name == "plateau":
@@ -263,7 +277,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 else:
                     if plateau_counter > 0:
                          debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
-            # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             # Schedule-appropriate postfix: show plateau counter or worse counter
             if schedule_name == "plateau":
@@ -739,7 +767,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                             param_group["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
                     plateau_counter = 0
-            # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             pbar.set_postfix(
                 {
@@ -846,7 +888,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                             param_group["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
                     plateau_counter = 0
-            # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             pbar.set_postfix(
                 {

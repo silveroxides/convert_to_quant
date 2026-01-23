@@ -615,6 +615,21 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 else:
                     if plateau_counter > 0:
                          debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             # Postfix
             if schedule_name == "plateau":
@@ -749,6 +764,21 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 else:
                     if plateau_counter > 0:
                          debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             # Postfix
             if schedule_name == "plateau":

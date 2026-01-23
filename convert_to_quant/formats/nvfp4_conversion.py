@@ -243,12 +243,18 @@ def convert_to_nvfp4(
         if use_learned:
             # LearnedNVFP4Converter returns (qdata, block_scales, per_tensor_scale, dequantized)
             qdata, block_scales, per_tensor_scale, dequant_w = converter.convert(tensor)
+            # Crop dequant_w back to original shape if it was padded
+            if dequant_w.shape != tensor.shape:
+                dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
         else:
             # Transfer to GPU for simple quantization
             tensor_gpu = tensor.to(device=device, dtype=torch.float32)
             qdata, block_scales, per_tensor_scale = converter.quantize(tensor_gpu)
             # For simple mode, we need to dequantize for bias correction
             dequant_w = converter.dequantize(qdata, per_tensor_scale, block_scales, output_dtype=torch.float32)
+            # Crop dequant_w back to original shape if it was padded
+            if dequant_w.shape != tensor.shape:
+                dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
             del tensor_gpu
 
         # Store quantized data and scales (move to CPU for saving)
