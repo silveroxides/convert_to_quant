@@ -175,17 +175,18 @@ def convert_to_nvfp4(
     # Filter to only weight tensors for quantization
     weight_keys = sorted([
         k for k in all_keys
-        if k.endswith(".weight") and loader.get_tensor(k).ndim == 2
+        if k.endswith(".weight") and loader.get_ndim(k) == 2
     ])
     total_weights = len(weight_keys)
 
     # Generate calibration data for bias correction
-    minimal("Scanning model and generating simulated calibration data...")
     calibration_data_cache = {}
-    for key in weight_keys:
-        tensor = loader.get_tensor(key)
-        if tensor.ndim == 2:
-            in_features = tensor.shape[1]
+    if not simple:
+        minimal("Scanning model and generating simulated calibration data...")
+        for key in weight_keys:
+            shape = loader.get_shape(key)
+        if len(shape) == 2:
+            in_features = shape[1]
             if in_features not in calibration_data_cache:
                 verbose(f"  - Found new input dimension: {in_features}.")
                 calibration_data_cache[in_features] = torch.randn(
