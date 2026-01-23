@@ -37,6 +37,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         scaling_mode: str = "tensor",
         block_size: int = 64,
         target_format: str = "fp8",
+        lr: float = 8.077300000003e-3,
         **kwargs,
     ):
         """
@@ -48,7 +49,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             target_format: Target format ("fp8" or "int8")
             **kwargs: All other args passed to BaseLearnedConverter
         """
-        super().__init__(**kwargs)
+        super().__init__(lr=lr, **kwargs)
 
         self.block_size = block_size
         self.target_format = target_format
@@ -89,9 +90,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
         """FP8 optimization using AdamW optimizer with manual LR scheduling."""
+        M, N = W_float32.shape
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = AdamW([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -100,6 +102,13 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
+
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(
+                W_float32.shape[0], W_float32.shape[1]
+            )
+        )
 
         pbar = tqdm(
             range(self.num_iter),
@@ -120,8 +129,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             optimizer.step()
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 worse_loss_counter = 0
@@ -139,20 +150,34 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
-                elif plateau_counter >= self.lr_patience:
-                    debug(f"      [LR] Plateau {plateau_counter}/{self.lr_patience} reached. Decaying.")
+                elif plateau_counter >= effective_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
                         old_lr = curr_lr
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         for param_group in optimizer.param_groups:
                             param_group["lr"] = curr_lr
-                        cooldown_counter = self.lr_cooldown
-                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {self.lr_factor:.4f})")
+                        cooldown_counter = effective_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
                     plateau_counter = 0
                 else:
                     if plateau_counter > 0:
-                         debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
-            # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
+                         debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             # Schedule-appropriate postfix: show plateau counter or worse counter
             if schedule_name == "plateau":
@@ -161,7 +186,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                         "loss": f"{current_loss_val:.3e}",
                         "best": f"{best_loss:.3e}",
                         "lr": f"{curr_lr:.2e}",
-                        "plateau": f"{plateau_counter}/{self.lr_patience}",
+                        "plateau": f"{plateau_counter}/{effective_patience}",
                     }
                 )
             else:
@@ -176,15 +201,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             # Early stopping conditions
             if (
-                best_loss < self.early_stop_loss
-                or curr_lr < self.early_stop_lr
+                best_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
                 or worse_loss_counter > self.early_stop_stall
             ):
-                if curr_lr < self.early_stop_lr:
+                if curr_lr <= self.early_stop_lr:
                     print("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
                     print("\n      - Loss has stalled. Stopping early.")
-                elif best_loss < self.early_stop_loss:
+                elif best_loss <= self.early_stop_loss:
                     print("\n      - Loss is negligible. Stopping early.")
                 break
 
@@ -199,9 +224,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         Vh_k: torch.Tensor,
     ) -> torch.Tensor:
         """FP8 optimization using RAdam optimizer with manual LR scheduling."""
+        M, N = W_float32.shape
         W_rounded = (W_float32 * scale).to(TARGET_FP8_DTYPE).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = RAdam([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -210,6 +236,13 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
+
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(
+                W_float32.shape[0], W_float32.shape[1]
+            )
+        )
 
         pbar = tqdm(
             range(self.num_iter),
@@ -230,8 +263,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             optimizer.step()
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 worse_loss_counter = 0
@@ -249,20 +284,34 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
-                elif plateau_counter >= self.lr_patience:
-                    debug(f"      [LR] Plateau {plateau_counter}/{self.lr_patience} reached. Decaying.")
+                elif plateau_counter >= effective_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
                         old_lr = curr_lr
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         for param_group in optimizer.param_groups:
                             param_group["lr"] = curr_lr
-                        cooldown_counter = self.lr_cooldown
-                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {self.lr_factor:.4f})")
+                        cooldown_counter = effective_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
                     plateau_counter = 0
                 else:
                     if plateau_counter > 0:
-                         debug(f"      [LR] Waiting: {plateau_counter}/{self.lr_patience} (Loss: {current_loss_val:.3e})")
-            # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
+                         debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             # Schedule-appropriate postfix: show plateau counter or worse counter
             if schedule_name == "plateau":
@@ -271,7 +320,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                         "loss": f"{current_loss_val:.3e}",
                         "best": f"{best_loss:.3e}",
                         "lr": f"{curr_lr:.2e}",
-                        "plateau": f"{plateau_counter}/{self.lr_patience}",
+                        "plateau": f"{plateau_counter}/{effective_patience}",
                     }
                 )
             else:
@@ -286,15 +335,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             # Early stopping conditions
             if (
-                best_loss < self.early_stop_loss
-                or curr_lr < self.early_stop_lr
+                best_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
                 or worse_loss_counter > self.early_stop_stall
             ):
-                if curr_lr < self.early_stop_lr:
+                if curr_lr <= self.early_stop_lr:
                     print("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
                     print("\n      - Loss has stalled. Stopping early.")
-                elif best_loss < self.early_stop_loss:
+                elif best_loss <= self.early_stop_loss:
                     print("\n      - Loss is negligible. Stopping early.")
                 break
 
@@ -315,11 +364,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
-        if W_float32.shape[0] == W_float32.shape[1]:
-            small_mult = 0.95
-        else:
-            small_mult = 1.0
+        curr_lr = self.lr
+        # Tensor dimensions for adaptive LR schedule
+        M, N = W_float32.shape[0], W_float32.shape[1]
 
         schedule_name = self.lr_schedule
 
@@ -410,18 +457,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     # Debug log to track patience accumulation
                     if plateau_counter > 0:
                          debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss:.3e})")
-            else:  # 'adaptive' - tier-based schedule
-                # For no-reset mode, use counter value before reset for tier calculation
-                counter_for_tier = (
-                    prev_worse_counter
-                    if (improved and self.lr_adaptive_mode == "no-reset")
-                    else worse_loss_counter
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
                 )
-
-                # Use centralized tier-based LR update
-                curr_lr = self._adaptive_lr_update(
-                    curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult
-                )
+                if lr_updated:
+                    curr_lr = new_lr
 
                 # Reset counter after boost in no-reset mode
                 if improved and self.lr_adaptive_mode == "no-reset":
@@ -449,18 +493,18 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             # Early stopping conditions (configurable thresholds)
             if (
-                current_loss < self.early_stop_loss
-                or curr_lr < self.early_stop_lr
+                current_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if (
-                    curr_lr < self.early_stop_lr * 1.75
+                    curr_lr <= self.early_stop_lr * 1.75
                     and worse_loss_counter > self.early_stop_stall * 0.95
                 ):
                     print("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
                 elif (
-                    current_loss < self.early_stop_loss
-                    and curr_lr < self.early_stop_lr * 1.75
+                    current_loss <= self.early_stop_loss
+                    and curr_lr <= self.early_stop_lr * 1.75
                 ):
                     print("\n      - Learning Rate has bottomed out and loss is negligible. Stopping.")
                 elif (
@@ -468,9 +512,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     and current_loss > self.early_stop_loss * 2
                 ):
                     print("\n      - Loss is negligible and loss has stalled. Stopping.")
-                elif current_loss < self.early_stop_loss:
+                elif current_loss <= self.early_stop_loss:
                     print("\n      - Loss is negligible. Stopping.")
-                elif curr_lr < self.early_stop_lr:
+                elif curr_lr <= self.early_stop_lr:
                     print("\n      - Learning Rate has bottomed out. Stopping.")
                 elif worse_loss_counter > self.early_stop_stall:
                     print("\n      - Loss has stalled. Stopping.")
@@ -686,7 +730,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = AdamW([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -718,8 +762,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             optimizer.step()
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 worse_loss_counter = 0
@@ -743,7 +789,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                             param_group["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
                     plateau_counter = 0
-            # 'adaptive' mode: fixed LR (AdamW handles momentum internally)
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             pbar.set_postfix(
                 {
@@ -755,15 +815,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             # Early stopping conditions
             if (
-                best_loss < self.early_stop_loss
-                or curr_lr < self.early_stop_lr
+                best_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
                 or worse_loss_counter > self.early_stop_stall
             ):
-                if curr_lr < self.early_stop_lr:
+                if curr_lr <= self.early_stop_lr:
                     print("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
                     print("\n      - Loss has stalled. Stopping early.")
-                elif best_loss < self.early_stop_loss:
+                elif best_loss <= self.early_stop_loss:
                     print("\n      - Loss is negligible. Stopping early.")
                 break
 
@@ -793,7 +853,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         qdata_float = qdata.to(COMPUTE_DTYPE)
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = RAdam([delta], lr=curr_lr)
 
         schedule_name = self.lr_schedule
@@ -825,8 +885,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             optimizer.step()
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 worse_loss_counter = 0
@@ -850,7 +912,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                             param_group["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
                     plateau_counter = 0
-            # 'adaptive' mode: fixed LR (RAdam handles momentum internally)
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
             pbar.set_postfix(
                 {
@@ -862,15 +938,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             # Early stopping conditions
             if (
-                best_loss < self.early_stop_loss
-                or curr_lr < self.early_stop_lr
+                best_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
                 or worse_loss_counter > self.early_stop_stall
             ):
-                if curr_lr < self.early_stop_lr:
+                if curr_lr <= self.early_stop_lr:
                     print("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
                     print("\n      - Loss has stalled. Stopping early.")
-                elif best_loss < self.early_stop_loss:
+                elif best_loss <= self.early_stop_loss:
                     print("\n      - Loss is negligible. Stopping early.")
                 break
 
@@ -905,11 +981,14 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
+        # Dimension-aware small_mult for adaptive LR schedule
         if M == N:
-            small_mult = 0.95
-        else:
-            small_mult = 1.0
+            small_mult = math.gamma((M ** (1/3) / M) + 1)
+        elif M > N:
+            small_mult = math.pow(100, M / math.pow(N, 2))
+        else:  # M < N
+            small_mult = math.pow(10, N / math.pow(M, 2))
 
         schedule_name = self.lr_schedule
 
@@ -991,18 +1070,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                         curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         cooldown_counter = effective_cooldown
                     plateau_counter = 0
-            else:  # 'adaptive' - tier-based schedule
-                # For no-reset mode, use counter value before reset for tier calculation
-                counter_for_tier = (
-                    prev_worse_counter
-                    if (improved and self.lr_adaptive_mode == "no-reset")
-                    else worse_loss_counter
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
                 )
-
-                # Use centralized tier-based LR update
-                curr_lr = self._adaptive_lr_update(
-                    curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult
-                )
+                if lr_updated:
+                    curr_lr = new_lr
 
                 # Reset counter after boost in no-reset mode
                 if improved and self.lr_adaptive_mode == "no-reset":
@@ -1019,18 +1095,18 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             # Early stopping conditions (configurable thresholds)
             if (
-                current_loss < self.early_stop_loss
-                or curr_lr < self.early_stop_lr
+                current_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
                 or worse_loss_counter > self.early_stop_stall
             ):
                 if (
-                    curr_lr < self.early_stop_lr * 1.75
+                    curr_lr <= self.early_stop_lr * 1.75
                     and worse_loss_counter > self.early_stop_stall * 0.95
                 ):
                     print("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
                 elif (
-                    current_loss < self.early_stop_loss
-                    and curr_lr < self.early_stop_lr * 1.75
+                    current_loss <= self.early_stop_loss
+                    and curr_lr <= self.early_stop_lr * 1.75
                 ):
                     print(
                         "      - Learning Rate has bottomed out and loss is negligible. Stopping."
@@ -1040,9 +1116,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     and current_loss > self.early_stop_loss * 2
                 ):
                     print("\n      - Loss is negligible and loss has stalled. Stopping.")
-                elif current_loss < self.early_stop_loss:
+                elif current_loss <= self.early_stop_loss:
                     print("\n      - Loss is negligible. Stopping.")
-                elif curr_lr < self.early_stop_lr:
+                elif curr_lr <= self.early_stop_lr:
                     print("\n      - Learning Rate has bottomed out. Stopping.")
                 elif worse_loss_counter > self.early_stop_stall:
                     print("\n      - Loss has stalled. Stopping.")

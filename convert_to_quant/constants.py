@@ -313,6 +313,7 @@ VALID_QUANT_FORMATS = {
     "int8_blockwise",
     "nvfp4",  # NVIDIA FP4 E2M1 block quantization
     "mxfp8",  # Microscaling FP8 block quantization
+    "hybrid_mxfp8",  # Hybrid MXFP8 (MXFP8 + tensorwise fallback)
 }
 
 # Global config: normalize 1-element scale arrays to scalars (set from CLI)

@@ -129,6 +129,8 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             "int8",
             "nvfp4",
             "mxfp8",
+            "make_hybrid_mxfp8",
+            "tensor_scales_path",
             "fallback",
             "block_size",
             "scaling_mode",

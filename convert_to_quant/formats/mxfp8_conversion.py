@@ -175,7 +175,7 @@ def convert_to_mxfp8(
     # Filter to only weight tensors for quantization
     weight_keys = sorted([
         k for k in all_keys
-        if k.endswith(".weight") and loader.get_tensor(k).ndim == 2
+        if k.endswith(".weight") and loader.get_ndim(k) == 2
     ])
     total_weights = len(weight_keys)
 
@@ -184,9 +184,9 @@ def convert_to_mxfp8(
         # Generate calibration data for bias correction
         minimal("Scanning model and generating simulated calibration data...")
         for key in weight_keys:
-            tensor = loader.get_tensor(key)
-            if tensor.ndim == 2:
-                in_features = tensor.shape[1]
+            shape = loader.get_shape(key)
+            if len(shape) == 2:
+                in_features = shape[1]
                 if in_features not in calibration_data_cache:
                     verbose(f"  - Found new input dimension: {in_features}.")
                     calibration_data_cache[in_features] = torch.randn(
@@ -245,12 +245,18 @@ def convert_to_mxfp8(
         if use_learned:
             # LearnedMXFP8Converter returns (qdata, block_scales, dequantized)
             qdata, block_scales, dequant_w = converter.convert(tensor)
+            # Crop dequant_w back to original shape if it was padded
+            if dequant_w.shape != tensor.shape:
+                dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
         else:
             # Transfer to GPU for simple quantization
             tensor_gpu = tensor.to(device=device, dtype=torch.float32)
             qdata, block_scales = converter.quantize(tensor_gpu)
             # For simple mode, we need to dequantize for bias correction
             dequant_w = converter.dequantize(qdata, block_scales, output_dtype=torch.float32)
+            # Crop dequant_w back to original shape if it was padded
+            if dequant_w.shape != tensor.shape:
+                dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
             del tensor_gpu
 
         # Store quantized data and scales (move to CPU for saving)

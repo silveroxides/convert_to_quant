@@ -27,6 +27,7 @@ from ..formats.int8_conversion import convert_int8_to_comfy_quant
 from ..formats.legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
 from ..formats.nvfp4_conversion import convert_to_nvfp4
 from ..formats.mxfp8_conversion import convert_to_mxfp8
+from ..formats.hybrid_mxfp8_conversion import convert_to_hybrid_mxfp8
 from ..utils.comfy_quant import edit_comfy_quant
 from ..pinned_transfer import set_verbose as set_pinned_verbose
 import json
@@ -121,6 +122,19 @@ def main():
         "--mxfp8",
         action="store_true",
         help="Use MXFP8 (Microscaling FP8) block quantization. Requires Blackwell GPU (SM >= 10.0) for inference.",
+    )
+    parser.add_argument(
+        "--make-hybrid-mxfp8",
+        action="store_true",
+        dest="make_hybrid_mxfp8",
+        help="Convert an existing MXFP8 model to Hybrid MXFP8 (adds tensorwise fallback for Ada GPUs).",
+    )
+    parser.add_argument(
+        "--tensor-scales",
+        type=str,
+        default=None,
+        dest="tensor_scales_path",
+        help="Path to tensorwise FP8 model to steal scales from (for --make-hybrid-mxfp8).",
     )
     parser.add_argument(
         "--fallback",
@@ -295,7 +309,7 @@ def main():
         "--lr_patience", type=int, default=9, help="[plateau] Steps before decay"
     )
     parser.add_argument(
-        "--lr_factor", type=float, default=0.92, help="[plateau] LR reduction factor"
+        "--lr_factor", type=float, default=0.95, help="[plateau] LR reduction factor"
     )
     parser.add_argument(
         "--lr_min", type=float, default=1e-10, help="[plateau] Minimum LR bound"
@@ -529,7 +543,7 @@ def main():
         type=str,
         default=None,
         dest="add_keys",
-        help="Python-like key:value pairs to add (e.g., \"'full_precision_matrix_mult': true, 'group_size': 64\")",
+        help="Python-like key:value pairs to add or update (e.g., \"'full_precision_matrix_mult': true, 'group_size': 64\")",
     )
     parser.add_argument(
         "--quant-filter",
@@ -763,6 +777,27 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 low_memory=args.low_memory,
             )
             return
+
+    # Handle Hybrid MXFP8 conversion mode (separate workflow)
+    if args.make_hybrid_mxfp8:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            args.output = f"{base}_hybrid.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        convert_to_hybrid_mxfp8(
+            args.input,
+            args.output,
+            tensor_scales_path=args.tensor_scales_path,
+        )
+        return
 
     # Handle MXFP8 quantization mode (separate workflow OR unified if mixing formats)
     if args.mxfp8:

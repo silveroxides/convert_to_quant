@@ -60,6 +60,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         pad_to_16x: bool = True,
         scale_refinement_rounds: int = 1,
         scale_optimization: str = "fixed",
+        lr: float = 8.077300000003e-3,
         **kwargs,
     ):
         """
@@ -82,7 +83,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         if scale_optimization not in valid_scale_modes:
             raise ValueError(f"scale_optimization must be one of {valid_scale_modes}, got '{scale_optimization}'")
 
-        super().__init__(**kwargs)
+        super().__init__(lr=lr, **kwargs)
 
         self.block_size = block_size
         self.pad_to_16x = pad_to_16x
@@ -385,14 +386,16 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         scale_lr = curr_lr * 0.1  # Lower LR for scales in joint mode
 
-        # Shape-aware multiplier
+        # Dimension-aware small_mult for adaptive LR schedule
         if M == N:
-            small_mult = 0.95
-        else:
-            small_mult = 1.0
+            small_mult = math.gamma((M ** (1/3) / M) + 1)
+        elif M > N:
+            small_mult = math.pow(100, M / math.pow(N, 2))
+        else:  # M < N
+            small_mult = math.pow(10, N / math.pow(M, 2))
 
         schedule_name = self.lr_schedule
 
@@ -495,12 +498,15 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                         cooldown_counter = effective_cooldown
                     plateau_counter = 0
             else:  # 'adaptive' - tier-based schedule
-                counter_for_tier = (
-                    prev_worse_counter
-                    if (improved and self.lr_adaptive_mode == "no-reset")
-                    else worse_loss_counter
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
                 )
-                curr_lr = self._adaptive_lr_update(curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult)
+                if lr_updated:
+                    curr_lr = new_lr
+
                 scale_lr = curr_lr * 0.1
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
@@ -509,7 +515,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 "loss": f"{current_loss:.3e}",
                 "best": f"{best_loss:.3e}",
                 "lr": f"{curr_lr:.2e}",
-                "worse": f"{worse_loss_counter}",
+                "worse_count": f"{worse_loss_counter}",
             })
 
             # Early stopping
@@ -567,7 +573,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
 
         # For joint mode: initialize learnable block scales
         current_total_scale = total_scale.clone()
@@ -621,8 +627,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     block_scales_float.clamp_(min=1e-6, max=F8_E4M3_MAX)
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 best_total_scale = current_total_scale.detach().clone()
@@ -649,12 +657,36 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                             pg["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
                     plateau_counter = 0
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
 
-            pbar.set_postfix({
-                "loss": f"{current_loss_val:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-            })
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
+
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
 
             if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
                 break
@@ -687,7 +719,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
 
         # For joint mode: initialize learnable block scales
         current_total_scale = total_scale.clone()
@@ -741,8 +773,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     block_scales_float.clamp_(min=1e-6, max=F8_E4M3_MAX)
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 best_total_scale = current_total_scale.detach().clone()
@@ -769,12 +803,36 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                             pg["lr"] = curr_lr
                         cooldown_counter = self.lr_cooldown
                     plateau_counter = 0
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
 
-            pbar.set_postfix({
-                "loss": f"{current_loss_val:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-            })
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
+
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
 
             if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
                 break
@@ -792,10 +850,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         self, current_loss: float, curr_lr: float, worse_loss_counter: int
     ) -> bool:
         """Check early stopping conditions."""
-        if self.early_stop_loss > 0 and current_loss < self.early_stop_loss:
+        if self.early_stop_loss > 0 and current_loss <= self.early_stop_loss:
             print("\n      - Loss is negligible. Stopping early.")
             return True
-        if self.early_stop_lr > 0 and curr_lr < self.early_stop_lr:
+        if self.early_stop_lr > 0 and curr_lr <= self.early_stop_lr:
             print("\n      - Learning rate bottomed out. Stopping early.")
             return True
         if self.early_stop_stall > 0 and worse_loss_counter >= self.early_stop_stall:

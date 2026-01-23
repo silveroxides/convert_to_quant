@@ -238,23 +238,24 @@ def convert_to_fp8_scaled(
             error(f"ERROR: Invalid regex pattern '{exclude_layers}': {e}")
             return
 
-    minimal("Scanning model and generating simulated calibration data...")
     calibration_data_cache = {}
-    for key in all_keys:
-        if key.endswith(".weight"):
-            shape = loader.get_shape(key)
-            if len(shape) == 2:
-                in_features = shape[1]
-                if in_features not in calibration_data_cache:
-                    verbose(f"  - Found new input dimension: {in_features}.")
-                    calibration_data_cache[in_features] = torch.randn(
-                        calib_samples,
-                        in_features,
-                        dtype=COMPUTE_DTYPE,
-                        generator=seed_generator,
-                        device=seed_device,
-                    )
-    info("Simulated calibration data generated.\n")
+    if not no_learned_rounding:
+        minimal("Scanning model and generating simulated calibration data...")
+        for key in all_keys:
+            if key.endswith(".weight"):
+                shape = loader.get_shape(key)
+                if len(shape) == 2:
+                    in_features = shape[1]
+                    if in_features not in calibration_data_cache:
+                        verbose(f"  - Found new input dimension: {in_features}.")
+                        calibration_data_cache[in_features] = torch.randn(
+                            calib_samples,
+                            in_features,
+                            dtype=COMPUTE_DTYPE,
+                            generator=seed_generator,
+                            device=seed_device,
+                        )
+        info("Simulated calibration data generated.\n")
 
     new_tensors: Dict[str, torch.Tensor] = {}
     weight_keys = sorted(

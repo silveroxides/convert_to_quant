@@ -58,6 +58,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         pad_to_32x: bool = True,
         scale_refinement_rounds: int = 1,
         scale_optimization: str = "fixed",
+        lr: float = 8.077300000003e-3,
         **kwargs,
     ):
         """
@@ -80,7 +81,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         if scale_optimization not in valid_scale_modes:
             raise ValueError(f"scale_optimization must be one of {valid_scale_modes}, got '{scale_optimization}'")
 
-        super().__init__(**kwargs)
+        super().__init__(lr=lr, **kwargs)
 
         self.block_size = block_size
         self.pad_to_32x = pad_to_32x
@@ -349,13 +350,35 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
 
-        # Shape-aware multiplier
-        small_mult = 0.95 if M == N else 1.0
+        # Dimension-aware small_mult for adaptive LR schedule
+        if M == N:
+            small_mult = math.gamma((M ** (1/3) / M) + 1)
+        elif M > N:
+            small_mult = math.pow(100, M / math.pow(N, 2))
+        else:  # M < N
+            small_mult = math.pow(10, N / math.pow(M, 2))
+
         schedule_name = self.lr_schedule
 
-        effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
+        # Shape-aware plateau parameters (matching learned_rounding.py)
+        aspect_ratio = max(M, N) / min(M, N)
+
+        if schedule_name == "plateau" and self.lr_shape_influence > 0:
+            # Scale factor based on aspect ratio, modulated by influence
+            ar_factor = math.sqrt(aspect_ratio)
+            blend = self.lr_shape_influence
+
+            effective_patience = self.lr_patience
+            raw_factor = self.lr_factor
+            aggressive_factor = raw_factor**ar_factor
+            effective_factor = raw_factor + (aggressive_factor - raw_factor) * blend
+            effective_cooldown = self.lr_cooldown
+        else:
+            effective_patience = self.lr_patience
+            effective_factor = self.lr_factor
+            effective_cooldown = self.lr_cooldown
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
@@ -375,7 +398,16 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 loss = torch.linalg.norm(projected_error)
 
             current_loss = loss.item()
-            improved = self._check_improvement(current_loss, best_loss)
+
+            # Check improvement (matching learned_rounding.py logic)
+            if self.lr_threshold > 0:
+                if self.lr_threshold_mode == "rel":
+                     improved = current_loss < best_loss * (1.0 - self.lr_threshold)
+                else:
+                     improved = (best_loss - current_loss) > self.lr_threshold
+            else:
+                improved = current_loss < best_loss
+
             prev_worse_counter = worse_loss_counter
 
             if improved:
@@ -396,37 +428,89 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= effective_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
+                        old_lr = curr_lr
                         curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         cooldown_counter = effective_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss:.3e})")
             else:  # 'adaptive'
-                counter_for_tier = (
-                    prev_worse_counter
-                    if (improved and self.lr_adaptive_mode == "no-reset")
-                    else worse_loss_counter
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
                 )
-                curr_lr = self._adaptive_lr_update(curr_lr, improved, counter_for_tier, worse_loss_counter, small_mult)
+                if lr_updated:
+                    curr_lr = new_lr
+
+                # Reset counter after boost in no-reset mode
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
-            pbar.set_postfix({
-                "loss": f"{current_loss:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-                "worse": f"{worse_loss_counter}",
-            })
+            # Postfix
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse": f"{worse_loss_counter}",
+                })
 
-            # Early stopping
-            if self._check_early_stop(current_loss, curr_lr, worse_loss_counter):
+            # Early stopping conditions (explicit match to learned_rounding.py)
+            if (
+                current_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if (
+                    curr_lr < self.early_stop_lr * 1.75
+                    and worse_loss_counter > self.early_stop_stall * 0.95
+                ):
+                    print("\n      - Loss has stalled and learning rate has bottomed out. Stopping.")
+                elif (
+                    current_loss < self.early_stop_loss
+                    and curr_lr < self.early_stop_lr * 1.75
+                ):
+                    print("\n      - Learning Rate has bottomed out and loss is negligible. Stopping.")
+                elif (
+                    worse_loss_counter > self.early_stop_stall * 0.95
+                    and current_loss > self.early_stop_loss * 2
+                ):
+                    print("\n      - Loss is negligible and loss has stalled. Stopping.")
+                elif current_loss < self.early_stop_loss:
+                    print("\n      - Loss is negligible. Stopping.")
+                elif curr_lr < self.early_stop_lr:
+                    print("\n      - Learning Rate has bottomed out. Stopping.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("\n      - Loss has stalled. Stopping.")
                 break
 
-            # Gradient step
+            # Gradient step with proper scaling
             with torch.no_grad():
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-                W_q_refined -= curr_lr * grad_direction
-                W_q_refined = torch.clamp(W_q_refined, -self.fp8_max, self.fp8_max)
+
+                # Apply 1/scale factor to gradient (scale = block_scales_f32)
+                # Reshape grad to blocks, divide by scale, reshape back
+                grad_blocked = grad_direction.reshape(M, num_blocks, self.block_size)
+                grad_scaled = grad_blocked / current_block_scales_f32.unsqueeze(-1)
+                grad_scaled = grad_scaled.reshape(M, N)
+
+                W_q_refined -= curr_lr * grad_scaled
+                # Note: No clamp inside the loop, consistent with learned_rounding.py
 
         pbar.close()
 
@@ -459,7 +543,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = AdamW([delta], lr=curr_lr)
 
         current_block_scales_f32 = block_scales_f32.clone()
@@ -473,6 +557,11 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
+
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(M, N)
+        )
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
@@ -497,8 +586,10 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             optimizer.step()
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 best_block_scales_f32 = current_block_scales_f32.clone()
@@ -517,21 +608,64 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
-                elif plateau_counter >= self.lr_patience:
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
+                elif plateau_counter >= effective_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        old_lr = curr_lr
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         for pg in optimizer.param_groups:
                             pg["lr"] = curr_lr
-                        cooldown_counter = self.lr_cooldown
+                        cooldown_counter = effective_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
 
-            pbar.set_postfix({
-                "loss": f"{current_loss_val:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-            })
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
-            if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
+            # Postfix
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("\n      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("\n      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -565,7 +699,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
-        curr_lr = self.optimizer_kwargs.get("lr", 8.077300000003e-3)
+        curr_lr = self.lr
         optimizer = RAdam([delta], lr=curr_lr)
 
         current_block_scales_f32 = block_scales_f32.clone()
@@ -579,6 +713,11 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
+
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(M, N)
+        )
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
@@ -603,8 +742,10 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             optimizer.step()
 
             current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
 
-            if current_loss_val < best_loss:
+            if improved:
                 best_loss = current_loss_val
                 best_delta = delta.detach().clone()
                 best_block_scales_f32 = current_block_scales_f32.clone()
@@ -623,21 +764,64 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
-                elif plateau_counter >= self.lr_patience:
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
+                elif plateau_counter >= effective_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
                     if curr_lr > self.lr_min:
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        old_lr = curr_lr
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         for pg in optimizer.param_groups:
                             pg["lr"] = curr_lr
-                        cooldown_counter = self.lr_cooldown
+                        cooldown_counter = effective_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
                     plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
 
-            pbar.set_postfix({
-                "loss": f"{current_loss_val:.3e}",
-                "best": f"{best_loss:.3e}",
-                "lr": f"{curr_lr:.2e}",
-            })
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
 
-            if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
+            # Postfix
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
+
+            # Early stopping conditions
+            if (
+                best_loss < self.early_stop_loss
+                or curr_lr < self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr < self.early_stop_lr:
+                    print("\n      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    print("\n      - Loss has stalled. Stopping early.")
+                elif best_loss < self.early_stop_loss:
+                    print("\n      - Loss is negligible. Stopping early.")
                 break
 
         pbar.close()
@@ -652,10 +836,10 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         self, current_loss: float, curr_lr: float, worse_loss_counter: int
     ) -> bool:
         """Check early stopping conditions."""
-        if self.early_stop_loss > 0 and current_loss < self.early_stop_loss:
+        if self.early_stop_loss > 0 and current_loss <= self.early_stop_loss:
             print("\n      - Loss is negligible. Stopping early.")
             return True
-        if self.early_stop_lr > 0 and curr_lr < self.early_stop_lr:
+        if self.early_stop_lr > 0 and curr_lr <= self.early_stop_lr:
             print("\n      - Learning rate bottomed out. Stopping early.")
             return True
         if self.early_stop_stall > 0 and worse_loss_counter >= self.early_stop_stall:
