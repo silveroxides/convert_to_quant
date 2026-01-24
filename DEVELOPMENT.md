@@ -1,4 +1,36 @@
 
+## 2026-01-24: Dependency Documentation Alignment
+
+### Session Summary
+Aligned `README.md` requirement summaries with ComfyUI's minimum specifications (PyTorch 2.8+, CUDA 12.8+) and the specialized Blackwell stack (PyTorch 2.10+, CUDA 13.0+).
+
+### Files Modified
+- `README.md`: Corrected PyTorch and CUDA version requirements in the summary table.
+
+---
+
+## 2026-01-24: Python 3.10 Upgrade
+
+### Session Summary
+Upgraded the minimum required Python version to 3.10 across the entire repository, including package metadata, CI/CD workflows, and documentation.
+
+### Files Modified
+- `pyproject.toml`: Updated `requires-python` and classifiers.
+- `README.md`: Updated badges and requirements table.
+- `.github/workflows/build-wheels.yml`: Updated CI build environment to Python 3.10.
+
+---
+
+## 2026-01-24: README Reorganization
+
+### Session Summary
+Reorganized `README.md` to prioritize essential installation and requirement information for PyPI users. Added a Requirements Summary table highlighting Blackwell-specific dependencies (CUDA 13.0+, `comfy-kitchen`).
+
+### Files Modified
+- `README.md`: Reordered sections for better accessibility and updated requirements details.
+
+---
+
 ## 2026-01-24: CI/CD PyPI Integration
 
 ### Session Summary
