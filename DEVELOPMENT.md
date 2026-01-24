@@ -1,4 +1,24 @@
 
+## 2026-01-24: CI/CD PyPI Integration
+
+### Session Summary
+Refactored the CI/CD pipeline to include a dedicated PyPI publishing job. The workflow now uses artifacts to pass build distributions between jobs, adhering to best practices found in the GitHub Marketplace.
+
+### Files Modified
+- `.github/workflows/build-wheels.yml`:
+    - Added job outputs for `version` and `changed` status.
+    - Standardized artifact name to `dist` for cross-job compatibility.
+    - Added a separate `publish` job that uses `pypa/gh-action-pypi-publish@release/v1`.
+    - Added `id-token: write` permissions for enhanced compatibility.
+
+### Usage
+1. Ensure `PYPI_ACCESS_TOKEN` is set in Repository Secrets.
+2. Update `version` in `pyproject.toml` and push to `main`.
+3. `build-wheels.yml` will automatically create a GitHub Release.
+4. Once the release is published, `publish-pypi.yml` will build the package and upload it to PyPI.
+
+---
+
 ## 2026-01-24: Formats Documentation
 
 ### Session Summary
