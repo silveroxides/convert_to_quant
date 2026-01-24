@@ -311,6 +311,7 @@ VALID_QUANT_FORMATS = {
     "float8_e4m3fn_blockwise",
     "float8_e4m3fn_block3d",
     "int8_blockwise",
+    "int8_tensorwise",
     "nvfp4",  # NVIDIA FP4 E2M1 block quantization
     "mxfp8",  # Microscaling FP8 block quantization
     "hybrid_mxfp8",  # Hybrid MXFP8 (MXFP8 + tensorwise fallback)

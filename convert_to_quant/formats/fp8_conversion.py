@@ -503,20 +503,26 @@ def convert_to_fp8_scaled(
                 new_tensors[f"{base_name}.weight_scale"] = (
                     dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                 )
-                comfy_quant_format = "int8_blockwise"
-                block_size_for_meta = layer_block_size
-                # Use int8_blockwise format
+                if converter.scaling_mode == "tensor":
+                    comfy_quant_format = "int8_tensorwise"
+                    block_size_for_meta = None
+                else:
+                    comfy_quant_format = "int8_blockwise"
+                    block_size_for_meta = layer_block_size
+
+                # Use correct INT8 format
                 comfy_quant_tensor = create_comfy_quant_tensor(
-                    "int8_blockwise",
-                    block_size=layer_block_size,
+                    comfy_quant_format,
+                    block_size=block_size_for_meta,
                     full_precision_matrix_mult=layer_full_precision_mm
                     if layer_full_precision_mm
                     else None,
                 )
-                # Always add input_scale for INT8 (matches reference behavior)
-                new_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                    1.0, dtype=torch.float32, device="cpu"
-                )
+                # Add input_scale only for block-wise INT8
+                if comfy_quant_format == "int8_blockwise":
+                    new_tensors[f"{base_name}.input_scale"] = torch.tensor(
+                        1.0, dtype=torch.float32, device="cpu"
+                    )
             else:
                 # FP8 format - determine format based on scaling_mode or layer_config
                 new_tensors[f"{base_name}.weight_scale"] = (

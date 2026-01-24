@@ -84,11 +84,17 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 
 ---
 
-## Supported Quantization Format
+## Supported Quantization Formats
 
-| Format | Flag | Hardware | Notes |
-|--------|------|----------|-------|
-| FP8 (E4M3) | *(default)* | Any GPU | Tensor core acceleration on Ada+ |
+| Format | CLI Flag | Hardware | Optimization |
+|--------|----------|----------|--------------|
+| **FP8 (E4M3)** | *(default)* | Ada/Hopper+ | Learned Rounding (SVD) |
+| **INT8 Block-wise**| `--int8` | Any GPU | Learned Rounding (SVD) |
+| **INT8 Tensor-wise**| `--int8 --scaling_mode tensor` | Any GPU | High-perf `_scaled_mm` |
+| **NVFP4 (4-bit)** | `--nvfp4` | Blackwell | Dual-scale optimization |
+| **MXFP8** | `--mxfp8` | Blackwell | Microscaling (E8M0) |
+
+For a deep dive into how these formats work and their technical implementation, see **[FORMATS.md](docs/FORMATS.md)**.
 
 ---
 
@@ -111,6 +117,7 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 ## Documentation
 
 - 📖 **[MANUAL.md](MANUAL.md)** - Complete usage guide with examples and troubleshooting
+- 📚 **[FORMATS.md](docs/FORMATS.md)** - Technical reference for quantization formats and SVD optimization
 - 📋 **[AGENTS.md](AGENTS.md)** - Developer guide & registry architecture
 - ✨ **[ACTIVE.md](ACTIVE.md)** - Current status and active implementations
 - 🧪 **[DEVELOPMENT.md](DEVELOPMENT.md)** - Changelog and research notes
@@ -187,17 +194,16 @@ convert_to_quant --help-filters
 
 ---
 
-## Experimental Quantization Formats
+## Usage Examples
 
-These formats are experimental and accessed via `--help-experimental`:
-
-| Format | Flag | Notes |
-|--------|------|-------|
-| INT8 Block-wise | `--int8` | Good balance of quality/speed |
-
+### INT8 with performance heuristics
 ```bash
-# INT8 with performance heuristics
 convert_to_quant -i model.safetensors --int8 --block_size 128 --comfy_quant --heur
+```
+
+### Blackwell NVFP4 (4-bit)
+```bash
+convert_to_quant -i model.safetensors --nvfp4 --comfy_quant
 ```
 
 ## Requirements

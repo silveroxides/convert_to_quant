@@ -1,4 +1,37 @@
 
+## 2026-01-24: Formats Documentation
+
+### Session Summary
+Created comprehensive technical documentation for all supported quantization formats in `docs/FORMATS.md`. This guide details the internal mechanics of FP8, INT8, NVFP4, and MXFP8 formats, including scaling strategies, SVD-based learned rounding optimization, bias correction techniques, and hardware requirements, strictly based on the implementation in the codebase.
+
+### Files Created
+- `docs/FORMATS.md`: Comprehensive guide to quantization formats.
+
+---
+
+## 2026-01-23: Tensor-wise INT8 Quantization Support
+
+### Session Summary
+Implemented tensor-wise INT8 quantization alongside the existing block-wise implementation. The new mode uses global scaling (1 scale per tensor) and leverages `torch._scaled_mm` for efficient inference in ComfyUI. Learned rounding optimization is supported for this mode.
+
+### Changes Made
+
+1. **New Quantization Format**: Added `int8_tensorwise` support to the entire pipeline.
+2. **Efficient Inference**: Implemented `TensorWiseINT8Layout` and corresponding operation handlers using `torch._scaled_mm` for maximum performance.
+3. **CLI Enhancements**: Added support for `--scaling_mode tensor` with `--int8`, and relaxed the `block_size` requirement for this mode.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `convert_to_quant/constants.py` | Registered `int8_tensorwise` format. |
+| `convert_to_quant/comfy/quant_ops.py` | Added `TensorWiseINT8Layout` and operation handlers. |
+| `convert_to_quant/converters/learned_rounding.py` | Added tensor-wise INT8 quantization and optimization logic. |
+| `convert_to_quant/formats/fp8_conversion.py` | Updated metadata generation and conditional `input_scale` addition. |
+| `convert_to_quant/cli/main.py` | Updated argument validation and filename generation for tensor-wise INT8. |
+
+---
+
 ## 2026-01-23: Restored Original Adaptive Mode in Learned Rounding
 
 ### Session Summary

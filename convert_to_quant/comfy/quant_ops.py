@@ -272,7 +272,8 @@ class QuantizedTensor(torch.Tensor):
 
 # ==============================================================================
 # Generic Utilities (Layout-Agnostic Operations)
-# ==============================================================================
+# ==============================================================================
+
 
 def _create_transformed_qtensor(qt, transform_fn):
     new_data = transform_fn(qt._qdata)
@@ -990,6 +991,79 @@ class BlockWiseINT8Layout(QuantizedLayout):
         )
 
 
+# ==============================================================================
+# Tensor-Wise INT8 Layout + Operation Handlers
+# ==============================================================================
+class TensorWiseINT8Layout(QuantizedLayout):
+    """
+    Tensor-wise INT8 quantization layout.
+
+    Storage format:
+    - qdata: INT8 tensor (torch.int8)
+    - scale: Global scaling factor (float32)
+    - orig_dtype: Original dtype before quantization
+    """
+
+    @classmethod
+    def quantize(cls, tensor, scale=None, **kwargs):
+        """
+        Quantize a tensor to INT8 with tensor-wise scaling.
+
+        Args:
+            tensor: Input tensor to quantize
+            scale: Optional pre-computed scaling factor (as dequant scale)
+
+        Returns:
+            Tuple of (quantized_data, layout_params)
+        """
+        orig_dtype = tensor.dtype
+
+        if scale is None:
+            # Compute global absolute maximum
+            amax = tensor.abs().max()
+            quant_scale = 127.0 / amax.clamp_min(1e-12)
+        else:
+            # scale is provided as dequant scale, convert to quant scale
+            quant_scale = 1.0 / scale
+
+        # Apply scale
+        tensor_scaled = tensor * quant_scale
+
+        # Clamp and convert to int8
+        tensor_scaled = torch.clamp(tensor_scaled, -127.0, 127.0)
+        qdata = tensor_scaled.to(torch.int8)
+
+        # Store dequant scale (reciprocal of quant scale)
+        dequant_scale = 1.0 / quant_scale
+
+        layout_params = {
+            "scale": dequant_scale.to(torch.float32),
+            "orig_dtype": orig_dtype,
+        }
+
+        return qdata, layout_params
+
+    @staticmethod
+    def dequantize(qdata, scale, orig_dtype, **kwargs):
+        """
+        Dequantize INT8 tensor back to original precision.
+
+        Args:
+            qdata: Quantized INT8 tensor
+            scale: Global scaling factor
+            orig_dtype: Target dtype for dequantization
+
+        Returns:
+            Dequantized tensor in orig_dtype
+        """
+        return qdata.to(orig_dtype) * scale
+
+    @classmethod
+    def get_plain_tensors(cls, qtensor):
+        """Extract raw tensors for computation."""
+        return qtensor._qdata, qtensor._layout_params["scale"]
+
+
 # Note: group_size here is a fallback if per-tensor .comfy_quant metadata doesn't specify it.
 # Prefer always storing group_size in per-tensor metadata during conversion.
 QUANT_ALGOS = {
@@ -1016,13 +1090,20 @@ QUANT_ALGOS = {
         "group_size": 128,  # Fallback if per-tensor metadata missing
         "asymmetric_layout": True,
     },
-}
+    "int8_tensorwise": {
+        "storage_t": torch.int8,
+        "parameters": {"weight_scale", "input_scale"},
+        "comfy_tensor_layout": "TensorWiseINT8Layout",
+    },
+}
+
 
 LAYOUTS = {
     "TensorCoreFP8Layout": TensorCoreFP8Layout,
     "RowWiseFP8Layout": RowWiseFP8Layout,
     "BlockWiseFP8Layout": BlockWiseFP8Layout,
     "BlockWiseINT8Layout": BlockWiseINT8Layout,
+    "TensorWiseINT8Layout": TensorWiseINT8Layout,
 }
 
 
@@ -1321,7 +1402,8 @@ def blockwise_fp8_func(func, args, kwargs):
 
 # ==============================================================================
 # Block-Wise INT8 Operation Handlers
-# ==============================================================================
+# ==============================================================================
+
 
 def _int8_gemm_pytorch_fallback(
     a_int8, a_scale, b_int8, b_scale, block_size, bias=None
@@ -2064,3 +2146,164 @@ def int8_to_dtype(func, args, kwargs):
 
     # For any other dtype or non-quantized tensors, use standard fallback
     return QuantizedTensor._dequant_and_fallback(func, args, kwargs)
+
+
+# ==============================================================================
+# Tensor-Wise INT8 Operation Handlers
+# ==============================================================================
+
+
+@register_layout_op(torch.ops.aten.linear.default, "TensorWiseINT8Layout")
+def tensorwise_int8_linear(func, args, kwargs):
+    """
+    Tensor-wise INT8 linear operation using torch._scaled_mm.
+    Matches quantized_gemm_unified.py reference.
+    """
+    input_tensor = args[0]
+    weight = args[1]
+    bias = args[2] if len(args) > 2 else None
+
+    if isinstance(input_tensor, QuantizedTensor) and isinstance(
+        weight, QuantizedTensor
+    ):
+        plain_input, scale_a = TensorWiseINT8Layout.get_plain_tensors(input_tensor)
+        plain_weight, scale_b = TensorWiseINT8Layout.get_plain_tensors(weight)
+
+        out_dtype = kwargs.get("out_dtype")
+        if out_dtype is None:
+            out_dtype = input_tensor._layout_params["orig_dtype"]
+
+        # weight is (N, K), scaled_mm expects (K, N) if transposed, but here it expects RHS
+        # weight.t() is (K, N)
+        weight_t = plain_weight.t()
+
+        # Input must be 2D for _scaled_mm
+        input_shape = plain_input.shape
+        if len(input_shape) > 2:
+            input_2d = plain_input.reshape(-1, input_shape[-1])
+        else:
+            input_2d = plain_input
+
+        try:
+            # torch._scaled_mm expects float inputs but performs scaled matmul
+            # See reference int8_gemm_scaled_mm.py
+            output = torch._scaled_mm(
+                input_2d.float().contiguous(),
+                weight_t.float().contiguous(),
+                scale=float(scale_a * scale_b),
+                bias=bias,
+            )
+
+            if isinstance(output, tuple):
+                output = output[0]
+
+            if len(input_shape) > 2:
+                output = output.reshape((*input_shape[:-1], weight.shape[0]))
+
+            return output.to(out_dtype)
+
+        except Exception as e:
+            logging.warning(
+                f"Tensor-wise INT8 _scaled_mm failed, falling back to dequantization: {e}"
+            )
+            # DQ Fallback
+            return torch.nn.functional.linear(
+                input_tensor.dequantize(), weight.dequantize(), bias
+            )
+
+    # Case 2: Fallback
+    if isinstance(weight, QuantizedTensor):
+        weight = weight.dequantize()
+    if isinstance(input_tensor, QuantizedTensor):
+        input_tensor = input_tensor.dequantize()
+
+    return torch.nn.functional.linear(input_tensor, weight, bias)
+
+
+@register_layout_op(torch.ops.aten.mm.default, "TensorWiseINT8Layout")
+def tensorwise_int8_mm(func, args, kwargs):
+    input_tensor = args[0]
+    weight = args[1]
+
+    if isinstance(input_tensor, QuantizedTensor) and isinstance(
+        weight, QuantizedTensor
+    ):
+        plain_input, scale_a = TensorWiseINT8Layout.get_plain_tensors(input_tensor)
+        plain_weight, scale_b = TensorWiseINT8Layout.get_plain_tensors(weight)
+
+        try:
+            output = torch._scaled_mm(
+                plain_input.float().contiguous(),
+                plain_weight.float().contiguous(),
+                scale=float(scale_a * scale_b),
+            )
+            if isinstance(output, tuple):
+                output = output[0]
+            return output
+        except Exception as e:
+            logging.warning(
+                f"Tensor-wise INT8 _scaled_mm failed, falling back to dequantization: {e}"
+            )
+            return func(input_tensor.dequantize(), weight.dequantize())
+
+    # Fallback
+    a = list(args)
+    if isinstance(args[0], QuantizedTensor):
+        a[0] = args[0].dequantize()
+    if isinstance(args[1], QuantizedTensor):
+        a[1] = args[1].dequantize()
+    return func(*a, **kwargs)
+
+
+@register_layout_op(torch.ops.aten.addmm.default, "TensorWiseINT8Layout")
+def tensorwise_int8_addmm(func, args, kwargs):
+    bias = args[0]
+    input_tensor = args[1]
+    weight = args[2]
+
+    if isinstance(input_tensor, QuantizedTensor) and isinstance(
+        weight, QuantizedTensor
+    ):
+        plain_input, scale_a = TensorWiseINT8Layout.get_plain_tensors(input_tensor)
+        plain_weight, scale_b = TensorWiseINT8Layout.get_plain_tensors(weight)
+
+        try:
+            output = torch._scaled_mm(
+                plain_input.float().contiguous(),
+                plain_weight.float().contiguous(),
+                scale=float(scale_a * scale_b),
+                bias=bias,
+            )
+            if isinstance(output, tuple):
+                output = output[0]
+            return output
+        except Exception as e:
+            logging.warning(
+                f"Tensor-wise INT8 _scaled_mm failed, falling back to dequantization: {e}"
+            )
+            return func(
+                bias, input_tensor.dequantize(), weight.dequantize(), **kwargs
+            )
+
+    a = list(args)
+    if isinstance(args[0], QuantizedTensor):
+        a[0] = args[0].dequantize()
+    if isinstance(args[1], QuantizedTensor):
+        a[1] = args[1].dequantize()
+    if isinstance(args[2], QuantizedTensor):
+        a[2] = args[2].dequantize()
+    return func(*a, **kwargs)
+
+
+@register_layout_op(torch.ops.aten.view.default, "TensorWiseINT8Layout")
+@register_layout_op(torch.ops.aten.t.default, "TensorWiseINT8Layout")
+def tensorwise_int8_func(func, args, kwargs):
+    input_tensor = args[0]
+    if isinstance(input_tensor, QuantizedTensor):
+        plain_input, scale = TensorWiseINT8Layout.get_plain_tensors(input_tensor)
+        ar = list(args)
+        ar[0] = plain_input
+        return QuantizedTensor(
+            func(*ar, **kwargs), "TensorWiseINT8Layout", input_tensor._layout_params
+        )
+    return func(*args, **kwargs)

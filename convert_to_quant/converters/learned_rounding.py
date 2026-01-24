@@ -54,8 +54,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.block_size = block_size
         self.target_format = target_format
 
-        # INT8 always uses block-wise scaling
-        if target_format == "int8":
+        # INT8 defaults to block-wise scaling, but allows tensor-wise
+        if target_format == "int8" and scaling_mode not in ("tensor", "block"):
             scaling_mode = "block"
         # Normalize block3d alias to block
         if scaling_mode == "block3d":
@@ -594,7 +594,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # INT8 quantization path
         if self.target_format == "int8":
-            return self._convert_int8(W_float32)
+            if self.scaling_mode == "tensor":
+                return self._convert_int8_tensorwise(W_float32)
+            else:
+                return self._convert_int8(W_float32)
 
         # FP8 quantization path - route based on scaling_mode
         if self.scaling_mode == "row":
@@ -658,6 +661,92 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             scale.to(device=self.device, dtype=SCALE_DTYPE),
             dequantized_weight,
         )
+
+    def _convert_int8_tensorwise(
+        self, W_float32: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        INT8 tensor-wise quantization.
+
+        Uses global scale: scale = 127 / max(abs(W))
+        """
+        from ..comfy.quant_ops import TensorWiseINT8Layout
+
+        # Initial quantization
+        qdata, layout_params = TensorWiseINT8Layout.quantize(
+            W_float32, is_weight=True
+        )
+        scale = layout_params["scale"]  # Global scale (scalar)
+
+        # Optional: Apply learned rounding optimization for INT8
+        if not self.no_learned_rounding and self.num_iter > 0:
+            verbose("    - Applying learned rounding optimization for INT8 (tensor-wise)...")
+            qdata, scale = self._optimize_int8_tensorwise_learned_rounding(W_float32, qdata, scale)
+
+        # Re-create layout params with potentially updated scale
+        layout_params["scale"] = scale
+
+        # Dequantize for bias correction
+        dequantized_weight = TensorWiseINT8Layout.dequantize(
+            qdata, scale, orig_dtype=COMPUTE_DTYPE
+        )
+
+        # Clean up
+        del W_float32
+        gc.collect()
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+
+        return (
+            qdata,
+            scale.to(device=self.device, dtype=SCALE_DTYPE),
+            dequantized_weight,
+        )
+
+    def _optimize_int8_tensorwise_learned_rounding(
+        self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Apply learned rounding optimization for INT8 tensor-wise quantization.
+        """
+        # Use inherited SVD computation
+        U_k, Vh_k, k = self._compute_svd_components(W_float32)
+
+        # Reuse FP8 optimizer logic but adapted for INT8 range
+        # We need to pass the scale in a way that _optimize_* can handle it.
+        # For INT8: dq = Q * scale
+        # For FP8: dq = Q / scale_fp8 => scale_fp8 = 1/scale_int8
+        scale_fp8_style = 1.0 / scale.clamp_min(1e-12)
+
+        # Temporary switch to FP8-like mode for optimization
+        orig_dtype = self.target_dtype
+        orig_max = self.f8_max_val
+        self.target_dtype = TARGET_INT8_DTYPE
+        self.f8_max_val = float(INT8_SYMMETRIC_MAX)
+
+        if self.optimizer_choice == "original":
+            final_tensor_scaled = self._optimize_original(
+                W_float32, scale_fp8_style, U_k, Vh_k
+            )
+        elif self.optimizer_choice == "adamw":
+            final_tensor_scaled = self._optimize_adamw(W_float32, scale_fp8_style, U_k, Vh_k)
+        elif self.optimizer_choice == "radam":
+            final_tensor_scaled = self._optimize_radam(W_float32, scale_fp8_style, U_k, Vh_k)
+        else:
+            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+
+        # Restore original state
+        self.target_dtype = orig_dtype
+        self.f8_max_val = orig_max
+
+        # Extract quantized data and final scale
+        with torch.no_grad():
+            # final_tensor_scaled is W * scale_fp8_style = W / scale_int8
+            final_qdata = final_tensor_scaled.clamp(-127, 127).round().to(TARGET_INT8_DTYPE)
+
+        self._cleanup_tensors(U_k, Vh_k)
+
+        return final_qdata, scale
 
     def _int8_dequantize_blockwise(
         self, qdata: torch.Tensor, scale: torch.Tensor, M: int, N: int, block_size: int

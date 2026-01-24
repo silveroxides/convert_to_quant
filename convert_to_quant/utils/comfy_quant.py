@@ -325,6 +325,7 @@ def edit_comfy_quant(
                 if weight.dtype == torch.float8_e4m3fn:
                     config["format"] = "float8_e4m3fn"
                 elif weight.dtype == torch.int8:
+                    # Default to blockwise for INT8 if unknown
                     config["format"] = "int8_blockwise"
                 else:
                     continue  # Can't determine format

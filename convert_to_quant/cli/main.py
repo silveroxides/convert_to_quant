@@ -1020,8 +1020,8 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         return
 
     # Determine which formats require block_size
-    primary_needs_block_size = args.int8
-    custom_needs_block_size = args.custom_type == "int8"
+    primary_needs_block_size = args.int8 and args.scaling_mode != "tensor"
+    custom_needs_block_size = args.custom_type == "int8" and args.custom_scaling_mode != "tensor"
     fallback_needs_block_size = args.fallback == "int8"
 
     # Validate block_size for primary format
@@ -1078,7 +1078,10 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         prefix = "simple_" if args.simple else "learned_"
         if args.int8:
             format_str = "int8"
-            scaling_str = f"_bs{args.block_size}"
+            if args.scaling_mode == "tensor":
+                scaling_str = "_tensorwise"
+            else:
+                scaling_str = f"_bs{args.block_size}"
         else:
             format_str = "fp8"
             scaling_str = f"_{args.scaling_mode}"
