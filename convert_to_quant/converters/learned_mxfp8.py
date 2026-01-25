@@ -391,7 +391,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         for i in pbar:
             with torch.no_grad():
                 current_dq = self._mxfp8_dequantize_blockwise(
-                    W_q_refined, current_block_scales_f32, M, N
+                    W_q_refined, current_block_scales_f32, M, N, discretize=False
                 )
                 error = current_dq - W_float32
                 projected_error = U_k.T @ error @ Vh_k.T
