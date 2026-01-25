@@ -365,6 +365,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         tensor_blocks = W_float32.reshape(M, -1, self.block_size)
         W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
         W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        # Snap to FP4 grid to ensure non-zero initial loss
+        q_tmp = _f32_to_floatx_unpacked(W_q_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        W_q_initial = _floatx_unpacked_to_f32(q_tmp, F4_E2M1_EBITS, F4_E2M1_MBITS)
         W_q_refined = W_q_initial.view(M, N).clone()
 
         # Current scale state (will be updated iteratively or jointly if enabled)
@@ -570,6 +573,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         tensor_blocks = W_float32.reshape(M, -1, self.block_size)
         W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
         W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        # Snap to FP4 grid to ensure non-zero initial loss
+        q_tmp = _f32_to_floatx_unpacked(W_q_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        W_q_initial = _floatx_unpacked_to_f32(q_tmp, F4_E2M1_EBITS, F4_E2M1_MBITS)
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
@@ -716,6 +722,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         tensor_blocks = W_float32.reshape(M, -1, self.block_size)
         W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
         W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        # Snap to FP4 grid to ensure non-zero initial loss
+        q_tmp = _f32_to_floatx_unpacked(W_q_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        W_q_initial = _floatx_unpacked_to_f32(q_tmp, F4_E2M1_EBITS, F4_E2M1_MBITS)
         qdata_f32 = W_q_initial.view(M, N)
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
