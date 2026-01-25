@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "convert_to_quant"
-version = "1.0.3"
+version = "1.0.4"
 description = "Convert safetensors weights to quantized formats (FP8, INT8) with learned rounding optimization"
 readme = "README.md"
 license = {text = "MIT"}
