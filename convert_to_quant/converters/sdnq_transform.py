@@ -54,14 +54,29 @@ def convert_state_dict(
     new_state_dict = {}
     
     modules_to_not_convert = config.get("modules_to_not_convert", [])
+    modules_to_remove = config.get("modules_to_remove", [])
     modules_dtype_dict = config.get("modules_dtype_dict", {})
     default_weights_dtype = config.get("weights_dtype", "int8")
     verbose = config.get("verbose", False)
 
+    # Handle dict or iterator
+    if hasattr(state_dict, "items"):
+        items = state_dict.items()
+        total = len(state_dict)
+    else:
+        items = state_dict
+        total = None # Unknown length for iterator
+
     # Use tqdm if verbose, otherwise simple iteration
-    iterator = tqdm(state_dict.items(), desc="Quantizing") if verbose else state_dict.items()
+    iterator = tqdm(items, desc="Quantizing", total=total) if verbose else items
 
     for name, tensor in iterator:
+        # Check removal
+        if is_matched(name, modules_to_remove):
+            if verbose:
+                print(f"Removing {name} due to removal pattern.")
+            continue
+
         # Check if it's a weight tensor
         if not name.endswith(".weight"):
             new_state_dict[name] = tensor

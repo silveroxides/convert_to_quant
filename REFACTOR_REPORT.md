@@ -13,7 +13,7 @@ The refactoring of `sdnq` quantization methods into a tensor-centric, stateless 
 
 ### 2. Transform Logic (`convert_to_quant/converters/sdnq_transform.py`)
 - Implemented `convert_state_dict` to iterate over model state dictionaries.
-- Handles layer filtering, type inference (Linear/Conv), and exclusion logic.
+- Handles layer filtering, type inference (Linear/Conv), and exclusion/removal logic.
 - Integrates metadata packing.
 
 ### 3. Metadata (`convert_to_quant/converters/metadata.py`)
@@ -23,6 +23,7 @@ The refactoring of `sdnq` quantization methods into a tensor-centric, stateless 
 ### 4. CLI (`convert_to_quant/cli/run_sdnq.py`)
 - New entry point for the stateless pipeline.
 - Supports loading `safetensors`, applying configuration, and saving the result.
+- **Integrated Model Filters**: Dynamically loads and applies filters (e.g., `--t5xxl`, `--flux2`) from `constants.py`.
 - Usage: `python -m convert_to_quant.cli.run_sdnq -i input.safetensors -o output.safetensors`
 
 ## Verification
@@ -31,7 +32,7 @@ The refactoring of `sdnq` quantization methods into a tensor-centric, stateless 
     - End-to-end execution of the CLI.
     - Correct quantization of weights (int8 dtype).
     - Generation of auxiliary tensors (scales, metadata).
-    - Correct handling of layer exclusion.
+    - Correct handling of layer exclusion via config and CLI flags.
 - All tests passed.
 
 ## Clean Up

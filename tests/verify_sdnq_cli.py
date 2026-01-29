@@ -20,6 +20,9 @@ def create_dummy_model(path: str):
     
     # Layer to exclude (by pattern in test config)
     state_dict["exclude_me.weight"] = torch.randn(10, 10, dtype=torch.float32)
+
+    # Layer to exclude via standard filter (e.g. t5xxl excludes "norm")
+    state_dict["layer.norm.weight"] = torch.randn(10, 10, dtype=torch.float32)
     
     save_file(state_dict, path)
     print(f"Created dummy model at {path}")
@@ -50,6 +53,11 @@ def verify_output(path: str):
     assert "exclude_me.weight_scale" not in state_dict
     assert state_dict["exclude_me.weight"].dtype == torch.float32
 
+    # Check layer excluded by --t5xxl (matches "norm")
+    assert "layer.norm.weight" in state_dict
+    assert "layer.norm.weight_scale" not in state_dict
+    assert state_dict["layer.norm.weight"].dtype == torch.float32
+
     print("Verification passed!")
 
 def main():
@@ -69,7 +77,8 @@ def main():
             "--input", input_path,
             "--output", output_path,
             "--dtype", "int8",
-            "--verbose"
+            "--verbose",
+            "--t5xxl" # Test filter flag
         ]
         
         # We also want to test config file support for exclusion
