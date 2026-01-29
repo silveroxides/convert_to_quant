@@ -14,6 +14,7 @@ from .argument_parser import (
     EXPERIMENTAL_ARGS,
     FILTER_ARGS,
     ADVANCED_ARGS,
+    MODES_ARGS,
 )
 from ..constants import (
     NORMALIZE_SCALES_ENABLED,
@@ -89,10 +90,12 @@ def main():
         "Default behavior: FP8 quantization with per-tensor scaling.\n"
         "For INT8 and other experimental options, see --help-experimental.\n"
         "For model-specific layer exclusions, see --help-filters.\n"
-        "For advanced LR tuning and early stopping, see --help-advanced.",
+        "For advanced LR tuning and early stopping, see --help-advanced.\n"
+        "For conversion and utility modes, see --help-modes.",
         experimental_args=EXPERIMENTAL_ARGS,
         filter_args=FILTER_ARGS,
         advanced_args=ADVANCED_ARGS,
+        modes_args=MODES_ARGS,
     )
 
 

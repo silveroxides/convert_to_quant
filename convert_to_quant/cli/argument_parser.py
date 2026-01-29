@@ -17,6 +17,8 @@ EXPERIMENTAL_ARGS = {
     "int8",
     "nvfp4",
     "mxfp8",
+    "make_hybrid_mxfp8",
+    "tensor_scales_path",
     "fallback",
     "custom_layers",
     "custom_type",
@@ -28,20 +30,64 @@ EXPERIMENTAL_ARGS = {
     "fallback_simple",
     "layer_config",
     "layer_config_fullmatch",
-    "gen_layer_template",
+    "exclude_layers",
+    "scaling_mode",
+    "block_size",
+    "input_scales_path",
 }
 
 # Generated from MODEL_FILTERS registry
 FILTER_ARGS = set(MODEL_FILTERS.keys())
 
 ADVANCED_ARGS = {
+    # LR Schedule parameters
+    "lr_gamma",
+    "lr_patience",
+    "lr_factor",
+    "lr_min",
+    "lr_cooldown",
+    "lr_threshold",
+    "lr_adaptive_mode",
     "lr_shape_influence",
     "lr_threshold_mode",
+    # Early stopping
     "early_stop_loss",
     "early_stop_lr",
     "early_stop_stall",
+    # NVFP4 scale optimization
     "scale_refinement_rounds",
+    "scale_optimization",
 }
+
+MODES_ARGS = {
+    # Format conversion modes
+    "convert_fp8_scaled",
+    "convert_int8_scaled",
+    "make_hybrid_mxfp8",
+    "tensor_scales_path",
+    # Legacy operations
+    "legacy_input_add",
+    "cleanup_fp8_scaled",
+    "scaled_fp8_marker",
+    # Activation calibration
+    "actcal",
+    "actcal_samples",
+    "actcal_percentile",
+    "actcal_lora",
+    "actcal_seed",
+    "actcal_device",
+    # Metadata editing
+    "edit_quant",
+    "remove_keys",
+    "add_keys",
+    "quant_filter",
+    # Development tools
+    "dry_run",
+    # Conversion-specific options
+    "hp_filter",
+    "full_precision_mm",
+}
+
 
 class MultiHelpArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with multiple help sections for experimental and filter args."""
@@ -52,11 +98,13 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         experimental_args=None,
         filter_args=None,
         advanced_args=None,
+        modes_args=None,
         **kwargs,
     ):
         self._experimental_args = experimental_args or set()
         self._filter_args = filter_args or set()
         self._advanced_args = advanced_args or set()
+        self._modes_args = modes_args or set()
         self._all_actions = []  # Track all actions for section-specific help
         super().__init__(*args, **kwargs)
 
@@ -79,6 +127,9 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             sys.exit(0)
         elif "--help-advanced" in args or "-ha" in args:
             self._print_advanced_help()
+            sys.exit(0)
+        elif "--help-modes" in args or "-hm" in args:
+            self._print_modes_help()
             sys.exit(0)
 
         return super().parse_args(args, namespace)
@@ -227,12 +278,42 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("These options provide fine-grained control over the optimizer")
         print("learning rate schedules and early stopping behavior.")
         print()
-        print("Shape-Adaptive LR (Plateau Schedule):")
+        print("LR Schedule (Exponential):")
         print("-" * 40)
 
-        shape_args = ["lr_shape_influence", "lr_threshold_mode"]
+        exp_args = ["lr_gamma"]
         for action in self._all_actions:
-            if self._get_dest_name(action) in shape_args:
+            if self._get_dest_name(action) in exp_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("LR Schedule (Plateau):")
+        print("-" * 40)
+
+        plateau_args = [
+            "lr_patience",
+            "lr_factor",
+            "lr_min",
+            "lr_cooldown",
+            "lr_threshold",
+            "lr_shape_influence",
+            "lr_threshold_mode",
+        ]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in plateau_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("LR Schedule (Adaptive):")
+        print("-" * 40)
+
+        adaptive_args = ["lr_adaptive_mode"]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in adaptive_args:
                 line = self._format_action_help(action)
                 if line:
                     print(line)
@@ -249,12 +330,100 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
                     print(line)
 
         print()
-        print("NVFP4 Scale Optimization:")
+        print("NVFP4/MXFP8 Scale Optimization:")
         print("-" * 40)
 
-        scale_args = ["scale_refinement_rounds"]
+        scale_args = ["scale_refinement_rounds", "scale_optimization"]
         for action in self._all_actions:
             if self._get_dest_name(action) in scale_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+
+
+    def _print_modes_help(self):
+        """Print help for conversion and utility modes."""
+        print("Conversion & Utility Modes")
+        print("=" * 60)
+        print()
+        print("These are specialized workflows separate from quantization.")
+        print("Use --help for standard quantization options.")
+        print()
+        print("Format Conversion:")
+        print("-" * 40)
+
+        conversion_args = [
+            "convert_fp8_scaled",
+            "hp_filter",
+            "full_precision_mm",
+            "convert_int8_scaled",
+        ]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in conversion_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("Hybrid Format Creation:")
+        print("-" * 40)
+
+        hybrid_args = ["make_hybrid_mxfp8", "tensor_scales_path"]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in hybrid_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("Legacy Operations:")
+        print("-" * 40)
+
+        legacy_args = ["legacy_input_add", "cleanup_fp8_scaled", "scaled_fp8_marker"]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in legacy_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("Activation Scale Calibration:")
+        print("-" * 40)
+
+        actcal_args = [
+            "actcal",
+            "actcal_samples",
+            "actcal_percentile",
+            "actcal_lora",
+            "actcal_seed",
+            "actcal_device",
+        ]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in actcal_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("Metadata Editing:")
+        print("-" * 40)
+
+        edit_args = ["edit_quant", "remove_keys", "add_keys", "quant_filter"]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in edit_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("Development Tools:")
+        print("-" * 40)
+
+        dev_args = ["dry_run"]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in dev_args:
                 line = self._format_action_help(action)
                 if line:
                     print(line)
@@ -274,6 +443,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
                 dest not in self._experimental_args
                 and dest not in self._filter_args
                 and dest not in self._advanced_args
+                and dest not in self._modes_args
             ):
                 standard_actions.append(action)
 
@@ -297,7 +467,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             "  --help-experimental, -he    Show experimental quantization options"
         )
         formatter.add_text(
-            "                              (int8, custom-layers, scaling_mode, etc.)"
+            "                              (int8, nvfp4, mxfp8, custom-layers, etc.)"
         )
         formatter.add_text(
             "  --help-filters, -hf         Show model-specific exclusion filters"
@@ -309,7 +479,13 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             "  --help-advanced, -ha        Show advanced LR tuning and early stopping"
         )
         formatter.add_text(
-            "                              (lr-shape-influence, early-stop-*, etc.)"
+            "                              (lr-gamma, lr-patience, early-stop-*, etc.)"
+        )
+        formatter.add_text(
+            "  --help-modes, -hm           Show conversion and utility modes"
+        )
+        formatter.add_text(
+            "                              (convert-fp8-scaled, actcal, edit-quant, etc.)"
         )
 
         # Add epilog
