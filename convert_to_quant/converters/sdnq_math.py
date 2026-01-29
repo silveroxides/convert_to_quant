@@ -463,21 +463,22 @@ def sdnq_quantize_layer_weight(
 
     quantized_weight, scale, zero_point = quantize_weight(weight, reduction_axes, weights_dtype, use_stochastic_rounding=use_stochastic_rounding)
     
-    if (
-        not dequantize_fp32
-        and dtype_info["num_bits"] <= 8
-        and not (
-            use_quantized_matmul
-            and not qm_info["is_integer"]
-            and (not use_tensorwise_fp8_matmul or qm_info["num_bits"] == 16)
-        )
-    ):
-        scale = scale.to(dtype=torch_dtype)
+    # Keep auxiliary tensors in float32 for precision as requested by user.
+    # We previously cast these to torch_dtype (original model dtype), but
+    # numerical stability for SVD correction and high-bit quantization
+    # requires float32.
+    if dequantize_fp32:
+        # If user explicitly wants everything in fp32, ensuring it here
+        scale = scale.to(dtype=torch.float32)
         if zero_point is not None:
-            zero_point = zero_point.to(dtype=torch_dtype)
+            zero_point = zero_point.to(dtype=torch.float32)
         if svd_up is not None:
-            svd_up = svd_up.to(dtype=torch_dtype)
-            svd_down = svd_down.to(dtype=torch_dtype)
+            svd_up = svd_up.to(dtype=torch.float32)
+            svd_down = svd_down.to(dtype=torch.float32)
+    else:
+        # By default, we now keep them as they are (already float32 from math)
+        # instead of casting down to torch_dtype.
+        pass
 
     re_quantize_for_matmul = re_quantize_for_matmul or num_of_groups > 1
     if use_quantized_matmul and not re_quantize_for_matmul and not dtype_info["is_packed"]:

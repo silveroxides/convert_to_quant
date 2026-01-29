@@ -1,11 +1,12 @@
 
-## 2026-01-29: Fix SDNQ SVD Contiguity Issue
+## 2026-01-29: Fix SDNQ SVD Contiguity and Dtype Issues
 
 ### Session Summary
-Fixed a `ValueError` when saving models quantized with SDNQ and SVD correction. Also enabled GPU acceleration for SDNQ quantization using pinned memory transfers, significantly speeding up SVD-based optimization for large models.
+Fixed a `ValueError` when saving models quantized with SDNQ and SVD correction. Also enabled GPU acceleration and ensured auxiliary tensors (`weight_scale`, `svd_up`, `svd_down`) are saved in FP32 for numerical precision.
 
 ### Changes Made
 - **Contiguity Fix**: Added a check and `.contiguous()` call for all tensors in `convert_to_sdnq` workflow before saving (required by `safetensors`).
+- **Precision Fix**: Modified `sdnq_math.py` to keep `weight_scale`, `svd_up`, and `svd_down` in `float32` instead of casting them down to the original model dtype.
 - **GPU Acceleration**: Updated `SDNQConverter` to use `transfer_to_gpu_pinned` for fast CPU→GPU transfers. Quantization math now executes on CUDA if available.
 - **Verification**: Confirmed that `svd_up` and `svd_down` are saved as contiguous tensors and that GPU transfers are active.
 
