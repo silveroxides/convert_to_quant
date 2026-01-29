@@ -14,6 +14,7 @@ from .argument_parser import (
     EXPERIMENTAL_ARGS,
     FILTER_ARGS,
     ADVANCED_ARGS,
+    LEARNED_ROUNDING_ARGS,
     MODES_ARGS,
 )
 from ..constants import (
@@ -95,6 +96,7 @@ def main():
         experimental_args=EXPERIMENTAL_ARGS,
         filter_args=FILTER_ARGS,
         advanced_args=ADVANCED_ARGS,
+        learned_rounding_args=LEARNED_ROUNDING_ARGS,
         modes_args=MODES_ARGS,
     )
 
