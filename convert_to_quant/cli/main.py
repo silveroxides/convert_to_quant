@@ -30,6 +30,7 @@ from ..formats.legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
 from ..formats.nvfp4_conversion import convert_to_nvfp4
 from ..formats.mxfp8_conversion import convert_to_mxfp8
 from ..formats.hybrid_mxfp8_conversion import convert_to_hybrid_mxfp8
+from ..formats.sdnq_conversion import convert_to_sdnq
 from ..utils.comfy_quant import edit_comfy_quant
 from ..pinned_transfer import set_verbose as set_pinned_verbose
 import json
@@ -127,6 +128,11 @@ def main():
         "--mxfp8",
         action="store_true",
         help="Use MXFP8 (Microscaling FP8) block quantization. Requires Blackwell GPU (SM >= 10.0) for inference.",
+    )
+    parser.add_argument(
+        "--sdnq",
+        action="store_true",
+        help="Use SDNQ (Stochastic Differentiable Neural Quantization). Supports arbitrary bit-widths and SVD correction.",
     )
     parser.add_argument(
         "--make-hybrid-mxfp8",
@@ -239,6 +245,48 @@ def main():
         choices=["DEBUG", "VERBOSE", "NORMAL", "MINIMAL"],
         help="Set verbosity: NORMAL (default), VERBOSE (increased), MINIMAL (reduced), DEBUG (all).",
     )
+    # SDNQ-specific arguments
+    parser.add_argument(
+        "--sdnq-dtype",
+        type=str,
+        default="int8",
+        dest="sdnq_dtype",
+        help="[SDNQ] Target weight dtype (e.g., int8, int4, fp8, float8_e4m3fn). (default: int8)",
+    )
+    parser.add_argument(
+        "--sdnq-group-size",
+        type=int,
+        default=0,
+        dest="sdnq_group_size",
+        help="[SDNQ] Group size for quantization (0 for auto). (default: 0)",
+    )
+    parser.add_argument(
+        "--sdnq-use-svd",
+        action="store_true",
+        dest="sdnq_use_svd",
+        help="[SDNQ] Enable SVD-based low-rank correction.",
+    )
+    parser.add_argument(
+        "--sdnq-svd-rank",
+        type=int,
+        default=32,
+        dest="sdnq_svd_rank",
+        help="[SDNQ] SVD rank for correction. (default: 32)",
+    )
+    parser.add_argument(
+        "--sdnq-svd-steps",
+        type=int,
+        default=8,
+        dest="sdnq_svd_steps",
+        help="[SDNQ] SVD iterations. (default: 8)",
+    )
+    parser.add_argument(
+        "--sdnq-stochastic",
+        action="store_true",
+        dest="sdnq_stochastic",
+        help="[SDNQ] Enable stochastic rounding.",
+    )
+
     # Model filter flags - generated from MODEL_FILTERS registry
 
     for filter_name, filter_cfg in MODEL_FILTERS.items():
@@ -892,6 +940,40 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 low_memory=args.low_memory,
             )
             return
+
+    # Handle SDNQ quantization mode (separate workflow)
+    if args.sdnq:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            # Build filename: sdnq_{dtype}[_svd]
+            svd_suffix = "_svd" if args.sdnq_use_svd else ""
+            args.output = f"{base}_sdnq_{args.sdnq_dtype}{svd_suffix}.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        # Extract filter flags with validation
+        filter_flags = extract_filter_flags(args)
+
+        convert_to_sdnq(
+            args.input,
+            args.output,
+            weights_dtype=args.sdnq_dtype,
+            group_size=args.sdnq_group_size,
+            use_svd=args.sdnq_use_svd,
+            svd_rank=args.sdnq_svd_rank,
+            svd_steps=args.sdnq_svd_steps,
+            use_quantized_matmul=args.full_precision_matrix_mult is False, # Logic flip? No, sdnq_math uses use_quantized_matmul
+            use_stochastic_rounding=args.sdnq_stochastic,
+            active_filters=filter_flags,
+            save_comfy_quant=args.comfy_quant,
+        )
+        return
 
     # Handle legacy input scale addition mode (separate workflow)
     if args.legacy_input_add:

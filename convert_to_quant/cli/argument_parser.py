@@ -17,6 +17,7 @@ EXPERIMENTAL_ARGS = {
     "int8",
     "nvfp4",
     "mxfp8",
+    "sdnq",
     "make_hybrid_mxfp8",
     "tensor_scales_path",
     "fallback",
@@ -40,6 +41,15 @@ EXPERIMENTAL_ARGS = {
 
 # Generated from MODEL_FILTERS registry
 FILTER_ARGS = set(MODEL_FILTERS.keys())
+
+SDNQ_ARGS = {
+    "sdnq_dtype",
+    "sdnq_group_size",
+    "sdnq_use_svd",
+    "sdnq_svd_rank",
+    "sdnq_svd_steps",
+    "sdnq_stochastic",
+}
 
 ADVANCED_ARGS = {
     # LR Schedule parameters
@@ -117,6 +127,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         advanced_args=None,
         learned_rounding_args=None,
         modes_args=None,
+        sdnq_args=None,
         **kwargs,
     ):
         self._experimental_args = experimental_args or set()
@@ -124,6 +135,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         self._advanced_args = advanced_args or set()
         self._learned_rounding_args = learned_rounding_args or set()
         self._modes_args = modes_args or set()
+        self._sdnq_args = sdnq_args or set()
         self._all_actions = []  # Track all actions for section-specific help
         super().__init__(*args, **kwargs)
 
@@ -152,6 +164,9 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             sys.exit(0)
         elif "--help-modes" in args or "-hm" in args:
             self._print_modes_help()
+            sys.exit(0)
+        elif "--help-sdnq" in args or "-hs" in args:
+            self._print_sdnq_help()
             sys.exit(0)
 
         return super().parse_args(args, namespace)
@@ -494,6 +509,31 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
         print()
 
+    def _print_sdnq_help(self):
+        """Print help for SDNQ options."""
+        print("SDNQ (Stochastic Differentiable Neural Quantization) Options")
+        print("=" * 60)
+        print()
+        print("Options for SDNQ quantization mode. Enable with --sdnq.")
+        print()
+        print("SDNQ Settings:")
+        print("-" * 40)
+
+        sdnq_args_list = [
+            "sdnq_dtype",
+            "sdnq_group_size",
+            "sdnq_use_svd",
+            "sdnq_svd_rank",
+            "sdnq_svd_steps",
+            "sdnq_stochastic",
+        ]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in sdnq_args_list:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+        print()
+
     def format_help(self):
         """Override to add section hints and hide experimental/filter args."""
         # Build custom help output
@@ -509,6 +549,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
                 and dest not in self._advanced_args
                 and dest not in self._modes_args
                 and dest not in self._learned_rounding_args
+                and dest not in self._sdnq_args
             ):
                 standard_actions.append(action)
 
@@ -557,6 +598,12 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         )
         formatter.add_text(
             "                              (convert-fp8-scaled, actcal, edit-quant, etc.)"
+        )
+        formatter.add_text(
+            "  --help-sdnq, -hs            Show SDNQ quantization options"
+        )
+        formatter.add_text(
+            "                              (sdnq-dtype, sdnq-group-size, sdnq-use-svd, etc.)"
         )
 
         # Add epilog
