@@ -14,8 +14,8 @@ from safetensors.torch import save_file
 from ..constants import MODEL_FILTERS, build_exclusion_patterns
 from ..converters.sdnq_converter import SDNQConverter
 from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
-from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
-from ..utils.logging import info, verbose, minimal
+from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales, compute_bias_correction
+from ..utils.logging import info, verbose, minimal, debug
 
 def convert_to_sdnq(
     input_path: str,
@@ -27,6 +27,8 @@ def convert_to_sdnq(
     svd_steps: int = 8,
     use_quantized_matmul: bool = False,
     use_stochastic_rounding: bool = False,
+    calibrate: bool = False,
+    calib_samples: int = 64,
     active_filters: Optional[Dict[str, bool]] = None,
     save_comfy_quant: bool = True,
     **kwargs
@@ -94,6 +96,40 @@ def convert_to_sdnq(
                 # Store core tensors
                 new_tensors[key] = qdata
                 new_tensors[f"{base_name}.weight_scale"] = scale
+
+                # Bias Correction Calibration
+                if calibrate:
+                    bias_key = f"{base_name}.bias"
+                    original_bias = loader.get_tensor(bias_key)
+                    if original_bias is not None:
+                        verbose(f"  - Calibrating bias for: {key}")
+                        # Dequantize to measure error
+                        from ..converters.sdnq_math import unpack_weight
+                        # Reconstruct dequantized weight for error measurement
+                        # Note: unpack_weight expects CPU/GPU tensor depending on where it's called.
+                        # We use CPU here as it's for offline conversion.
+                        w_dequant = unpack_weight(qdata, weights_dtype, scale, zero_point, q_info["group_size"], tensor.shape)
+                        
+                        # Add SVD correction to dequantized weight
+                        if svd_up is not None and svd_down is not None:
+                             w_dequant = w_dequant + torch.mm(svd_up, svd_down).view(tensor.shape)
+
+                        # Generate random calibration data
+                        in_features = tensor.shape[1] if tensor.ndim > 1 else tensor.shape[0]
+                        # Use a fixed seed for reproducible calibration
+                        torch.manual_seed(42)
+                        calibration_data = torch.randn((calib_samples, in_features), dtype=torch.float32)
+                        
+                        # Compute correction
+                        device = "cuda" if torch.cuda.is_available() else "cpu"
+                        corrected_bias, success = compute_bias_correction(
+                            tensor, w_dequant, original_bias, calibration_data, device
+                        )
+                        
+                        if success:
+                            new_tensors[bias_key] = corrected_bias
+                            loader.mark_processed(bias_key)
+                            debug(f"    - Bias correction successful for {base_name}")
                 
                 if zero_point is not None:
                     new_tensors[f"{base_name}.weight_zp"] = zero_point

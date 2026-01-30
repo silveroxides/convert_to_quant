@@ -24,6 +24,11 @@ We have pivoted to a "Robust Alignment" strategy that matches the **SDNext** ori
 - **Finding**: Redundant transpositions and inconsistent metadata were causing dimension/stride mismatches in `_scaled_mm`.
 - **Correction**: Standardized on `(OC, IC)` storage in the converter and used the logical `transposed` flag to inform the dispatcher. Added `unpack_shape` to metadata to robustly recover original layout during dequantization.
 
+### E. Bias Correction Calibration
+- **Finding**: The user requested integration of bias correction to help with fidelity issues.
+- **Correction**: Integrated `compute_bias_correction` into `sdnq_conversion.py`. Users can now use `--sdnq-calibrate` to calculate and subtract quantization error from the layer's bias.
+- **Impact**: This centers the error distribution, resolving colorful artifacts caused by bias-accumulated offsets in large models like Flux.
+
 ## 3. Discrepancy Resolution Table
 
 | Feature | Origin (SDNext) | Target (Comfy-Kitchen) | Local CTQ (Fixed) | Status |
@@ -33,6 +38,7 @@ We have pivoted to a "Robust Alignment" strategy that matches the **SDNext** ori
 | **SVD Logic** | Weight-merge | Sequential | **Sequential** | **Aligned (Target)** |
 | **Transpose** | Physical | Logical | **Logical** | **Aligned (Target)** |
 | **Metadata** | Custom | Dataclass/Params | **Standardized Dict** | **Aligned (Target)** |
+| **Bias Correction** | Available | Available | **Implemented** | **Aligned** |
 
 ## 4. Conclusion
 By aligning the converter with the source origin's math and the target platform's architecture, we have eliminated the "sand castle" risk. The implementation is now robust, memory-efficient, and mathematically identical to the original SDNQ specification.

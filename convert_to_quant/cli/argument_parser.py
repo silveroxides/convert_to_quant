@@ -49,6 +49,7 @@ SDNQ_ARGS = {
     "sdnq_svd_rank",
     "sdnq_svd_steps",
     "sdnq_stochastic",
+    "sdnq_calibrate",
 }
 
 ADVANCED_ARGS = {
@@ -526,6 +527,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             "sdnq_svd_rank",
             "sdnq_svd_steps",
             "sdnq_stochastic",
+            "sdnq_calibrate",
         ]
         for action in self._all_actions:
             if self._get_dest_name(action) in sdnq_args_list:

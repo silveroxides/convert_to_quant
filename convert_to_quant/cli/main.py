@@ -286,6 +286,12 @@ def main():
         dest="sdnq_stochastic",
         help="[SDNQ] Enable stochastic rounding.",
     )
+    parser.add_argument(
+        "--sdnq-calibrate",
+        action="store_true",
+        dest="sdnq_calibrate",
+        help="[SDNQ] Enable bias correction calibration.",
+    )
 
     # Model filter flags - generated from MODEL_FILTERS registry
 
@@ -968,8 +974,10 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             use_svd=args.sdnq_use_svd,
             svd_rank=args.sdnq_svd_rank,
             svd_steps=args.sdnq_svd_steps,
-            use_quantized_matmul=args.full_precision_matrix_mult is False, # Logic flip? No, sdnq_math uses use_quantized_matmul
+            use_quantized_matmul=args.full_precision_matrix_mult is False,
             use_stochastic_rounding=args.sdnq_stochastic,
+            calibrate=args.sdnq_calibrate,
+            calib_samples=args.calib_samples,
             active_filters=filter_flags,
             save_comfy_quant=args.comfy_quant,
         )
