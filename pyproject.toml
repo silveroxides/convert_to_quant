@@ -32,6 +32,7 @@ dev = ["pytest", "ruff"]
 convert_to_quant = "convert_to_quant.convert_to_quant:main"
 convert-to-quant = "convert_to_quant.convert_to_quant:main"
 ctq = "convert_to_quant.convert_to_quant:main"
+sdnq = "convert_to_quant.cli.run_sdnq:main"
 
 [project.urls]
 Repository = "https://github.com/silveroxides/convert_to_quant"
