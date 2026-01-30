@@ -2,7 +2,7 @@
 
 **Convert safetensors weights to quantized formats (FP8, INT8, NVFP4, MXFP8) with learned rounding optimization for ComfyUI inference.**
 
-[![PyPI version](https://img.shields.io/pypi/v/convert-to-quant.svg)](https://pypi.org/project/convert-to-quant)
+[![PyPI version](https://badge.fury.io/py/convert-to-quant.svg)](https://badge.fury.io/py/convert-to-quant)
 [![GitHub release](https://img.shields.io/github/v/release/silveroxides/convert_to_quant)](https://github.com/silveroxides/convert_to_quant/releases)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
