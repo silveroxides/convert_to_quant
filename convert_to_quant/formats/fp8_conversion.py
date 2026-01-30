@@ -262,7 +262,9 @@ def convert_to_fp8_scaled(
         [
             key
             for key in all_keys
-            if key.endswith(".weight") and loader.get_ndim(key) == 2
+            if key.endswith(".weight")
+            and not any(avoid in key for avoid in AVOID_KEY_NAMES)
+            and loader.get_ndim(key) == 2
         ]
     )
     total_weights = len(weight_keys)
