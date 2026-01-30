@@ -144,7 +144,7 @@ def pack_uint5(tensor: torch.Tensor) -> torch.Tensor:
 
 def pack_uint4(tensor: torch.Tensor) -> torch.Tensor:
     packed_tensor = tensor.contiguous().view(-1, 2)
-    packed_tensor = torch.bitwise_or(torch.bitwise_left_shift(packed_tensor[:, 0], 4), packed_tensor[:, 1])
+    packed_tensor = torch.bitwise_or(packed_tensor[:, 0], torch.bitwise_left_shift(packed_tensor[:, 1], 4))
     return packed_tensor
 
 def pack_uint3(tensor: torch.Tensor) -> torch.Tensor:
@@ -246,8 +246,8 @@ def pack_float(x: torch.Tensor, weights_dtype: str) -> torch.Tensor:
 # Unpacking logic (Added for dequantization support)
 def unpack_uint4(tensor: torch.Tensor) -> torch.Tensor:
     res = torch.empty((tensor.shape[0], 2), device=tensor.device, dtype=torch.uint8)
-    res[:, 0] = torch.bitwise_right_shift(tensor, 4)
-    res[:, 1] = torch.bitwise_and(tensor, 0x0F)
+    res[:, 0] = torch.bitwise_and(tensor, 0x0F)
+    res[:, 1] = torch.bitwise_right_shift(tensor, 4)
     return res.view(-1)
 
 def unpack_uint2(tensor: torch.Tensor) -> torch.Tensor:
@@ -398,9 +398,6 @@ def sdnq_quantize_layer_weight(
         if use_quantized_matmul:
             use_quantized_matmul = channel_size >= 32 and output_channel_size >= 32
             use_quantized_matmul = use_quantized_matmul and output_channel_size % 16 == 0 and channel_size % 16 == 0
-            # If we want to use tensorwise_fp8_matmul (scaled_mm), we must use scalar scales
-            if use_tensorwise_fp8_matmul and not qm_info["is_integer"]:
-                reduction_axes = [0, 1] if weight.ndim == 2 else list(range(weight.ndim))
     else:
         if weight.ndim > 1:
             output_channel_size, channel_size = weight.shape[-2:]
@@ -485,21 +482,10 @@ def sdnq_quantize_layer_weight(
 
     re_quantize_for_matmul = re_quantize_for_matmul or num_of_groups > 1
     if use_quantized_matmul and not re_quantize_for_matmul and not dtype_info["is_packed"]:
-        # Do NOT transpose here; quant_ops.py or the inference engine will handle
-        # transposition if needed for optimized kernels. Saving in original
-        # (OC, IC) layout ensures compatibility with standard loaders and DQ.
+        scale.t_()
+        quantized_weight.t_()
         quantized_weight = prepare_weight_for_matmul(quantized_weight, use_contiguous_mm)
-
-        # Do NOT transpose scale to [1, OC] if it's tensor-wise/per-channel,
-        # as inference engines like ComfyUI/scaled_mm expect [OC, 1] or scalar.
-        # scale.t_()
-        
-        if use_tensorwise_fp8_matmul and not qm_info["is_integer"]:
-            # Ensure scale is a scalar for scaled_mm compatibility
-            if scale.numel() > 1:
-                scale = scale.max().unsqueeze(0)
-            scale = scale.to(dtype=torch.float32)
-        elif not qm_info["is_integer"]:
+        if not use_tensorwise_fp8_matmul and not qm_info["is_integer"]:
             scale = scale.to(dtype=torch.float32)
 
     if dtype_info["is_packed"]:
