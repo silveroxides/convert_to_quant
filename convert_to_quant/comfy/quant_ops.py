@@ -2413,13 +2413,23 @@ LAYOUTS["SDNQLayout"] = SDNQLayout
 @register_layout_op(torch.ops.aten.linear.default, "SDNQLayout")
 def sdnq_linear(func, args, kwargs):
     """
-    SDNQ linear operation.
-    Always falls back to dequantization for now as SDNQ supports many custom formats.
+    SDNQ linear operation with scaled_mm support for FP8.
     """
     input_tensor = args[0]
     weight = args[1]
     bias = args[2] if len(args) > 2 else None
 
+    if isinstance(input_tensor, QuantizedTensor) and isinstance(weight, QuantizedTensor):
+        p = weight._layout_params
+        # Optimized FP8 Path
+        if p.get("weights_dtype") == "float8_e4m3fn" and p.get("group_size") == -1 and p.get("svd_up") is None:
+            plain_input, scale_a = TensorCoreFP8Layout.get_plain_tensors(input_tensor)
+            plain_weight, scale_b, _, _, _ = SDNQLayout.get_plain_tensors(weight)
+            
+            # Use TensorCoreFP8Layout's optimized linear logic
+            return fp8_linear(func, args, kwargs)
+
+    # Fallback to dequantization
     if isinstance(weight, QuantizedTensor):
         weight = weight.dequantize()
     if isinstance(input_tensor, QuantizedTensor):
@@ -2432,6 +2442,11 @@ def sdnq_linear(func, args, kwargs):
 def sdnq_mm(func, args, kwargs):
     input_tensor = args[0]
     weight = args[1]
+
+    if isinstance(input_tensor, QuantizedTensor) and isinstance(weight, QuantizedTensor):
+        p = weight._layout_params
+        if p.get("weights_dtype") == "float8_e4m3fn" and p.get("group_size") == -1 and p.get("svd_up") is None:
+            return fp8_mm(func, args, kwargs)
 
     if isinstance(weight, QuantizedTensor):
         weight = weight.dequantize()
