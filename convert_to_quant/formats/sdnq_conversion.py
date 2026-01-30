@@ -112,7 +112,10 @@ def convert_to_sdnq(
                         "group_size": q_info["group_size"],
                         "use_svd": use_svd,
                         "original_shape": list(tensor.shape),
-                        "orig_dtype": str(tensor.dtype).split('.')[-1]
+                        "orig_shape": list(tensor.shape),
+                        "unpack_shape": list(tensor.shape),
+                        "orig_dtype": str(tensor.dtype).split('.')[-1],
+                        "transposed": False
                     }
                     new_tensors[comfy_quant_key] = dict_to_tensor(comfy_dict)
                 

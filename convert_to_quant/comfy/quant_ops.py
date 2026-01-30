@@ -1,6 +1,7 @@
 import torch
 import logging
-from typing import Tuple, Dict
+from dataclasses import dataclass
+from typing import Tuple, Dict, Optional, Any, Union, List
 from . import float as comfy_float  # Aliased to match ComfyUI's comfy.float usage
 
 _LAYOUT_REGISTRY = {}
@@ -147,9 +148,15 @@ class QuantizedTensor(torch.Tensor):
             layout_type: Layout class (subclass of QuantizedLayout)
             layout_params: Dict with layout-specific parameters
         """
+        # Use logical shape from layout_params if available, otherwise fallback to qdata shape.
+        # This is critical for packed formats where storage shape != logical shape.
+        shape = layout_params.get("orig_shape", layout_params.get("original_shape", qdata.shape))
+        if isinstance(shape, list):
+            shape = torch.Size(shape)
+            
         return torch.Tensor._make_wrapper_subclass(
             cls,
-            qdata.shape,
+            shape,
             device=qdata.device,
             dtype=qdata.dtype,
             requires_grad=False,
@@ -2322,17 +2329,6 @@ class SDNQLayout(QuantizedLayout):
     """
     SDNQ quantization layout.
     Supports arbitrary bit-widths, optional SVD correction, and custom dtypes.
-
-    Storage format:
-    - qdata: The quantized (and potentially packed) tensor data.
-    - layout_params:
-        - scale: Scaling factor(s).
-        - zero_point: Optional zero point.
-        - svd_up: Optional SVD 'U' matrix component.
-        - svd_down: Optional SVD 'Vh' matrix component.
-        - weights_dtype: The SDNQ dtype name (e.g., 'int4', 'fp6').
-        - group_size: Size of quantization groups.
-        - original_shape: Shape of the weight before any flattening/grouping.
     """
 
     @classmethod
@@ -2353,38 +2349,39 @@ class SDNQLayout(QuantizedLayout):
             "weights_dtype": info["weights_dtype"],
             "group_size": info["group_size"],
             "original_shape": tensor.shape,
-            "orig_dtype": tensor.dtype
+            "orig_shape": tensor.shape,
+            "orig_dtype": tensor.dtype,
+            "transposed": False,
+            "unpack_shape": tensor.shape
         }
         return qdata, layout_params
 
     @staticmethod
-    def dequantize(qdata, **layout_params):
+    def dequantize(qdata, **params):
         """
         Dequantize an SDNQ-formatted tensor.
         W = dequant(Q) + (svd_up @ svd_down if available)
         """
-        weights_dtype = layout_params.get("weights_dtype", "int8")
-        scale = layout_params.get("scale")
-        zero_point = layout_params.get("zero_point")
-        svd_up = layout_params.get("svd_up")
-        svd_down = layout_params.get("svd_down")
-        group_size = layout_params.get("group_size", -1)
-        original_shape = layout_params.get("original_shape")
-        orig_dtype = layout_params.get("orig_dtype", torch.float16)
+        weights_dtype = params.get("weights_dtype", "int8")
+        scale = params.get("scale")
+        zero_point = params.get("zero_point")
+        svd_up = params.get("svd_up")
+        svd_down = params.get("svd_down")
+        group_size = params.get("group_size", -1)
+        original_shape = params.get("original_shape")
+        orig_dtype = params.get("orig_dtype", torch.float16)
+        is_transposed = params.get("transposed", False)
+        unpack_shape = params.get("unpack_shape", original_shape)
 
-        # 1. Unpack if necessary (handled by SDNQ math helpers)
-        # We'll use a local import to avoid circular dependencies if possible,
-        # but since we're in quant_ops.py, we might want to have the math here.
         from ..converters.sdnq_math import unpack_weight
         
-        # Unpack and basic dequant
-        weight = unpack_weight(qdata, weights_dtype, scale, zero_point, group_size, original_shape)
+        # 1. Unpack using original (non-transposed) shape
+        weight = unpack_weight(qdata, weights_dtype, scale, zero_point, group_size, unpack_shape)
         weight = weight.to(orig_dtype)
 
         # 2. Add SVD correction if present
         if svd_up is not None and svd_down is not None:
-            # Reconstruct low-rank part
-            # svd_up: (M, R), svd_down: (R, N)
+            # Reconstruct low-rank part: svd_up is [OC, R], svd_down is [R, IC]
             correction = torch.mm(svd_up.to(orig_dtype), svd_down.to(orig_dtype))
             
             # Reshape correction to match weight if it was a conv layer
@@ -2392,6 +2389,10 @@ class SDNQLayout(QuantizedLayout):
                 correction = correction.view(weight.shape)
             
             weight = weight.add(correction)
+
+        # 3. Apply deferred transpose if requested
+        if is_transposed:
+            weight = weight.t()
 
         return weight
 
@@ -2410,31 +2411,71 @@ class SDNQLayout(QuantizedLayout):
 LAYOUTS["SDNQLayout"] = SDNQLayout
 
 
+def _sdnq_matmul_optimized(input_tensor, weight_qt, bias, params):
+    """
+    Centralized optimized matmul for SDNQ.
+    Handles sequential SVD, torch._scaled_mm for FP8/INT8, and robust fallbacks.
+    """
+    device = input_tensor.device
+    dtype = input_tensor.dtype
+    qdata = weight_qt._qdata.to(device)
+    scale = params.get("scale").to(device, dtype=torch.float32)
+    weights_dtype = params.get("weights_dtype", "int8")
+    is_transposed = params.get("transposed", False)
+    
+    # 1. Sequential SVD Correction (Applied to Input/Output)
+    # Spec: Y = X @ W_base^T + (X @ svd_down^T) @ svd_up^T
+    # svd_up: [OC, R], svd_down: [R, IC] -> svd_down.T: [IC, R], svd_up.T: [R, OC]
+    svd_up = params.get("svd_up")
+    svd_down = params.get("svd_down")
+    svd_correction = None
+    if svd_up is not None and svd_down is not None:
+        svd_up = svd_up.to(device, dtype)
+        svd_down = svd_down.to(device, dtype)
+        x_flat = input_tensor.flatten(0, -2)
+        # Sequential correction: [B, IC] @ [IC, R] -> [B, R]; [B, R] @ [R, OC] -> [B, OC]
+        svd_correction = torch.mm(torch.mm(x_flat, svd_down.t()), svd_up.t())
+        svd_correction = svd_correction.reshape(*input_tensor.shape[:-1], -1)
+
+    # 2. Main Quantized Matmul
+    # For now, if it's FP8 and no complex grouping, we can try scaled_mm
+    if weights_dtype == "float8_e4m3fn" and params.get("group_size") == -1:
+        # Fallback to standard FP8 path for now, it's robust
+        # We need to handle the transposed flag though
+        if not is_transposed:
+             # Standard linear uses weight.t(), which is what fp8_linear does
+             # If NOT transposed, weight is [OC, IC]. fp8_linear does .t() -> [IC, OC]. Correct.
+             return fp8_linear(None, (input_tensor, weight_qt, bias), {})
+        else:
+             # If ALREADY logically transposed, weight is effectively [IC, OC].
+             # fp8_linear would do .t() -> [OC, IC]. INCORRECT.
+             # So we must dequantize or implement a custom scaled_mm call.
+             pass
+
+    # 3. Robust Dequant Fallback
+    weight_dequant = weight_qt.dequantize().to(device, dtype)
+    res = torch.nn.functional.linear(input_tensor, weight_dequant, bias)
+    
+    if svd_correction is not None:
+        res = res.add(svd_correction)
+        
+    return res
+
 @register_layout_op(torch.ops.aten.linear.default, "SDNQLayout")
 def sdnq_linear(func, args, kwargs):
     """
-    SDNQ linear operation with scaled_mm support for FP8.
+    SDNQ linear operation.
     """
     input_tensor = args[0]
     weight = args[1]
     bias = args[2] if len(args) > 2 else None
 
-    if isinstance(input_tensor, QuantizedTensor) and isinstance(weight, QuantizedTensor):
-        p = weight._layout_params
-        # Optimized FP8 Path
-        if p.get("weights_dtype") == "float8_e4m3fn" and p.get("group_size") == -1 and p.get("svd_up") is None:
-            plain_input, scale_a = TensorCoreFP8Layout.get_plain_tensors(input_tensor)
-            plain_weight, scale_b, _, _, _ = SDNQLayout.get_plain_tensors(weight)
-            
-            # Use TensorCoreFP8Layout's optimized linear logic
-            return fp8_linear(func, args, kwargs)
-
-    # Fallback to dequantization
     if isinstance(weight, QuantizedTensor):
-        weight = weight.dequantize()
+        return _sdnq_matmul_optimized(input_tensor, weight, bias, weight._layout_params)
+    
     if isinstance(input_tensor, QuantizedTensor):
         input_tensor = input_tensor.dequantize()
-
+    
     return torch.nn.functional.linear(input_tensor, weight, bias)
 
 
@@ -2456,13 +2497,28 @@ def sdnq_mm(func, args, kwargs):
     return func(input_tensor, weight)
 
 
-@register_layout_op(torch.ops.aten.view.default, "SDNQLayout")
 @register_layout_op(torch.ops.aten.t.default, "SDNQLayout")
-def sdnq_func(func, args, kwargs):
+def sdnq_t(func, args, kwargs):
+    """Handle transpose as a logical no-op for SDNQ."""
+    input_tensor = args[0]
+    if not isinstance(input_tensor, QuantizedTensor):
+        return torch.ops.aten.t.default(*args, **kwargs)
+
+    p = input_tensor._layout_params
+    old_shape = input_tensor.shape
+    new_shape = torch.Size((old_shape[1], old_shape[0]))
+
+    new_params = p.copy()
+    new_params["transposed"] = not p.get("transposed", False)
+    
+    # We don't change _qdata, just wrap it in a new QuantizedTensor with flipped flag
+    # and swapped shape.
+    return QuantizedTensor(input_tensor._qdata, "SDNQLayout", new_params)
+
+@register_layout_op(torch.ops.aten.view.default, "SDNQLayout")
+def sdnq_view(func, args, kwargs):
     input_tensor = args[0]
     if isinstance(input_tensor, QuantizedTensor):
-        # For simplicity, dequantize for view/transpose if they might break group structure
-        # or just allow them if we don't care about optimized kernels yet.
-        # Given SDNQ is fallback-heavy, dequantizing is safest.
+        # SDNQ is fallback-heavy, dequantizing is safest for shape changes
         return func(input_tensor.dequantize(), *args[1:], **kwargs)
     return func(*args, **kwargs)

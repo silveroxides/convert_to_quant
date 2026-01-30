@@ -144,7 +144,7 @@ def pack_uint5(tensor: torch.Tensor) -> torch.Tensor:
 
 def pack_uint4(tensor: torch.Tensor) -> torch.Tensor:
     packed_tensor = tensor.contiguous().view(-1, 2)
-    packed_tensor = torch.bitwise_or(torch.bitwise_left_shift(packed_tensor[:, 0], 4), packed_tensor[:, 1])
+    packed_tensor = torch.bitwise_or(packed_tensor[:, 0], torch.bitwise_left_shift(packed_tensor[:, 1], 4))
     return packed_tensor
 
 def pack_uint3(tensor: torch.Tensor) -> torch.Tensor:
@@ -246,8 +246,8 @@ def pack_float(x: torch.Tensor, weights_dtype: str) -> torch.Tensor:
 # Unpacking logic (Added for dequantization support)
 def unpack_uint4(tensor: torch.Tensor) -> torch.Tensor:
     res = torch.empty((tensor.shape[0], 2), device=tensor.device, dtype=torch.uint8)
-    res[:, 0] = torch.bitwise_right_shift(tensor, 4)
-    res[:, 1] = torch.bitwise_and(tensor, 0x0F)
+    res[:, 0] = torch.bitwise_and(tensor, 0x0F)
+    res[:, 1] = torch.bitwise_right_shift(tensor, 4)
     return res.view(-1)
 
 def unpack_uint2(tensor: torch.Tensor) -> torch.Tensor:

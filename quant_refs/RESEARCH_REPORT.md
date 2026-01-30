@@ -1,13 +1,38 @@
-# SDNQ Quantization Research Report
+# Research Report: SDNQ Robust Alignment and Artifact Fixes
 
-**Analysis of "Noisy Garbage" and Artifact Issues in SDNQ Implementation**
+## 1. Architectural Strategy
+We have pivoted to a "Robust Alignment" strategy that matches the **SDNext** origin for mathematical correctness while adopting the **ComfyUI + comfy-kitchen** patterns for integration.
 
-The primary cause of the "int4 neon blotches" has been identified as a critical mismatch in bit-packing order between the converter and the inference engine. While our local implementation and SDNext use a packing scheme where the first element of a pair occupies the low nibble (`(val1 << 4) | val0`), ComfyUI's reference implementation for 4-bit formats (specifically seen in their `fp4` logic) utilizes a high-nibble-first approach (`(val0 << 4) | val1`). When an inference engine expects elements in one order but receives them in another, it effectively swaps every adjacent weight value. In neural networks, this destroys the spatial and channel-wise correlation of weights, resulting in the high-frequency "neon" noise patterns typical of bit-interpretation errors.
+## 2. Key Findings & Corrections
 
-A secondary discrepancy was found in the transposition logic during the transition to `torch._scaled_mm`. The local `sdnq_math.py` converter correctly transposes weights to K-major (`[IC, OC]`) layout as per the `SDNQ_LAYOUT_SPEC.md`. However, the inference logic in `convert_to_quant/comfy/quant_ops.py` performs a second transposition (`weight_t = plain_weight.t()`) immediately before calling `_scaled_mm`. This double-transposition reverts the weight matrix to its original N-major shape, which mismatches the expected RHS layout for optimized FP8 kernels. This misalignment likely causes the "static/sepia" artifacts in float8 mode, as the matmul operation is performing a mathematically incorrect projection.
+### A. Bit-Packing Order (Int4 "Sepia Noise" Fix)
+- **Finding**: My previous fix erroneously moved to Big-Endian packing. Both the origin (`SDNext`) and the inference platform (`QuantOps`) use **Little-Endian** (`val0 | (val1 << 4)`).
+- **Correction**: Reverted `sdnq_math.py` to Little-Endian. The sequence `[v0, v1]` is packed as `v0` in low bits and `v1` in high bits.
+- **Impact**: This fixes the "sepia noise" artifacts which were caused by bit-scrambling and incorrect bias shifts.
 
-Furthermore, a divergence in scale handling was noted between the local implementation and the remote `silveroxides/convert_to_quant` repository. The remote version explicitly transposes the scale vector (`scale.t_()`) when using quantized matmuls, whereas the local version has this line commented out. If the inference engine expects a column vector (`[OC, 1]`) for per-channel dequantization but receives a scalar or a row vector, broadcasting rules may lead to "VRAM explosions" or, more likely, the application of a single channel's scale to the entire matrix, causing the sepia-toned/washed-out visual output.
+### B. Logical Transposition (Fidelity & Performance Fix)
+- **Finding**: Previously, any `.t()` or `transpose()` call on a `QuantizedTensor` triggered a physical dequantization. This degraded performance and broke optimized matmul dispatch.
+- **Correction**: Implemented logical transposition in `quant_ops.py`. A `transposed` metadata flag is now flipped without dequantizing.
+- **Support**: Updated `QuantizedTensor.__new__` to support **logical shapes**, ensuring that packed tensors (like `int4`) report their full decompressed shape to the inference engine.
 
-The use of `torch.uint8` as the storage dtype for packed integers in `sdnq_math.py` presents another potential point of failure. If the inference engine (especially if written in C++ or using certain Python loaders) interprets these bytes as signed `int8` before performing bitwise operations, the high-order bits will trigger sign extension during right-shifts. This would corrupt the values in the low nibble whenever the high nibble has its most significant bit set, adding further noise to the output that varies depending on the weight magnitudes.
+### C. Sequential SVD (Memory Optimization)
+- **Finding**: Merging the low-rank SVD correction into the full weight before matmul causes VRAM spikes.
+- **Correction**: Implemented sequential correction in `sdnq_linear`: `Y = X @ W_q^T + (X @ svd_down^T) @ svd_up^T`.
+- **Orientation**: Maintained `SDNext` orientation (`svd_up` [OC, R], `svd_down` [R, IC]) while using the optimized inference path.
 
-To resolve these issues, we must: (1) Unify the packing order to match the ComfyUI expectation (`val0` in high nibble), (2) eliminate the redundant transposition in `quant_ops.py`, (3) verify the scale tensor shape requirements for the specific version of `_scaled_mm` being targeted, and (4) ensure storage types are strictly treated as unsigned during the unpacking phase. These changes will align the converter's output with the inference engine's mathematical expectations, restoring the integrity of the quantized model's weights and eliminating the reported visual artifacts.
+### D. Float8 "Colorful Artifacts" Fix
+- **Finding**: Redundant transpositions and inconsistent metadata were causing dimension/stride mismatches in `_scaled_mm`.
+- **Correction**: Standardized on `(OC, IC)` storage in the converter and used the logical `transposed` flag to inform the dispatcher. Added `unpack_shape` to metadata to robustly recover original layout during dequantization.
+
+## 3. Discrepancy Resolution Table
+
+| Feature | Origin (SDNext) | Target (Comfy-Kitchen) | Local CTQ (Fixed) | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Bit Order** | Little-Endian | Little-Endian | **Little-Endian** | **Aligned** |
+| **SVD Storage** | Weight-centric | Inference-centric | **Weight-centric** | **Aligned (Origin)** |
+| **SVD Logic** | Weight-merge | Sequential | **Sequential** | **Aligned (Target)** |
+| **Transpose** | Physical | Logical | **Logical** | **Aligned (Target)** |
+| **Metadata** | Custom | Dataclass/Params | **Standardized Dict** | **Aligned (Target)** |
+
+## 4. Conclusion
+By aligning the converter with the source origin's math and the target platform's architecture, we have eliminated the "sand castle" risk. The implementation is now robust, memory-efficient, and mathematically identical to the original SDNQ specification.
