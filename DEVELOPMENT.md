@@ -1,57 +1,33 @@
 
-## 2026-01-29: Fix SDNQ SVD Contiguity and Dtype Issues
+## 2026-01-31: Revert SDNQ Implementation
 
 ### Session Summary
-Fixed a `ValueError` when saving models quantized with SDNQ and SVD correction. Also enabled GPU acceleration and ensured auxiliary tensors (`weight_scale`, `svd_up`, `svd_down`) are saved in FP32 for numerical precision.
+Reverted the SDNQ (Stochastic Differentiable Neural Quantization) implementation due to it being non-functional and causing repository bloat. Cleaned up shared files and deleted SDNQ-specific modules and documentation to ensure a clean state for future development. Incremented version to 1.1.0.
 
 ### Changes Made
-- **Contiguity Fix**: Added a check and `.contiguous()` call for all tensors in `convert_to_sdnq` workflow before saving (required by `safetensors`).
-- **Precision Fix**: Modified `sdnq_math.py` to keep `weight_scale`, `svd_up`, and `svd_down` in `float32` instead of casting them down to the original model dtype.
-- **GPU Acceleration**: Updated `SDNQConverter` to use `transfer_to_gpu_pinned` for fast CPU→GPU transfers. Quantization math now executes on CUDA if available.
-- **Verification**: Confirmed that `svd_up` and `svd_down` are saved as contiguous tensors and that GPU transfers are active.
+- **Reverted Shared Files**: Removed SDNQ-related logic, constants, and CLI arguments from `constants.py`, `quant_ops.py`, `argument_parser.py`, and `main.py`.
+- **Deleted Modules**: Removed `sdnq_converter.py`, `sdnq_math.py`, `sdnq_conversion.py`, and the entire `docs/sdnq_implementation/` directory.
+- **Cleaned Tests**: Deleted `tests/verify_sdnq_cli.py` and `tests/test_metadata.py` (which had become SDNQ-specific).
+- **Version Bump**: Updated `pyproject.toml` version to `1.1.0`.
 
 ### Files Modified
-- `convert_to_quant/formats/sdnq_conversion.py`: Added contiguity enforcement before `save_file`.
-- `convert_to_quant/converters/sdnq_converter.py`: Added GPU device detection and pinned memory transfers in `quantize()`.
+- `pyproject.toml`: Version bump and script removal.
+- `convert_to_quant/constants.py`: Removed SDNQ dtypes and registry entry.
+- `convert_to_quant/comfy/quant_ops.py`: Removed `SDNQLayout`.
+- `convert_to_quant/cli/argument_parser.py`: Removed SDNQ CLI options.
+- `convert_to_quant/cli/main.py`: Removed SDNQ dispatch logic.
+- `convert_to_quant/converters/__init__.py`: Removed SDNQ exports.
+- `DEVELOPMENT.md`: Added this summary.
 
----
+### Files Deleted
+- `convert_to_quant/converters/sdnq_converter.py`
+- `convert_to_quant/converters/sdnq_math.py`
+- `convert_to_quant/formats/sdnq_conversion.py`
+- `tests/verify_sdnq_cli.py`
+- `tests/test_metadata.py`
+- `REFACTOR_REPORT.md`
+- `docs/sdnq_implementation/` (Recursive)
 
-## 2026-01-29: SDNQ Refactor & First-Class Mode Integration
-
-### Session Summary
-Refactored the sloppy, spread-out SDNQ (Stochastic Differentiable Neural Quantization) implementation into a first-class mode within the `convert_to_quant` pipeline. This includes centralized constants, a proper converter class, a unified conversion workflow with standard layer filtering, and full ComfyUI compatibility via a dedicated `SDNQLayout`.
-
-### Changes Made
-
-1. **Centralized Constants**: Merged SDNQ's extensive `dtype_dict` and type sets into the main `convert_to_quant/constants.py`.
-2. **SDNQ Layout**: Implemented `SDNQLayout` in `comfy/quant_ops.py` to support arbitrary bit-widths, custom dtypes, and optional additive SVD correction terms during inference.
-3. **Class-based Converter**: Created `SDNQConverter` in `converters/sdnq_converter.py`, providing a standardized `quantize`/`dequantize` API matching other project converters.
-4. **Refactored Math**: Cleaned up `converters/sdnq_math.py` and implemented bitwise unpacking for dequantization support.
-5. **Unified Workflow**: Created `formats/sdnq_conversion.py` which utilizes standard `MODEL_FILTERS` for layer exclusion/inclusion and outputs proper `.comfy_quant` metadata.
-6. **CLI Integration**: Integrated `--sdnq` and associated parameters into `cli/main.py` and `cli/argument_parser.py`, replacing the standalone legacy scripts.
-7. **Cleanup**: Removed redundant/legacy files: `converters/sdnq_transform.py`, `converters/metadata.py`, `converters/constants.py`, and `cli/run_sdnq.py`.
-
-### Files Modified
-
-| File | Changes |
-|------|---------|
-| `convert_to_quant/constants.py` | Centralized SDNQ dtypes and registered format. |
-| `convert_to_quant/comfy/quant_ops.py` | Added `SDNQLayout` and operation handlers. |
-| `convert_to_quant/converters/sdnq_math.py` | Refactored math, added unpacking logic. |
-| `convert_to_quant/converters/sdnq_converter.py` | **NEW** - Standardized converter class. |
-| `convert_to_quant/formats/sdnq_conversion.py` | **NEW** - Unified conversion workflow. |
-| `convert_to_quant/cli/main.py` | Integrated SDNQ dispatch and arguments. |
-| `convert_to_quant/cli/argument_parser.py` | Added SDNQ options and help sections. |
-
-### Usage
-
-```bash
-# SDNQ with 4-bit weights and SVD correction
-convert_to_quant -i model.safetensors --sdnq --sdnq-dtype int4 --sdnq-use-svd --comfy_quant
-
-# SDNQ with stochastic rounding and model-specific filters
-convert_to_quant -i flux_model.safetensors --sdnq --sdnq-stochastic --flux2 --comfy_quant
-```
 
 ---
 

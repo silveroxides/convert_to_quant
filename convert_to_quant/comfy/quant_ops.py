@@ -1095,11 +1095,6 @@ QUANT_ALGOS = {
         "parameters": {"weight_scale", "input_scale"},
         "comfy_tensor_layout": "TensorWiseINT8Layout",
     },
-    "sdnq": {
-        "storage_t": torch.int8, # Default storage, can be overridden by layout
-        "parameters": {"weight_scale", "input_scale"},
-        "comfy_tensor_layout": "SDNQLayout",
-    },
 }
 
 
@@ -1109,7 +1104,6 @@ LAYOUTS = {
     "BlockWiseFP8Layout": BlockWiseFP8Layout,
     "BlockWiseINT8Layout": BlockWiseINT8Layout,
     "TensorWiseINT8Layout": TensorWiseINT8Layout,
-    "SDNQLayout": None, # Will be set after class definition
 }
 
 
@@ -2314,140 +2308,3 @@ def tensorwise_int8_func(func, args, kwargs):
         )
     return func(*args, **kwargs)
 
-
-# ==============================================================================
-# SDNQ Layout (Stochastic Differentiable Neural Quantization)
-# ==============================================================================
-class SDNQLayout(QuantizedLayout):
-    """
-    SDNQ quantization layout.
-    Supports arbitrary bit-widths, optional SVD correction, and custom dtypes.
-
-    Storage format:
-    - qdata: The quantized (and potentially packed) tensor data.
-    - layout_params:
-        - scale: Scaling factor(s).
-        - zero_point: Optional zero point.
-        - svd_up: Optional SVD 'U' matrix component.
-        - svd_down: Optional SVD 'Vh' matrix component.
-        - weights_dtype: The SDNQ dtype name (e.g., 'int4', 'fp6').
-        - group_size: Size of quantization groups.
-        - original_shape: Shape of the weight before any flattening/grouping.
-    """
-
-    @classmethod
-    def quantize(cls, tensor, **kwargs):
-        """
-        Quantize a tensor using SDNQ.
-        Note: Actual quantization is usually performed by SDNQConverter.
-        """
-        from ..converters.sdnq_converter import SDNQConverter
-        converter = SDNQConverter(**kwargs)
-        qdata, scale, zero_point, svd_up, svd_down, info = converter.quantize(tensor)
-        
-        layout_params = {
-            "scale": scale,
-            "zero_point": zero_point,
-            "svd_up": svd_up,
-            "svd_down": svd_down,
-            "weights_dtype": info["weights_dtype"],
-            "group_size": info["group_size"],
-            "original_shape": tensor.shape,
-            "orig_dtype": tensor.dtype
-        }
-        return qdata, layout_params
-
-    @staticmethod
-    def dequantize(qdata, **layout_params):
-        """
-        Dequantize an SDNQ-formatted tensor.
-        W = dequant(Q) + (svd_up @ svd_down if available)
-        """
-        weights_dtype = layout_params.get("weights_dtype", "int8")
-        scale = layout_params.get("scale")
-        zero_point = layout_params.get("zero_point")
-        svd_up = layout_params.get("svd_up")
-        svd_down = layout_params.get("svd_down")
-        group_size = layout_params.get("group_size", -1)
-        original_shape = layout_params.get("original_shape")
-        orig_dtype = layout_params.get("orig_dtype", torch.float16)
-
-        # 1. Unpack if necessary (handled by SDNQ math helpers)
-        # We'll use a local import to avoid circular dependencies if possible,
-        # but since we're in quant_ops.py, we might want to have the math here.
-        from ..converters.sdnq_math import unpack_weight
-        
-        # Unpack and basic dequant
-        weight = unpack_weight(qdata, weights_dtype, scale, zero_point, group_size, original_shape)
-        weight = weight.to(orig_dtype)
-
-        # 2. Add SVD correction if present
-        if svd_up is not None and svd_down is not None:
-            # Reconstruct low-rank part
-            # svd_up: (M, R), svd_down: (R, N)
-            correction = torch.mm(svd_up.to(orig_dtype), svd_down.to(orig_dtype))
-            
-            # Reshape correction to match weight if it was a conv layer
-            if weight.ndim > 2:
-                correction = correction.view(weight.shape)
-            
-            weight = weight.add(correction)
-
-        return weight
-
-    @classmethod
-    def get_plain_tensors(cls, qtensor):
-        """Extract raw tensors for computation."""
-        p = qtensor._layout_params
-        return (
-            qtensor._qdata,
-            p.get("scale"),
-            p.get("zero_point"),
-            p.get("svd_up"),
-            p.get("svd_down")
-        )
-
-LAYOUTS["SDNQLayout"] = SDNQLayout
-
-
-@register_layout_op(torch.ops.aten.linear.default, "SDNQLayout")
-def sdnq_linear(func, args, kwargs):
-    """
-    SDNQ linear operation.
-    Always falls back to dequantization for now as SDNQ supports many custom formats.
-    """
-    input_tensor = args[0]
-    weight = args[1]
-    bias = args[2] if len(args) > 2 else None
-
-    if isinstance(weight, QuantizedTensor):
-        weight = weight.dequantize()
-    if isinstance(input_tensor, QuantizedTensor):
-        input_tensor = input_tensor.dequantize()
-
-    return torch.nn.functional.linear(input_tensor, weight, bias)
-
-
-@register_layout_op(torch.ops.aten.mm.default, "SDNQLayout")
-def sdnq_mm(func, args, kwargs):
-    input_tensor = args[0]
-    weight = args[1]
-
-    if isinstance(weight, QuantizedTensor):
-        weight = weight.dequantize()
-    if isinstance(input_tensor, QuantizedTensor):
-        input_tensor = input_tensor.dequantize()
-
-    return func(input_tensor, weight)
-
-
-@register_layout_op(torch.ops.aten.view.default, "SDNQLayout")
-@register_layout_op(torch.ops.aten.t.default, "SDNQLayout")
-def sdnq_func(func, args, kwargs):
-    input_tensor = args[0]
-    if isinstance(input_tensor, QuantizedTensor):
-        # For simplicity, dequantize for view/transpose if they might break group structure
-        # or just allow them if we don't care about optimized kernels yet.
-        # Given SDNQ is fallback-heavy, dequantizing is safest.
-        return func(input_tensor.dequantize(), *args[1:], **kwargs)
-    return func(*args, **kwargs)
