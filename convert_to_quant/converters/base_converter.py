@@ -52,6 +52,7 @@ class BaseLearnedConverter(ABC):
         early_stop_loss: float = 1e-8,
         early_stop_lr: float = 1e-10,
         early_stop_stall: int = 1000,
+        device: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -78,9 +79,13 @@ class BaseLearnedConverter(ABC):
             early_stop_loss: Stop when loss drops below this
             early_stop_lr: Stop when LR drops below this
             early_stop_stall: Stop after this many steps without improvement
+            device: Device to use for optimization (default: auto-detect)
             **kwargs: Additional optimizer-specific parameters (e.g., lr)
         """
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device is not None:
+            self.device = device
+        else:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # SVD parameters
         self.top_p = top_p
