@@ -72,6 +72,13 @@ def convert_to_mxfp8(
     scale_optimization: str = "fixed",
     # Memory mode
     low_memory: bool = False,
+    # LoRA extraction options
+    extract_lora: bool = False,
+    lora_rank: int = 16,
+    lora_target: Optional[str] = None,
+    lora_depth: int = -1,
+    lora_ar_threshold: float = 0.0,
+    lora_save_path: Optional[str] = None,
 ) -> None:
     """
     Convert safetensors model to MXFP8 (Microscaling FP8) quantized format.
@@ -152,10 +159,17 @@ def convert_to_mxfp8(
             scale_refinement_rounds=scale_refinement_rounds,
             scale_optimization=scale_optimization,
             lr=lr,
+            # LoRA options
+            extract_lora=extract_lora,
+            lora_rank=lora_rank,
+            lora_target=lora_target,
+            lora_depth=lora_depth,
+            lora_ar_threshold=lora_ar_threshold,
         )
         use_learned = True
 
     output_tensors: Dict[str, torch.Tensor] = {}
+    lora_tensors: Dict[str, torch.Tensor] = {}
     quant_metadata = {}
     quantized_count = 0
     skipped_count = 0
@@ -239,9 +253,17 @@ def convert_to_mxfp8(
         info(f"({i+1}/{total_weights}) Processing tensor: {key}")
 
         # Quantize to MXFP8
+        # Extract block depth from key (look for .0. .1. etc patterns)
+        depth = -1
+        import re
+        depth_match = re.search(r"\.(\d+)\.", key)
+        if depth_match:
+            depth = int(depth_match.group(1))
+
+        # Quantize to MXFP8
         if use_learned:
-            # LearnedMXFP8Converter returns (qdata, block_scales, dequantized)
-            qdata, block_scales, dequant_w = converter.convert(tensor)
+            # LearnedMXFP8Converter returns (qdata, block_scales, dequantized, extra_tensors)
+            qdata, block_scales, dequant_w, extra_tensors = converter.convert(tensor, key=key, depth=depth)
             # Crop dequant_w back to original shape if it was padded
             if dequant_w.shape != tensor.shape:
                 dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
@@ -255,6 +277,14 @@ def convert_to_mxfp8(
             if dequant_w.shape != tensor.shape:
                 dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
             del tensor_gpu
+            extra_tensors = {}
+
+        # Store extracted LoRA tensors
+        if extra_tensors:
+            for lora_key, lora_tensor in extra_tensors.items():
+                # lora_up -> base.lora_up.weight, lora_down -> base.lora_down.weight
+                full_lora_key = f"{base_key}.{lora_key}.weight"
+                lora_tensors[full_lora_key] = lora_tensor.cpu()
 
         # Store quantized data and scales (move to CPU for saving)
         output_tensors[key] = qdata.cpu()  # FP8 E4M3
@@ -343,6 +373,14 @@ def convert_to_mxfp8(
 
     os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
     save_file(output_tensors, output_file, metadata=output_metadata if output_metadata else None)
+
+    # Save extracted LoRA adapter if any
+    if lora_tensors:
+        if not lora_save_path:
+            lora_save_path = output_file.replace(".safetensors", "_lora.safetensors")
+        
+        info(f"Saving {len(lora_tensors)} LoRA tensors to {lora_save_path}")
+        save_file(lora_tensors, lora_save_path)
 
     info("-" * 60)
     info("Summary:")

@@ -7,7 +7,7 @@ with SVD-based optimization. Inherits from BaseLearnedConverter.
 import gc
 import math
 import torch
-from typing import Tuple
+from typing import Tuple, Optional, Dict
 from tqdm import tqdm
 from torch.optim import AdamW, RAdam
 
@@ -38,6 +38,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         block_size: int = 64,
         target_format: str = "fp8",
         lr: float = 8.077300000003e-3,
+        extract_lora: bool = False,
+        lora_rank: int = 32,
+        lora_depth: int = 1,
+        lora_target: Optional[str] = None,
+        lora_ar_threshold: float = 0.0,
         **kwargs,
     ):
         """
@@ -49,7 +54,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             target_format: Target format ("fp8" or "int8")
             **kwargs: All other args passed to BaseLearnedConverter
         """
-        super().__init__(lr=lr, **kwargs)
+        super().__init__(
+            lr=lr,
+            extract_lora=extract_lora,
+            lora_rank=lora_rank,
+            lora_depth=lora_depth,
+            lora_target=lora_target,
+            lora_ar_threshold=lora_ar_threshold,
+            **kwargs,
+        )
 
         self.block_size = block_size
         self.target_format = target_format
@@ -540,8 +553,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         return best_tensor if best_tensor is not None else W_q_refined
 
     def convert(
-        self, W_orig: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
         # Determine if we should optimize
@@ -602,27 +615,36 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             else:
                 dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
 
-            return quantized_tensor, dequant_scale, torch.zeros_like(W_float32)
+            return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
 
         # INT8 quantization path
         if self.target_format == "int8":
             if self.scaling_mode == "tensor":
-                return self._convert_int8_tensorwise(W_float32)
+                qdata, scale, dequantized = self._convert_int8_tensorwise(W_float32)
             else:
-                return self._convert_int8(W_float32)
-
-        # FP8 quantization path - route based on scaling_mode
-        if self.scaling_mode == "row":
-            return self._convert_fp8_rowwise(W_float32)
-        elif self.scaling_mode in ("block", "block2d"):
-            # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
-            return self._convert_fp8_block2d(W_float32)
-        elif self.scaling_mode == "block3d":
-            # 3D per-row-group mode (legacy)
-            return self._convert_fp8(W_float32)
+                qdata, scale, dequantized = self._convert_int8(W_float32)
         else:
-            # 'tensor' mode
-            return self._convert_fp8(W_float32)
+            # FP8 quantization path - route based on scaling_mode
+            if self.scaling_mode == "row":
+                qdata, scale, dequantized = self._convert_fp8_rowwise(W_float32)
+            elif self.scaling_mode in ("block", "block2d"):
+                # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
+                qdata, scale, dequantized = self._convert_fp8_block2d(W_float32)
+            elif self.scaling_mode == "block3d":
+                # 3D per-row-group mode (legacy)
+                qdata, scale, dequantized = self._convert_fp8(W_float32)
+            else:
+                # 'tensor' mode
+                qdata, scale, dequantized = self._convert_fp8(W_float32)
+
+        # Error Correction LoRA extraction
+        extra_tensors = {}
+        if self._should_extract_lora(key, W_orig.shape, depth):
+            lora_data = self._extract_error_lora(W_float32, dequantized)
+            if lora_data:
+                extra_tensors.update(lora_data)
+
+        return qdata, scale, dequantized, extra_tensors
 
     def _convert_int8(
         self, W_float32: torch.Tensor

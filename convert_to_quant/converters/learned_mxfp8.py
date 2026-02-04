@@ -10,7 +10,7 @@ Requires SM >= 10.0 (Blackwell) for hardware-accelerated matmul.
 """
 import gc
 import math
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 
 import torch
 from torch.optim import AdamW, RAdam
@@ -59,6 +59,11 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         scale_refinement_rounds: int = 1,
         scale_optimization: str = "fixed",
         lr: float = 8.077300000003e-3,
+        extract_lora: bool = False,
+        lora_rank: int = 32,
+        lora_depth: int = 1,
+        lora_target: Optional[str] = None,
+        lora_ar_threshold: float = 0.0,
         **kwargs,
     ):
         """
@@ -81,7 +86,15 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         if scale_optimization not in valid_scale_modes:
             raise ValueError(f"scale_optimization must be one of {valid_scale_modes}, got '{scale_optimization}'")
 
-        super().__init__(lr=lr, **kwargs)
+        super().__init__(
+            lr=lr,
+            extract_lora=extract_lora,
+            lora_rank=lora_rank,
+            lora_depth=lora_depth,
+            lora_target=lora_target,
+            lora_ar_threshold=lora_ar_threshold,
+            **kwargs,
+        )
 
         self.block_size = block_size
         self.pad_to_32x = pad_to_32x
@@ -103,8 +116,8 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             verbose(f"  - LR schedule: {self.lr_schedule}")
 
     def convert(
-        self, W_orig: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         """
         Convert tensor to MXFP8 format with learned rounding optimization.
 
@@ -118,6 +131,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
 
         # Transfer to GPU with pinned memory for large tensors
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
+        W_float32_for_lora = W_float32.clone() if self.extract_lora else None
 
         # Determine if we should optimize
         if torch.all(W_float32 == 0):
@@ -170,7 +184,14 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         if self.device == "cuda":
             torch.cuda.empty_cache()
 
-        return qdata, blocked_scales, dequantized
+        # Error Correction LoRA extraction
+        extra_tensors = {}
+        if self._should_extract_lora(key, orig_shape, depth):
+            lora_data = self._extract_error_lora(W_float32_for_lora, dequantized)
+            if lora_data:
+                extra_tensors.update(lora_data)
+
+        return qdata, blocked_scales, dequantized, extra_tensors
 
     def _compute_block_scales(
         self, W: torch.Tensor, M: int, N: int
@@ -215,7 +236,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
 
     def _quantize_zeros(
         self, W_float32: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         """Handle all-zeros tensor."""
         M, N = W_float32.shape
         num_blocks = N // self.block_size
@@ -228,7 +249,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
 
         dequantized = torch.zeros_like(W_float32)
 
-        return qdata, block_scales, dequantized
+        return qdata, block_scales, dequantized, {}
 
     def _simple_quantize(
         self, W_float32: torch.Tensor, block_scales_f32: torch.Tensor, zero_mask: torch.Tensor

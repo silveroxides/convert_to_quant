@@ -1,4 +1,52 @@
 
+## 2026-02-04: Error Correction LoRA Extraction
+
+### Session Summary
+Implemented "Error Correction LoRA" extraction logic, enabling the extraction of quantization error into separate low-rank adapter layers. This allows for high-fidelity reconstruction of sensitive layers while using low-bit quantization for the primary model weights. The implementation strictly avoids any SDNQ (Stochastic Differentiable Neural Quantization) related logic.
+
+### Changes Made
+1. **CLI Enhancements**:
+   - Added `LORA_ARGS` to `argument_parser.py` with a new help section (`--help-lora`).
+   - Integrated LoRA arguments into `main.py`: `--extract-lora`, `--lora-rank`, `--lora-target`, `--lora-depth`, `--lora-ar-threshold`, and `--lora-save-path`.
+   - Updated CLI dispatch to pass LoRA parameters to all learned conversion workflows.
+
+2. **Core Logic**:
+   - Updated `BaseLearnedConverter` in `base_converter.py` with `_should_extract_lora` (heuristic targeting) and `_extract_error_lora` (SVD-based error extraction).
+   - Implemented multi-tier targeting heuristics: depth-based (block index), aspect-ratio (AR < 3.0), and keyword-based (Attention/QKV) automated selection.
+   - Fixed critical SVD math error (switched from element-wise `*` to matrix multiplication `@` for rank reconstruction).
+   - Modified all learned converters (`LearnedRounding`, `LearnedNVFP4`, `LearnedMXFP8`) to return an `extra_tensors` dictionary containing the extracted LoRA pieces.
+   - Updated `convert` method signature across all converters to accept `key` and `depth` context.
+
+3. **Orchestration**:
+   - Updated `fp8_conversion.py`, `nvfp4_conversion.py`, and `mxfp8_conversion.py` to collect extracted LoRA tensors during iteration.
+   - Implemented depth tracking via layer name regex (e.g., matching block indices).
+   - Added logic to save extracted LoRA adapters to a separate `.safetensors` file (defaulting to `*_lora.safetensors`).
+   - Ensured all LoRA tensors are `.contiguous()` and moved to CPU/FP32 before saving to maintain full dynamic range and precision, especially for BF16-originated models.
+
+### Files Modified
+- `convert_to_quant/cli/argument_parser.py`: Added LoRA help section and constants.
+- `convert_to_quant/cli/main.py`: Added LoRA CLI flags and dispatch logic.
+- `convert_to_quant/converters/base_converter.py`: Added LoRA targeting and extraction methods.
+- `convert_to_quant/converters/learned_rounding.py`: Updated `convert` to return extra tensors.
+- `convert_to_quant/converters/learned_nvfp4.py`: Updated `convert` to return extra tensors.
+- `convert_to_quant/converters/learned_mxfp8.py`: Updated `convert` to return extra tensors.
+- `convert_to_quant/formats/fp8_conversion.py`: Integrated LoRA collection and saving.
+- `convert_to_quant/formats/nvfp4_conversion.py`: Integrated LoRA collection and saving.
+- `convert_to_quant/formats/mxfp8_conversion.py`: Integrated LoRA collection and saving.
+- `DEVELOPMENT.md`: Added this summary.
+
+### Verification
+- Created `tests/test_lora_extraction.py` covering heuristics, SVD accuracy, and output contiguity.
+- Verified successful extraction for FP8 and NVFP4 formats.
+
+### Usage
+```bash
+# Quantize to FP8 and extract LoRA for attention layers
+convert_to_quant -i model.safetensors --extract-lora --lora-target "attn" --lora-rank 32
+```
+
+---
+
 ## 2026-01-31: Revert SDNQ Implementation
 
 ### Session Summary

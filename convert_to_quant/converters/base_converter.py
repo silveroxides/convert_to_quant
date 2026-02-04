@@ -7,8 +7,9 @@ SVD computation, LR scheduling, and early stopping logic.
 """
 import gc
 import math
+import re
 from abc import ABC, abstractmethod
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 
 import torch
 
@@ -52,6 +53,12 @@ class BaseLearnedConverter(ABC):
         early_stop_loss: float = 1e-8,
         early_stop_lr: float = 1e-10,
         early_stop_stall: int = 1000,
+        # LoRA extraction parameters
+        extract_lora: bool = False,
+        lora_rank: int = 32,
+        lora_depth: int = 1,
+        lora_target: Optional[str] = None,
+        lora_ar_threshold: float = 0.0,
         **kwargs,
     ):
         """
@@ -111,6 +118,119 @@ class BaseLearnedConverter(ABC):
         self.early_stop_loss = early_stop_loss
         self.early_stop_lr = early_stop_lr
         self.early_stop_stall = early_stop_stall
+
+        # LoRA extraction configuration
+        self.extract_lora = extract_lora
+        self.lora_rank = lora_rank
+        self.lora_depth = lora_depth
+        self.lora_ar_threshold = lora_ar_threshold
+        self.lora_target_regex = None
+        if lora_target:
+            import re
+            try:
+                self.lora_target_regex = re.compile(lora_target)
+            except re.error:
+                from ..utils.logging import warning
+                warning(f"      [LoRA] Invalid target regex '{lora_target}', ignoring.")
+
+    def _should_extract_lora(self, key: str, shape: torch.Size, depth: int = -1) -> bool:
+        """
+        Determine if LoRA should be extracted for the given layer.
+
+        Heuristics:
+        1. Explicitly enabled via self.extract_lora.
+        2. Key matches lora_target_regex (if provided).
+        3. Block index < lora_depth (e.g. .0. blocks).
+        4. Sensitive layers (qkv, proj, attn) that are not too skewed.
+        """
+        if not self.extract_lora:
+            return False
+
+        # 1. Explicit Regex Match
+        if self.lora_target_regex and self.lora_target_regex.search(key):
+            return True
+
+        # 2. Block Index Check
+        block_idx = depth
+        if block_idx == -1:
+            # Try to extract from key if not provided
+            import re
+            block_match = re.search(r'\.(\d+)\.', key)
+            if block_match:
+                block_idx = int(block_match.group(1))
+
+        if block_idx != -1:
+            # Global Depth Limit: depth=1 targets only block 0
+            if block_idx >= self.lora_depth:
+                return False
+
+            # Calculate Aspect Ratio
+            if len(shape) >= 2:
+                rows, cols = shape[0], shape[1]
+                ar = max(rows, cols) / min(rows, cols)
+                
+                # 3. User Aspect Ratio Threshold Override (LESS THAN targets square layers)
+                if self.lora_ar_threshold > 0.0:
+                    return ar < self.lora_ar_threshold
+
+                # Case 3: AR > 4.0 -> Too large. Never extract (default logic).
+                if ar > 4.0:
+                    return False
+                    
+                # Case 1: AR < 3.0 -> Safe zone. Extract if below depth (default logic).
+                if ar < 3.0:
+                    return True
+                    
+                # Case 2: 3.0 <= AR <= 4.0 -> Marginal zone.
+                # Extract if Block 0 OR specific sensitive type (QKV/Attn).
+                if block_idx == 0:
+                    return True
+                
+                k_lower = key.lower()
+                if "qkv" in k_lower or "attn" in k_lower or "proj" in k_lower:
+                    return True
+                    
+                return False
+
+        return False
+
+    def _extract_error_lora(self, W_orig: torch.Tensor, W_dequant: torch.Tensor) -> Optional[Dict[str, torch.Tensor]]:
+        """
+        Extract quantization error into low-rank components (U, V).
+        Error = W_orig - W_dequant
+        """
+        if self.lora_rank <= 0:
+            return None
+
+        with torch.no_grad():
+            # Ensure everything is on same device and float32 for SVD
+            error = (W_orig - W_dequant).to(device=W_orig.device, dtype=torch.float32)
+            
+            # Flatten if necessary (for convs)
+            if error.ndim > 2:
+                error = error.flatten(1)
+                
+            M, N = error.shape
+            actual_rank = min(self.lora_rank, M, N)
+
+            if actual_rank <= 0:
+                return None
+
+            try:
+                # Use svd_lowrank for efficiency
+                U, S, V = torch.svd_lowrank(error, q=actual_rank, niter=4)
+                
+                # LoRA Up = U * diag(S)
+                # LoRA Down = V^T
+                # Return as float16 CPU tensors for storage efficiency
+                return {
+                    "lora_up": (U @ torch.diag(S)).to(torch.float32).cpu().contiguous(),
+                    "lora_down": V.t().to(torch.float32).cpu().contiguous(),
+                }
+            except Exception as e:
+                from ..utils.logging import warning
+                warning(f"      [LoRA] SVD failed for error extraction: {e}")
+                return None
 
     def _compute_svd_components(
         self, W_float32: torch.Tensor, verbose: bool = True
@@ -294,14 +414,16 @@ class BaseLearnedConverter(ABC):
             torch.cuda.empty_cache()
 
     @abstractmethod
-    def convert(self, W_orig: torch.Tensor) -> Tuple:
+    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1) -> Tuple:
         """
         Convert tensor to quantized format.
 
         Args:
             W_orig: Input tensor (2D)
+            key: Layer name for filtering/heuristics
+            depth: Block depth for filtering
 
         Returns:
-            Tuple of quantized tensors (format-specific)
+            Tuple of quantized tensors (format-specific) + optional extra_tensors dict
         """
         pass

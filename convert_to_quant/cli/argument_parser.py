@@ -105,6 +105,15 @@ MODES_ARGS = {
     "full_precision_mm",
 }
 
+LORA_ARGS = {
+    "extract_lora",
+    "lora_rank",
+    "lora_target",
+    "lora_depth",
+    "lora_ar_threshold",
+    "lora_output",
+}
+
 
 class MultiHelpArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with multiple help sections for experimental and filter args."""
@@ -117,6 +126,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         advanced_args=None,
         learned_rounding_args=None,
         modes_args=None,
+        lora_args=None,
         **kwargs,
     ):
         self._experimental_args = experimental_args or set()
@@ -124,6 +134,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         self._advanced_args = advanced_args or set()
         self._learned_rounding_args = learned_rounding_args or set()
         self._modes_args = modes_args or set()
+        self._lora_args = lora_args or set()
         self._all_actions = []  # Track all actions for section-specific help
         super().__init__(*args, **kwargs)
 
@@ -152,6 +163,9 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
             sys.exit(0)
         elif "--help-modes" in args or "-hm" in args:
             self._print_modes_help()
+            sys.exit(0)
+        elif "--help-lora" in args or "-hlr" in args:
+            self._print_lora_help()
             sys.exit(0)
         return super().parse_args(args, namespace)
 
@@ -493,6 +507,32 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
         print()
 
+    def _print_lora_help(self):
+        """Print help for Error Correction LoRA options."""
+        print("Error Correction LoRA Options")
+        print("=" * 60)
+        print()
+        print("These options control the extraction of quantization error into")
+        print("separate LoRA adapter layers for high-fidelity reconstruction.")
+        print()
+        print("LoRA Extraction Settings:")
+        print("-" * 40)
+
+        lora_args_list = [
+            "extract_lora",
+            "lora_rank",
+            "lora_target",
+            "lora_depth",
+            "lora_ar_threshold",
+            "lora_output",
+        ]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in lora_args_list:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+        print()
+
     def format_help(self):
         """Override to add section hints and hide experimental/filter args."""
         # Build custom help output
@@ -508,6 +548,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
                 and dest not in self._advanced_args
                 and dest not in self._modes_args
                 and dest not in self._learned_rounding_args
+                and dest not in self._lora_args
             ):
                 standard_actions.append(action)
 
@@ -556,6 +597,12 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         )
         formatter.add_text(
             "                              (convert-fp8-scaled, actcal, edit-quant, etc.)"
+        )
+        formatter.add_text(
+            "  --help-lora, -hlr           Show Error Correction LoRA extraction options"
+        )
+        formatter.add_text(
+            "                              (extract-lora, lora-rank, lora-target, etc.)"
         )
         # Add epilog
         formatter.add_text(self.epilog)
