@@ -79,6 +79,8 @@ def convert_to_nvfp4(
     lora_depth: int = -1,
     lora_ar_threshold: float = 0.0,
     lora_save_path: Optional[str] = None,
+    # Added for CLI compatibility
+    lora_output: Optional[str] = None,
 ) -> None:
     """
     Convert safetensors model to NVFP4 (FP4 E2M1) quantized format.
@@ -283,7 +285,8 @@ def convert_to_nvfp4(
         if extra_tensors:
             for lora_key, lora_tensor in extra_tensors.items():
                 # lora_up -> base.lora_up.weight, lora_down -> base.lora_down.weight
-                full_lora_key = f"{base_key}.{lora_key}.weight"
+                # Add diffusion_model prefix for ComfyUI compatibility
+                full_lora_key = f"diffusion_model.{base_key}.{lora_key}.weight"
                 lora_tensors[full_lora_key] = lora_tensor.cpu()
 
         # Store quantized data and scales (move to CPU for saving)
@@ -383,7 +386,7 @@ def convert_to_nvfp4(
     # Save extracted LoRA adapter if any
     if lora_tensors:
         if not lora_save_path:
-            lora_save_path = output_file.replace(".safetensors", "_lora.safetensors")
+            lora_save_path = lora_output or output_file.replace(".safetensors", "_lora.safetensors")
         
         info(f"Saving {len(lora_tensors)} LoRA tensors to {lora_save_path}")
         save_file(lora_tensors, lora_save_path)
