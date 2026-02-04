@@ -228,6 +228,12 @@ def main():
         help="Skip layers with poor quantization characteristics (aspect ratio, size).",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use for quantization (e.g., 'cpu', 'cuda'). Overrides auto-detection. Recommended with --simple for FP8/INT8.",
+    )
+    parser.add_argument(
         "--input_scale",
         action="store_true",
         help="Include input_scale tensor (fp32, 1.0) for quantized layers. Works with oconvert-fp8-scaled and --convert-int8-scaled. Always enabled for T5XXL.",
@@ -1163,6 +1169,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         # Output options
         save_quant_metadata=args.save_quant_metadata,
         low_memory=args.low_memory,
+        device=args.device,
         # Optimizer/LR options (passed to LearnedRoundingConverter)
         optimizer=args.optimizer,
         num_iter=args.num_iter,

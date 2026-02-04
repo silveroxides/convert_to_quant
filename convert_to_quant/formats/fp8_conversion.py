@@ -66,6 +66,7 @@ def convert_to_fp8_scaled(
     layer_config: Optional[Dict[str, Any]] = None,
     layer_config_fullmatch: bool = False,
     low_memory: bool = False,
+    device: Optional[str] = None,
     **converter_kwargs,
 ):
     # Ensure filter_flags is a dict
@@ -93,7 +94,14 @@ def convert_to_fp8_scaled(
         )
     info("-" * 60)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Enforce CUDA for kernel-dependent formats if they are the PRIMARY target
+    if target_format in ("mxfp8", "nvfp4") and device == "cpu":
+        warning(f"Format {target_format} requires CUDA kernels. Forcing device='cuda'.")
+        device = "cuda"
+
     seed_device = device
     seed_generator = torch.Generator(device=seed_device)
     seed_generator.manual_seed(seed)
@@ -124,6 +132,7 @@ def convert_to_fp8_scaled(
     # Add target_format and no_learned_rounding to converter kwargs
     converter_kwargs["target_format"] = target_format
     converter_kwargs["no_learned_rounding"] = no_learned_rounding
+    converter_kwargs["device"] = device
 
     # Get format-aware block_size default (converters handle their own fixed sizes)
     # This is only used for metadata/display; converters use their __init__ defaults
