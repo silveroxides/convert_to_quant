@@ -295,6 +295,7 @@ def convert_to_fp8_scaled(
     skipped_count = 0
     processed_count = 0
     custom_count = 0
+    dequant_w = None  # Track dequantized weights for bias correction
     fallback_count = 0
 
     info(f"Found {total_weights} weight tensors to potentially process.")
@@ -659,12 +660,14 @@ def convert_to_fp8_scaled(
 
         if bias_key in all_keys:
             # Apply bias correction even in simple mode for better accuracy
-            info(f"  - Adjusting corresponding bias: {bias_key}")
-            with torch.no_grad():
+            # Only if we have dequantized weights to calculate error from
+            if dequant_w is not None:
+                info(f"  - Adjusting corresponding bias: {bias_key}")
+                with torch.no_grad():
                     original_bias = loader.get_tensor(bias_key)
                     in_features = original_tensor.shape[1]
                     if in_features not in calibration_data_cache:
-                        print("  - WARNING: No calibration data for bias correction.")
+                        warning(f"  - WARNING: No calibration data for bias correction of {bias_key}.")
                         new_tensors[bias_key] = original_bias
                     else:
                         X_calib_dev = calibration_data_cache[in_features].to(
@@ -699,6 +702,9 @@ def convert_to_fp8_scaled(
                         )
                         if device == "cuda":
                             torch.cuda.empty_cache()
+            else:
+                # No dequant_w available (shouldn't happen with learned rounding)
+                new_tensors[bias_key] = loader.get_tensor(bias_key)
 
         # T5XXL/Mistral fallback: ensure input scale exists with correct key format
         if text_encoder_filter:
