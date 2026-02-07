@@ -1,34 +1,4 @@
 
-## 2026-01-31: Revert SDNQ Implementation
-
-### Session Summary
-Reverted the SDNQ (Stochastic Differentiable Neural Quantization) implementation due to it being non-functional and causing repository bloat. Cleaned up shared files and deleted SDNQ-specific modules and documentation to ensure a clean state for future development. Incremented version to 1.1.0.
-
-### Changes Made
-- **Reverted Shared Files**: Removed SDNQ-related logic, constants, and CLI arguments from `constants.py`, `quant_ops.py`, `argument_parser.py`, and `main.py`.
-- **Deleted Modules**: Removed `sdnq_converter.py`, `sdnq_math.py`, `sdnq_conversion.py`, and the entire `docs/sdnq_implementation/` directory.
-- **Cleaned Tests**: Deleted `tests/verify_sdnq_cli.py` and `tests/test_metadata.py` (which had become SDNQ-specific).
-- **Version Bump**: Updated `pyproject.toml` version to `1.1.0`.
-
-### Files Modified
-- `pyproject.toml`: Version bump and script removal.
-- `convert_to_quant/constants.py`: Removed SDNQ dtypes and registry entry.
-- `convert_to_quant/comfy/quant_ops.py`: Removed `SDNQLayout`.
-- `convert_to_quant/cli/argument_parser.py`: Removed SDNQ CLI options.
-- `convert_to_quant/cli/main.py`: Removed SDNQ dispatch logic.
-- `convert_to_quant/converters/__init__.py`: Removed SDNQ exports.
-- `DEVELOPMENT.md`: Added this summary.
-
-### Files Deleted
-- `convert_to_quant/converters/sdnq_converter.py`
-- `convert_to_quant/converters/sdnq_math.py`
-- `convert_to_quant/formats/sdnq_conversion.py`
-- `tests/verify_sdnq_cli.py`
-- `tests/test_metadata.py`
-- `REFACTOR_REPORT.md`
-- `docs/sdnq_implementation/` (Recursive)
-
-
 ---
 
 ## 2026-01-24: Dependency Documentation Alignment
