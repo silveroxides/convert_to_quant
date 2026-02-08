@@ -63,7 +63,6 @@ def convert_to_mxfp8(
     lr_adaptive_mode: str = "simple-reset",
     lr_shape_influence: float = 1.0,
     lr_threshold_mode: str = "rel",
-    lr_small_mult: Optional[float] = None,
     # Early stopping
     early_stop_loss: float = 1e-8,
     early_stop_lr: float = 1e-10,
@@ -156,7 +155,6 @@ def convert_to_mxfp8(
             lr_adaptive_mode=lr_adaptive_mode,
             lr_shape_influence=lr_shape_influence,
             lr_threshold_mode=lr_threshold_mode,
-            lr_small_mult=lr_small_mult,
             early_stop_loss=early_stop_loss,
             early_stop_lr=early_stop_lr,
             early_stop_stall=early_stop_stall,

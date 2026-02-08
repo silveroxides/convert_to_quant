@@ -355,13 +355,6 @@ def main():
         help="[plateau] How to interpret --lr_threshold: 'rel' (relative to best loss) or 'abs' (absolute). (default: rel)",
     )
     parser.add_argument(
-        "--lr-small-mult",
-        type=float,
-        default=None,
-        dest="lr_small_mult",
-        help="[adaptive] Override the dimension-aware small_mult factor with a fixed value. If not set, calculated from tensor shape.",
-    )
-    parser.add_argument(
         "--lr-shape-influence",
         type=float,
         default=1.0,
@@ -826,7 +819,6 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 lr_adaptive_mode=args.lr_adaptive_mode,
                 lr_shape_influence=args.lr_shape_influence,
                 lr_threshold_mode=args.lr_threshold_mode,
-                lr_small_mult=args.lr_small_mult,
                 # Early stopping
                 early_stop_loss=args.early_stop_loss,
                 early_stop_lr=args.early_stop_lr,
@@ -946,7 +938,6 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 lr_adaptive_mode=args.lr_adaptive_mode,
                 lr_shape_influence=args.lr_shape_influence,
                 lr_threshold_mode=args.lr_threshold_mode,
-                lr_small_mult=args.lr_small_mult,
                 # Early stopping
                 early_stop_loss=args.early_stop_loss,
                 early_stop_lr=args.early_stop_lr,
@@ -1258,7 +1249,6 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         lr_adaptive_mode=args.lr_adaptive_mode,
         lr_shape_influence=args.lr_shape_influence,
         lr_threshold_mode=args.lr_threshold_mode,
-        lr_small_mult=args.lr_small_mult,
         # Early stopping
         early_stop_loss=args.early_stop_loss,
         early_stop_lr=args.early_stop_lr,

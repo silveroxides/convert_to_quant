@@ -117,7 +117,6 @@ def adaptive_lr_update(
     improved: bool,
     counter_for_tier: int,
     worse_loss_counter: int,
-    small_mult: float = 1.0,
 ) -> float:
     """
     Compute new learning rate using tier-based adaptive schedule.
@@ -130,7 +129,6 @@ def adaptive_lr_update(
         improved: Whether loss improved this iteration
         counter_for_tier: Counter value to use for tier selection (may differ from worse_loss_counter in no-reset mode)
         worse_loss_counter: Current worse loss counter
-        small_mult: Optional multiplier for square matrices (default 1.0)
 
     Returns:
         Updated learning rate
