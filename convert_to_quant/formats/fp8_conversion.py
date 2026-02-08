@@ -67,6 +67,15 @@ def convert_to_fp8_scaled(
     layer_config_fullmatch: bool = False,
     low_memory: bool = False,
     device: Optional[str] = None,
+    # LoRA extraction options
+    extract_lora: bool = False,
+    lora_rank: int = 16,
+    lora_target: Optional[str] = None,
+    lora_depth: int = -1,
+    lora_ar_threshold: float = 0.0,
+    lora_save_path: Optional[str] = None,
+    # Added for CLI compatibility
+    lora_output: Optional[str] = None,
     **converter_kwargs,
 ):
     # Ensure filter_flags is a dict
@@ -133,6 +142,13 @@ def convert_to_fp8_scaled(
     converter_kwargs["target_format"] = target_format
     converter_kwargs["no_learned_rounding"] = no_learned_rounding
     converter_kwargs["device"] = device
+
+    # Add LoRA options to converter kwargs
+    converter_kwargs["extract_lora"] = extract_lora
+    converter_kwargs["lora_rank"] = lora_rank
+    converter_kwargs["lora_target"] = lora_target
+    converter_kwargs["lora_depth"] = lora_depth
+    converter_kwargs["lora_ar_threshold"] = lora_ar_threshold
 
     # Get format-aware block_size default (converters handle their own fixed sizes)
     # This is only used for metadata/display; converters use their __init__ defaults
@@ -267,6 +283,7 @@ def convert_to_fp8_scaled(
     info("Simulated calibration data generated.\n")
 
     new_tensors: Dict[str, torch.Tensor] = {}
+    lora_tensors: Dict[str, torch.Tensor] = {}
     weight_keys = sorted(
         [
             key
@@ -278,6 +295,7 @@ def convert_to_fp8_scaled(
     skipped_count = 0
     processed_count = 0
     custom_count = 0
+    dequant_w = None  # Track dequantized weights for bias correction
     fallback_count = 0
 
     info(f"Found {total_weights} weight tensors to potentially process.")
@@ -451,22 +469,38 @@ def convert_to_fp8_scaled(
         is_mxfp8 = layer_format == "mxfp8"
         is_nvfp4 = layer_format == "nvfp4"
 
+        # Extract block depth from key (look for .0. .1. etc patterns)
+        depth = -1
+        depth_match = re.search(r"\.(\d+)\.", key)
+        if depth_match:
+            depth = int(depth_match.group(1))
+
         # Call converter and unpack based on format type
         # Different converters have different return signatures
         if is_mxfp8:
-            # MXFP8: (qdata_fp8, block_scales_e8m0, dequant_w)
-            q_tensor, block_scales, dequant_w = converter.convert(original_tensor)
+            # MXFP8: (qdata_fp8, block_scales_e8m0, dequant_w, extra_tensors)
+            q_tensor, block_scales, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth)
             dequant_s = block_scales  # For bias correction compatibility
         elif is_nvfp4:
-            # NVFP4: (packed_qdata, block_scales_fp8, per_tensor_scale, dequant_w)
-            q_tensor, block_scales, per_tensor_scale, dequant_w = converter.convert(original_tensor)
+            # NVFP4: (packed_qdata, block_scales_fp8, per_tensor_scale, dequant_w, extra_tensors)
+            q_tensor, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth)
             dequant_s = block_scales  # For bias correction compatibility
         else:
-            # FP8/INT8: (q_tensor, scale, dequant_w)
-            q_tensor, dequant_s, dequant_w = converter.convert(original_tensor)
+            # FP8/INT8: (q_tensor, scale, dequant_w, extra_tensors)
+            q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth)
+
 
         new_tensors[key] = q_tensor.to(device="cpu")
         base_name = key[: key.rfind(".weight")]
+
+        # Store extracted LoRA tensors
+        if extra_tensors:
+            for lora_key, lora_tensor in extra_tensors.items():
+                # lora_up -> base.lora_up.weight, lora_down -> base.lora_down.weight
+                # Add diffusion_model prefix for ComfyUI compatibility
+                full_lora_key = f"diffusion_model.{base_name}.{lora_key}.weight"
+                lora_tensors[full_lora_key] = lora_tensor.cpu()
+
         bias_key = f"{base_name}.bias"
 
         if comfy_quant is True:
@@ -626,12 +660,14 @@ def convert_to_fp8_scaled(
 
         if bias_key in all_keys:
             # Apply bias correction even in simple mode for better accuracy
-            info(f"  - Adjusting corresponding bias: {bias_key}")
-            with torch.no_grad():
+            # Only if we have dequantized weights to calculate error from
+            if dequant_w is not None:
+                info(f"  - Adjusting corresponding bias: {bias_key}")
+                with torch.no_grad():
                     original_bias = loader.get_tensor(bias_key)
                     in_features = original_tensor.shape[1]
                     if in_features not in calibration_data_cache:
-                        print("  - WARNING: No calibration data for bias correction.")
+                        warning(f"  - WARNING: No calibration data for bias correction of {bias_key}.")
                         new_tensors[bias_key] = original_bias
                     else:
                         X_calib_dev = calibration_data_cache[in_features].to(
@@ -666,6 +702,9 @@ def convert_to_fp8_scaled(
                         )
                         if device == "cuda":
                             torch.cuda.empty_cache()
+            else:
+                # No dequant_w available (shouldn't happen with learned rounding)
+                new_tensors[bias_key] = loader.get_tensor(bias_key)
 
         # T5XXL/Mistral fallback: ensure input scale exists with correct key format
         if text_encoder_filter:
@@ -748,6 +787,14 @@ def convert_to_fp8_scaled(
         if normalized_count > 0:
             info(f"  Normalized {normalized_count} scale tensors to scalars")
         save_file(new_tensors, output_file, **save_kwargs)
+
+        # Save extracted LoRA adapter if any
+        if lora_tensors:
+            if not lora_save_path:
+                lora_save_path = lora_output or output_file.replace(".safetensors", "_lora.safetensors")
+            
+            info(f"Saving {len(lora_tensors)} LoRA tensors to {lora_save_path}")
+            save_file(lora_tensors, lora_save_path)
 
         info("Conversion complete!")
     except Exception as e:

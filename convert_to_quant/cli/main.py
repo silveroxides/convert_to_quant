@@ -16,6 +16,7 @@ from .argument_parser import (
     ADVANCED_ARGS,
     LEARNED_ROUNDING_ARGS,
     MODES_ARGS,
+    LORA_ARGS,
 )
 from ..constants import (
     NORMALIZE_SCALES_ENABLED,
@@ -98,6 +99,7 @@ def main():
         advanced_args=ADVANCED_ARGS,
         learned_rounding_args=LEARNED_ROUNDING_ARGS,
         modes_args=MODES_ARGS,
+        lora_args=LORA_ARGS,
     )
 
 
@@ -413,6 +415,49 @@ def main():
         type=int,
         default=1024,
         help="Maximum number of principal components.",
+    )
+
+    # LoRA extraction options (--help-lora)
+    parser.add_argument(
+        "--extract-lora",
+        action="store_true",
+        dest="extract_lora",
+        help="Extract quantization error into separate LoRA adapter layers.",
+    )
+    parser.add_argument(
+        "--lora-rank",
+        type=int,
+        default=32,
+        dest="lora_rank",
+        help="Rank for extracted LoRA layers (default: 32).",
+    )
+    parser.add_argument(
+        "--lora-target",
+        type=str,
+        default=None,
+        dest="lora_target",
+        help="Regex pattern for layers to target for LoRA extraction (e.g., 'attn.qkv').",
+    )
+    parser.add_argument(
+        "--lora-depth",
+        type=int,
+        default=1,
+        dest="lora_depth",
+        help="Maximum block depth for LoRA extraction. Targets only block index < depth. (default: 1).",
+    )
+    parser.add_argument(
+        "--lora-ar-threshold",
+        type=float,
+        default=0.0,
+        dest="lora_ar_threshold",
+        help="Aspect ratio threshold for LoRA extraction. Only layers with AR < threshold are targeted (targeting square layers). 0.0 for all layers (default: 0.0).",
+    )
+    parser.add_argument(
+        "--lora-output",
+        type=str,
+        default=None,
+        dest="lora_output",
+        help="Path to save extracted LoRA adapter (.safetensors). Auto-generated if not provided.",
     )
 
     # FP8 scaled to comfy_quant conversion mode
@@ -786,6 +831,13 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 input_scales=input_scales,
                 # Memory mode
                 low_memory=args.low_memory,
+                # LoRA options
+                extract_lora=args.extract_lora,
+                lora_rank=args.lora_rank,
+                lora_target=args.lora_target,
+                lora_depth=args.lora_depth,
+                lora_ar_threshold=args.lora_ar_threshold,
+                lora_output=args.lora_output,
             )
             return
 
@@ -896,6 +948,13 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 scale_optimization=args.scale_optimization,
                 # Memory mode
                 low_memory=args.low_memory,
+                # LoRA options
+                extract_lora=args.extract_lora,
+                lora_rank=args.lora_rank,
+                lora_target=args.lora_target,
+                lora_depth=args.lora_depth,
+                lora_ar_threshold=args.lora_ar_threshold,
+                lora_output=args.lora_output,
             )
             return
 
@@ -1195,6 +1254,13 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         early_stop_loss=args.early_stop_loss,
         early_stop_lr=args.early_stop_lr,
         early_stop_stall=args.early_stop_stall,
+        # LoRA options
+        extract_lora=args.extract_lora,
+        lora_rank=args.lora_rank,
+        lora_target=args.lora_target,
+        lora_depth=args.lora_depth,
+        lora_ar_threshold=args.lora_ar_threshold,
+        lora_output=args.lora_output,
     )
 
 if __name__ == "__main__":
