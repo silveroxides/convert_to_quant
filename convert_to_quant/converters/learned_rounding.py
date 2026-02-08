@@ -185,14 +185,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
-                    for param_group in optimizer.param_groups:
-                        param_group["lr"] = curr_lr
 
-                # Reset counter after boost in no-reset adaptive mode
+                # Reset counter after boost in no-reset mode
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
@@ -323,14 +321,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
-                    for param_group in optimizer.param_groups:
-                        param_group["lr"] = curr_lr
 
-                # Reset counter after boost in no-reset adaptive mode
+                # Reset counter after boost in no-reset mode
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
@@ -390,8 +386,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
         curr_lr = self.lr
-        # Tensor dimensions for adaptive LR schedule
-        M, N = W_float32.shape[0], W_float32.shape[1]
+        # Dimension-aware small_mult for adaptive LR schedule
+        if self.lr_small_mult is not None:
+            small_mult = self.lr_small_mult
+        elif M == N:
+            small_mult = math.gamma((M ** (1/3) / M) + 1)
+        elif M > N:
+            small_mult = math.pow(100, M / math.pow(N, 2))
+        else:  # M < N
+            small_mult = math.pow(10, N / math.pow(M, 2))
 
         schedule_name = self.lr_schedule
 
@@ -401,7 +404,6 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         if schedule_name == "plateau" and self.lr_shape_influence > 0:
             # Scale factor based on aspect ratio, modulated by influence
-            # influence=1.0: full effect, influence=0.0: no effect (use raw values)
             # Elongated tensors need MORE AGGRESSIVE decay (lower factor)
             ar_factor = math.sqrt(aspect_ratio)  # e.g., 1.0 for square, 2.0 for AR=4
             blend = self.lr_shape_influence
@@ -487,7 +489,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -546,11 +548,38 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 break
 
             with torch.no_grad():
+                # Compute gradient direction in INT8 quantized space
+                #
+                # Math derivation:
+                # - Dequantization: dq = Q * scale (per-block)
+                # - Loss L is computed on dq
+                # - By chain rule: ∂L/∂Q = ∂L/∂dq * ∂dq/∂Q = ∂L/∂dq * scale
+                #
+                # So we need to MULTIPLY the weight-space gradient by scale to get Q-space gradient
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-                W_q_refined -= curr_lr * (grad_direction * scale)
+
+                # Transform gradient through block-wise structure
+                # Reshape grad to blocks, multiply by scale (chain rule), then reshape back
+                grad_blocked = grad_direction.reshape(
+                    M // block_size, block_size, N // block_size, block_size
+                )
+                grad_blocked = grad_blocked.permute(0, 2, 1, 3)
+                scale_broadcast = scale.unsqueeze(-1).unsqueeze(-1)
+                grad_scaled = grad_blocked * scale_broadcast
+                grad_scaled = grad_scaled.permute(0, 2, 1, 3).reshape(M, N)
+
+                q_refined -= curr_lr * grad_scaled
 
         pbar.close()
-        return best_tensor if best_tensor is not None else W_q_refined
+
+        final_tensor = best_tensor if best_tensor is not None else q_refined
+        final_qdata = (
+            final_tensor.clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX)
+            .round()
+            .to(TARGET_INT8_DTYPE)
+        )
+        del qdata_float, q_refined
+        return final_qdata
 
     def convert(
         self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1
@@ -917,7 +946,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -1040,7 +1069,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -1106,7 +1135,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         cooldown_counter = 0  # For plateau cooldown
         curr_lr = self.lr
         # Dimension-aware small_mult for adaptive LR schedule
-        if M == N:
+        if self.lr_small_mult is not None:
+            small_mult = self.lr_small_mult
+        elif M == N:
             small_mult = math.gamma((M ** (1/3) / M) + 1)
         elif M > N:
             small_mult = math.pow(100, M / math.pow(N, 2))
@@ -1198,7 +1229,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -1475,7 +1506,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             0, 2, 1, 3
         )  # (M//bs, N//bs, bs, bs)
         block_max = W_blocked.abs().amax(dim=(2, 3))  # (M//bs, N//bs)
-        quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12)  # (M//bs, N//bs)
+        quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12) # (M//bs, N//bs)
 
         if self.no_learned_rounding:
             info("\n    - Simple quantization (no learned rounding).")

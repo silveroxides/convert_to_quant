@@ -413,15 +413,17 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         curr_lr = self.lr
         scale_lr = curr_lr * 0.1  # Lower LR for scales in joint mode
 
+        schedule_name = self.lr_schedule
+
         # Dimension-aware small_mult for adaptive LR schedule
-        if M == N:
+        if self.lr_small_mult is not None:
+            small_mult = self.lr_small_mult
+        elif M == N:
             small_mult = math.gamma((M ** (1/3) / M) + 1)
         elif M > N:
             small_mult = math.pow(100, M / math.pow(N, 2))
         else:  # M < N
             small_mult = math.pow(10, N / math.pow(M, 2))
-
-        schedule_name = self.lr_schedule
 
         # Shape-aware plateau parameters
         aspect_ratio = max(M, N) / min(M, N)
@@ -526,7 +528,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -621,6 +623,11 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         plateau_counter = 0
         cooldown_counter = 0
 
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(M, N)
+        )
+
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
             range(self.num_iter),
@@ -677,19 +684,19 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
-                elif plateau_counter >= self.lr_patience:
+                elif plateau_counter >= effective_patience:
                     if curr_lr > self.lr_min:
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         for pg in optimizer.param_groups:
                             pg["lr"] = curr_lr
-                        cooldown_counter = self.lr_cooldown
+                        cooldown_counter = effective_cooldown
                     plateau_counter = 0
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -770,6 +777,11 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         plateau_counter = 0
         cooldown_counter = 0
 
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(M, N)
+        )
+
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
         pbar = tqdm(
             range(self.num_iter),
@@ -826,19 +838,19 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             elif schedule_name == "plateau":
                 if cooldown_counter > 0:
                     cooldown_counter -= 1
-                elif plateau_counter >= self.lr_patience:
+                elif plateau_counter >= effective_patience:
                     if curr_lr > self.lr_min:
-                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
                         for pg in optimizer.param_groups:
                             pg["lr"] = curr_lr
-                        cooldown_counter = self.lr_cooldown
+                        cooldown_counter = effective_cooldown
                     plateau_counter = 0
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr

@@ -52,6 +52,7 @@ ADVANCED_ARGS = {
     "lr_adaptive_mode",
     "lr_shape_influence",
     "lr_threshold_mode",
+    "lr_small_mult",
     # Early stopping
     "early_stop_loss",
     "early_stop_lr",

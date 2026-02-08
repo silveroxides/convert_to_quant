@@ -50,6 +50,7 @@ class BaseLearnedConverter(ABC):
         lr_adaptive_mode: str = "simple-reset",
         lr_shape_influence: float = 1.0,
         lr_threshold_mode: str = "rel",
+        lr_small_mult: Optional[float] = None,
         early_stop_loss: float = 1e-8,
         early_stop_lr: float = 1e-10,
         early_stop_stall: int = 1000,
@@ -83,6 +84,7 @@ class BaseLearnedConverter(ABC):
             lr_adaptive_mode: Counter reset mode ("simple-reset", "no-reset")
             lr_shape_influence: Shape-aware LR scaling (0.0-1.0)
             lr_threshold_mode: Threshold mode ("rel", "abs")
+            lr_small_mult: Dimension-aware multiplier (default 1.0)
             early_stop_loss: Stop when loss drops below this
             early_stop_lr: Stop when LR drops below this
             early_stop_stall: Stop after this many steps without improvement
@@ -118,6 +120,7 @@ class BaseLearnedConverter(ABC):
         self.lr_adaptive_mode = lr_adaptive_mode
         self.lr_shape_influence = lr_shape_influence
         self.lr_threshold_mode = lr_threshold_mode
+        self.lr_small_mult = lr_small_mult
 
         # Early stopping thresholds
         self.early_stop_loss = early_stop_loss
@@ -283,6 +286,7 @@ class BaseLearnedConverter(ABC):
         iteration: int,
         tensor_shape: Tuple[int, int],
         min_lr: float = 1e-10,
+        small_mult: float = 1.0,
     ) -> Tuple[float, bool]:
         """
         Cosine-based adaptive LR update with shape-awareness.
@@ -305,7 +309,7 @@ class BaseLearnedConverter(ABC):
         Replace the existing tier-based if/elif chain with:
             new_lr, lr_updated = self._adaptive_lr_update_cosine(
                 curr_lr, improved, worse_loss_counter, iteration,
-                (M, N), self.early_stop_lr
+                (M, N), self.early_stop_lr, small_mult
             )
             if lr_updated:
                 curr_lr = new_lr
@@ -317,6 +321,7 @@ class BaseLearnedConverter(ABC):
             iteration: Current optimization iteration
             tensor_shape: (M, N) dimensions of weight tensor
             min_lr: Minimum allowed learning rate
+            small_mult: Dimension-aware multiplier (default 1.0)
 
         Returns:
             Tuple of (new_lr, lr_was_updated)
@@ -340,6 +345,9 @@ class BaseLearnedConverter(ABC):
             # This prevents compounding boosts when already improving rapidly.
             boost_mult = 1.0 + scaled_distance * (1.0 - u_factor)
 
+            # Apply small_mult
+            boost_mult *= small_mult
+
             new_lr = min(curr_lr * boost_mult, 100.0)
             return new_lr, True
         else:
@@ -355,6 +363,10 @@ class BaseLearnedConverter(ABC):
             max_decay = 0.995
 
             decay_mult = min_decay + (max_decay - min_decay) * u_factor
+            
+            # Apply small_mult
+            decay_mult *= small_mult
+            
             new_lr = max(curr_lr * decay_mult, min_lr)
             return new_lr, True
 

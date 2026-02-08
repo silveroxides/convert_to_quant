@@ -376,7 +376,9 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         curr_lr = self.lr
 
         # Dimension-aware small_mult for adaptive LR schedule
-        if M == N:
+        if self.lr_small_mult is not None:
+            small_mult = self.lr_small_mult
+        elif M == N:
             small_mult = math.gamma((M ** (1/3) / M) + 1)
         elif M > N:
             small_mult = math.pow(100, M / math.pow(N, 2))
@@ -468,7 +470,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -650,7 +652,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
@@ -806,7 +808,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
                     curr_lr, improved, counter_for_update, i,
-                    (M, N), self.early_stop_lr
+                    (M, N), self.early_stop_lr, small_mult
                 )
                 if lr_updated:
                     curr_lr = new_lr
