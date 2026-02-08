@@ -189,8 +189,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 )
                 if lr_updated:
                     curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
 
-                # Reset counter after boost in no-reset mode
+                # Reset counter after boost in no-reset adaptive mode
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
@@ -325,8 +327,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 )
                 if lr_updated:
                     curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
 
-                # Reset counter after boost in no-reset mode
+                # Reset counter after boost in no-reset adaptive mode
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
@@ -386,7 +390,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         plateau_counter = 0  # For plateau schedule
         cooldown_counter = 0  # For plateau cooldown
         curr_lr = self.lr
-        # Dimension-aware small_mult for adaptive LR schedule
+        # Tensor dimensions for adaptive LR schedule
         M, N = W_float32.shape[0], W_float32.shape[1]
 
         schedule_name = self.lr_schedule
@@ -397,6 +401,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         if schedule_name == "plateau" and self.lr_shape_influence > 0:
             # Scale factor based on aspect ratio, modulated by influence
+            # influence=1.0: full effect, influence=0.0: no effect (use raw values)
             # Elongated tensors need MORE AGGRESSIVE decay (lower factor)
             ar_factor = math.sqrt(aspect_ratio)  # e.g., 1.0 for square, 2.0 for AR=4
             blend = self.lr_shape_influence
@@ -545,15 +550,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 W_q_refined -= curr_lr * (grad_direction * scale)
 
         pbar.close()
-
-        final_tensor = best_tensor if best_tensor is not None else q_refined
-        final_qdata = (
-            final_tensor.clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX)
-            .round()
-            .to(TARGET_INT8_DTYPE)
-        )
-        del qdata_float, q_refined
-        return final_qdata
+        return best_tensor if best_tensor is not None else W_q_refined
 
     def convert(
         self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1

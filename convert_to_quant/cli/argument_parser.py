@@ -388,7 +388,11 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("LR Schedule (Adaptive):")
         print("-" * 40)
 
-        adaptive_args = ["lr_adaptive_mode"]
+        adaptive_args = [
+            "lr_adaptive_mode",
+            "lr_factor",
+            "lr_cooldown",
+        ]
         for action in self._all_actions:
             if self._get_dest_name(action) in adaptive_args:
                 line = self._format_action_help(action)

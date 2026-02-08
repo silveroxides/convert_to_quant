@@ -322,7 +322,7 @@ def main():
         "--lr_patience", type=int, default=9, help="[plateau] Steps before decay"
     )
     parser.add_argument(
-        "--lr_factor", type=float, default=0.95, help="[plateau] LR reduction factor"
+        "--lr_factor", type=float, default=0.95, help="[plateau, adaptive] LR reduction factor"
     )
     parser.add_argument(
         "--lr_min", type=float, default=1e-10, help="[plateau] Minimum LR bound"
@@ -331,7 +331,7 @@ def main():
         "--lr_cooldown",
         type=int,
         default=6,
-        help="[plateau] Steps to wait after reduction",
+        help="[plateau, adaptive] Steps to wait after reduction(plateau, adaptive) or improvement(adaptive) before resuming normal operation",
     )
     parser.add_argument(
         "--lr_threshold",
