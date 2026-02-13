@@ -1106,12 +1106,6 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         cooldown_counter = 0  # For plateau cooldown
         curr_lr = self.lr
         # Dimension-aware small_mult for adaptive LR schedule
-        if M == N:
-            small_mult = math.gamma((M ** (1/3) / M) + 1)
-        elif M > N:
-            small_mult = math.pow(100, M / math.pow(N, 2))
-        else:  # M < N
-            small_mult = math.pow(10, N / math.pow(M, 2))
 
         schedule_name = self.lr_schedule
 
@@ -1475,7 +1469,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             0, 2, 1, 3
         )  # (M//bs, N//bs, bs, bs)
         block_max = W_blocked.abs().amax(dim=(2, 3))  # (M//bs, N//bs)
-        quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12)  # (M//bs, N//bs)
+        quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12) # (M//bs, N//bs)
 
         if self.no_learned_rounding:
             info("\n    - Simple quantization (no learned rounding).")

@@ -375,13 +375,6 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         cooldown_counter = 0
         curr_lr = self.lr
 
-        # Dimension-aware small_mult for adaptive LR schedule
-        if M == N:
-            small_mult = math.gamma((M ** (1/3) / M) + 1)
-        elif M > N:
-            small_mult = math.pow(100, M / math.pow(N, 2))
-        else:  # M < N
-            small_mult = math.pow(10, N / math.pow(M, 2))
 
         schedule_name = self.lr_schedule
 

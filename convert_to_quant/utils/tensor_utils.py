@@ -112,51 +112,6 @@ def generate_calibration_data(
 
     return calibration_data_cache
 
-def adaptive_lr_update(
-    curr_lr: float,
-    improved: bool,
-    counter_for_tier: int,
-    worse_loss_counter: int,
-    small_mult: float = 1.0,
-) -> float:
-    """
-    Compute new learning rate using tier-based adaptive schedule.
-
-    Uses ADAPTIVE_LR_TIERS_IMPROVE and ADAPTIVE_LR_TIERS_DECAY from constants
-    to determine appropriate boost/decay multipliers based on worse_loss_counter.
-
-    Args:
-        curr_lr: Current learning rate
-        improved: Whether loss improved this iteration
-        counter_for_tier: Counter value to use for tier selection (may differ from worse_loss_counter in no-reset mode)
-        worse_loss_counter: Current worse loss counter
-        small_mult: Optional multiplier for square matrices (default 1.0)
-
-    Returns:
-        Updated learning rate
-    """
-    from ..constants import ADAPTIVE_LR_TIERS_IMPROVE, ADAPTIVE_LR_TIERS_DECAY
-
-    if improved:
-        # Find appropriate improvement tier
-        tier = ADAPTIVE_LR_TIERS_IMPROVE[-1]  # Default to highest tier
-        for i, (threshold, mult, max_lr) in enumerate(ADAPTIVE_LR_TIERS_IMPROVE):
-            next_threshold = ADAPTIVE_LR_TIERS_IMPROVE[i + 1][0] if i + 1 < len(ADAPTIVE_LR_TIERS_IMPROVE) else float('inf')
-            if threshold <= counter_for_tier < next_threshold:
-                tier = (threshold, mult, max_lr)
-                break
-        _, mult, max_lr = tier
-        return min(curr_lr * (mult * small_mult), max_lr)
-    else:
-        # Find appropriate decay tier
-        tier = ADAPTIVE_LR_TIERS_DECAY[-1]  # Default to highest tier
-        for i, (threshold, mult, min_lr) in enumerate(ADAPTIVE_LR_TIERS_DECAY):
-            next_threshold = ADAPTIVE_LR_TIERS_DECAY[i + 1][0] if i + 1 < len(ADAPTIVE_LR_TIERS_DECAY) else float('inf')
-            if threshold <= worse_loss_counter < next_threshold:
-                tier = (threshold, mult, min_lr)
-                break
-        _, mult, min_lr = tier
-        return max(curr_lr * (mult * small_mult), min_lr)
 
 def compute_bias_correction(
     original_weight: torch.Tensor,

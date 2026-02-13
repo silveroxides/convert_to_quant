@@ -322,7 +322,7 @@ def main():
         "--lr_patience", type=int, default=9, help="[plateau] Steps before decay"
     )
     parser.add_argument(
-        "--lr_factor", type=float, default=0.95, help="[plateau] LR reduction factor"
+        "--lr_factor", type=float, default=0.95, help="[plateau, adaptive] LR reduction factor"
     )
     parser.add_argument(
         "--lr_min", type=float, default=1e-10, help="[plateau] Minimum LR bound"
@@ -331,7 +331,7 @@ def main():
         "--lr_cooldown",
         type=int,
         default=6,
-        help="[plateau] Steps to wait after reduction",
+        help="[plateau, adaptive] Steps to wait after reduction(plateau, adaptive) or improvement(adaptive) before resuming normal operation",
     )
     parser.add_argument(
         "--lr_threshold",
@@ -346,14 +346,6 @@ def main():
         choices=["simple-reset", "no-reset"],
         help="[adaptive] Counter reset behavior (see MANUAL.md)",
     )
-    # Advanced LR tuning (--help-advanced)
-    parser.add_argument(
-        "--lr-shape-influence",
-        type=float,
-        default=1.0,
-        dest="lr_shape_influence",
-        help="[plateau] Scale factor based on tensor aspect ratio. 0.0=disabled, 1.0=full effect. Elongated tensors get more aggressive decay. (default: 1.0)",
-    )
     parser.add_argument(
         "--lr-threshold-mode",
         type=str,
@@ -361,6 +353,13 @@ def main():
         choices=["rel", "abs"],
         dest="lr_threshold_mode",
         help="[plateau] How to interpret --lr_threshold: 'rel' (relative to best loss) or 'abs' (absolute). (default: rel)",
+    )
+    parser.add_argument(
+        "--lr-shape-influence",
+        type=float,
+        default=1.0,
+        dest="lr_shape_influence",
+        help="[plateau] Scale factor based on tensor aspect ratio. 0.0=disabled, 1.0=full effect. Elongated tensors get more aggressive decay. (default: 1.0)",
     )
     # Early stopping thresholds (--help-advanced)
     parser.add_argument(
