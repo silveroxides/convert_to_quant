@@ -389,7 +389,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             W_rounded = W_scaled.to(self.target_dtype).to(COMPUTE_DTYPE)
         delta = torch.zeros_like(W_rounded, requires_grad=True)
         curr_lr = self.lr
-        optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False)
+        optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
 
         schedule_name = self.lr_schedule
         best_loss = float("inf")
@@ -1242,7 +1242,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         delta = torch.zeros_like(qdata_float, requires_grad=True)
 
         curr_lr = self.lr
-        optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False)
+        optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
 
         schedule_name = self.lr_schedule
         best_loss = float("inf")

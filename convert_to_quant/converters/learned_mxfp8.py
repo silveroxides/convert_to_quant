@@ -877,7 +877,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
 
         delta = torch.zeros_like(qdata_f32, requires_grad=True)
         curr_lr = self.lr
-        optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False)
+        optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
 
         current_block_scales_f32 = block_scales_f32.clone()
         current_block_scales_e8m0 = block_scales_e8m0.clone()

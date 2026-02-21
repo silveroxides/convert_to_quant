@@ -72,6 +72,8 @@ def convert_to_mxfp8(
     scale_optimization: str = "fixed",
     # Memory mode
     low_memory: bool = False,
+    # Prodigy
+    use_speed: bool = False,
     # LoRA extraction options
     extract_lora: bool = False,
     lora_rank: int = 16,
@@ -161,6 +163,7 @@ def convert_to_mxfp8(
             scale_refinement_rounds=scale_refinement_rounds,
             scale_optimization=scale_optimization,
             lr=lr,
+            use_speed=use_speed,
             # LoRA options
             extract_lora=extract_lora,
             lora_rank=lora_rank,
@@ -381,7 +384,7 @@ def convert_to_mxfp8(
     if lora_tensors:
         if not lora_save_path:
             lora_save_path = lora_output or output_file.replace(".safetensors", "_lora.safetensors")
-        
+
         info(f"Saving {len(lora_tensors)} LoRA tensors to {lora_save_path}")
         save_file(lora_tensors, lora_save_path)
 

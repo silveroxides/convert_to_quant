@@ -907,11 +907,11 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         current_total_scale = total_scale.clone()
         if self.scale_optimization == "joint":
             block_scales_float = (total_scale / per_tensor_scale).clone().requires_grad_(True)
-            optimizer = ProdigyPlusScheduleFree([delta, block_scales_float], lr=curr_lr, use_schedulefree=False)
+            optimizer = ProdigyPlusScheduleFree([delta, block_scales_float], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
             best_block_scales = block_scales_float.detach().clone()
         else:
             block_scales_float = None
-            optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False)
+            optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
             best_block_scales = None
 
         schedule_name = self.lr_schedule

@@ -306,6 +306,11 @@ def main():
         help="[AdamW/RAdam/Original] Initial learning rate.",
     )
     parser.add_argument(
+        "--use_speed",
+        action="store_true",
+        help="[Prodigy] Enabled the use_speed parameter for Prodigy optimizer.",
+    )
+    parser.add_argument(
         "--lr_schedule",
         type=str,
         default="adaptive",
@@ -830,6 +835,8 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 input_scales=input_scales,
                 # Memory mode
                 low_memory=args.low_memory,
+                # Prodigy specific
+                use_speed=args.use_speed,
                 # LoRA options
                 extract_lora=args.extract_lora,
                 lora_rank=args.lora_rank,
@@ -947,6 +954,8 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 scale_optimization=args.scale_optimization,
                 # Memory mode
                 low_memory=args.low_memory,
+                # Prodigy specific
+                use_speed=args.use_speed,
                 # LoRA options
                 extract_lora=args.extract_lora,
                 lora_rank=args.lora_rank,
@@ -1253,6 +1262,8 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         early_stop_loss=args.early_stop_loss,
         early_stop_lr=args.early_stop_lr,
         early_stop_stall=args.early_stop_stall,
+        # Prodigy specific
+        use_speed=args.use_speed,
         # LoRA options
         extract_lora=args.extract_lora,
         lora_rank=args.lora_rank,
