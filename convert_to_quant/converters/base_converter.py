@@ -61,6 +61,7 @@ class BaseLearnedConverter(ABC):
         lora_depth: int = 1,
         lora_target: Optional[str] = None,
         lora_ar_threshold: float = 0.0,
+        use_speed: bool = False,
         **kwargs,
     ):
         """
@@ -104,6 +105,13 @@ class BaseLearnedConverter(ABC):
 
         # Optimizer configuration
         self.optimizer_choice = optimizer
+        self.use_speed = use_speed
+        if self.optimizer_choice == "prodigy":
+            try:
+                import prodigyplus.prodigy_plus_schedulefree
+            except ImportError:
+                raise ImportError("User needs to run `pip install prodigy-plus-schedule-free` to use the prodigy optimizer.")
+
         self.num_iter = num_iter
         self.lr = lr
         self.no_learned_rounding = no_learned_rounding
@@ -176,7 +184,7 @@ class BaseLearnedConverter(ABC):
             if len(shape) >= 2:
                 rows, cols = shape[0], shape[1]
                 ar = max(rows, cols) / min(rows, cols)
-                
+
                 # 3. User Aspect Ratio Threshold Override (LESS THAN targets square layers)
                 if self.lora_ar_threshold > 0.0:
                     return ar < self.lora_ar_threshold
@@ -184,20 +192,20 @@ class BaseLearnedConverter(ABC):
                 # Case 3: AR > 4.0 -> Too large. Never extract (default logic).
                 if ar > 4.0:
                     return False
-                    
+
                 # Case 1: AR < 3.0 -> Safe zone. Extract if below depth (default logic).
                 if ar < 3.0:
                     return True
-                    
+
                 # Case 2: 3.0 <= AR <= 4.0 -> Marginal zone.
                 # Extract if Block 0 OR specific sensitive type (QKV/Attn).
                 if block_idx == 0:
                     return True
-                
+
                 k_lower = key.lower()
                 if "qkv" in k_lower or "attn" in k_lower or "proj" in k_lower:
                     return True
-                    
+
                 return False
 
         return False
@@ -213,11 +221,11 @@ class BaseLearnedConverter(ABC):
         with torch.no_grad():
             # Ensure everything is on same device and float32 for SVD
             error = (W_orig - W_dequant).to(device=W_orig.device, dtype=torch.float32)
-            
+
             # Flatten if necessary (for convs)
             if error.ndim > 2:
                 error = error.flatten(1)
-                
+
             M, N = error.shape
             actual_rank = min(self.lora_rank, M, N)
 
@@ -227,7 +235,7 @@ class BaseLearnedConverter(ABC):
             try:
                 # Use svd_lowrank for efficiency
                 U, S, V = torch.svd_lowrank(error, q=actual_rank, niter=4)
-                
+
                 # LoRA Up = U * diag(S)
                 # LoRA Down = V^T
                 # Return as float16 CPU tensors for storage efficiency
@@ -363,10 +371,10 @@ class BaseLearnedConverter(ABC):
             max_decay = 0.995
 
             decay_mult = min_decay + (max_decay - min_decay) * u_factor
-            
+
             # Apply small_mult
             decay_mult *= small_mult
-            
+
             new_lr = max(curr_lr * decay_mult, min_lr)
             return new_lr, True
 

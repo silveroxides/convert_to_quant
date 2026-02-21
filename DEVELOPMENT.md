@@ -1,6 +1,22 @@
 
 ---
 
+## 2026-02-21: Prodigy Optimizer Support
+
+### Session Summary
+Added support for the `prodigy-plus-schedule-free` optimizer as an optional dependency for learned rounding optimization across all quantization formats (FP8, INT8, NVFP4, MXFP8). The optimizer is instantiated with `use_schedulefree=False` to leverage its adaptive learning rate capabilities while preserving existing schedule logic (adaptive, plateau, exponential).
+
+### Files Modified
+- `convert_to_quant/cli/main.py`: Added `prodigy` to `--optimizer` argument choices.
+- `convert_to_quant/converters/learned_rounding.py`: Implemented `_optimize_prodigy` and `_optimize_int8_prodigy`.
+- `convert_to_quant/converters/learned_nvfp4.py`: Implemented `_optimize_prodigy` with scale optimization support.
+- `convert_to_quant/converters/learned_mxfp8.py`: Implemented `_optimize_prodigy`.
+
+### Usage
+Run conversion with `--optimizer prodigy`. If the package is not installed, the tool will prompt the user to run `pip install prodigy-plus-schedule-free` and exit safely.
+
+---
+
 ## 2026-01-24: Dependency Documentation Alignment
 
 ### Session Summary

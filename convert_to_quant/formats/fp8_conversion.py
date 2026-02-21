@@ -792,7 +792,7 @@ def convert_to_fp8_scaled(
         if lora_tensors:
             if not lora_save_path:
                 lora_save_path = lora_output or output_file.replace(".safetensors", "_lora.safetensors")
-            
+
             info(f"Saving {len(lora_tensors)} LoRA tensors to {lora_save_path}")
             save_file(lora_tensors, lora_save_path)
 

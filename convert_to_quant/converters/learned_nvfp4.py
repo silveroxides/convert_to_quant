@@ -320,6 +320,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             qdata, final_total_scale = self._optimize_adamw(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
         elif self.optimizer_choice == "radam":
             qdata, final_total_scale = self._optimize_radam(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
+        elif self.optimizer_choice == "prodigy":
+            qdata, final_total_scale = self._optimize_prodigy(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -878,6 +880,150 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         return qdata, best_total_scale
 
 
+
+    def _optimize_prodigy(
+        self,
+        W_float32: torch.Tensor,
+        total_scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+        per_tensor_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """NVFP4 optimization using ProdigyPlusScheduleFree optimizer."""
+        from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree
+
+        M, N = W_float32.shape
+
+        tensor_blocks = W_float32.reshape(M, -1, self.block_size)
+        W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
+        W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        q_tmp = _f32_to_floatx_unpacked(W_q_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        W_q_initial = _floatx_unpacked_to_f32(q_tmp, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        qdata_f32 = W_q_initial.view(M, N)
+
+        delta = torch.zeros_like(qdata_f32, requires_grad=True)
+        curr_lr = self.lr
+
+        current_total_scale = total_scale.clone()
+        if self.scale_optimization == "joint":
+            block_scales_float = (total_scale / per_tensor_scale).clone().requires_grad_(True)
+            optimizer = ProdigyPlusScheduleFree([delta, block_scales_float], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
+            best_block_scales = block_scales_float.detach().clone()
+        else:
+            block_scales_float = None
+            optimizer = ProdigyPlusScheduleFree([delta], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
+            best_block_scales = None
+
+        schedule_name = self.lr_schedule
+        best_loss = float("inf")
+        best_delta = delta.detach().clone()
+        best_total_scale = total_scale.clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
+
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(M, N)
+        )
+
+        mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
+        pbar = tqdm(
+            range(self.num_iter),
+            desc=f"    Optimizing NVFP4 (Prodigy-{schedule_name}{mode_suffix})",
+            leave=False,
+            dynamic_ncols=True,
+        )
+
+        for i in pbar:
+            optimizer.zero_grad()
+
+            q_refined = qdata_f32 + delta
+
+            if self.scale_optimization == "joint":
+                block_scales_ste = self._ste_fp8_scale(block_scales_float)
+                current_total_scale = per_tensor_scale * block_scales_ste
+
+            current_dq = self._nvfp4_dequantize_blockwise(q_refined, current_total_scale, M, N)
+
+            error = current_dq - W_float32
+            projected_error = U_k.T @ error @ Vh_k.T
+            loss = torch.linalg.norm(projected_error)
+
+            loss.backward()
+            optimizer.step()
+
+            if self.scale_optimization == "joint":
+                with torch.no_grad():
+                    block_scales_float.clamp_(min=1e-6, max=F8_E4M3_MAX)
+
+            current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
+
+            if improved:
+                best_loss = current_loss_val
+                best_delta = delta.detach().clone()
+                best_total_scale = current_total_scale.detach().clone()
+                if self.scale_optimization == "joint":
+                    best_block_scales = block_scales_float.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for pg in optimizer.param_groups:
+                    pg["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= effective_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
+                        for pg in optimizer.param_groups:
+                            pg["lr"] = curr_lr
+                        cooldown_counter = effective_cooldown
+                    plateau_counter = 0
+            else:  # 'adaptive'
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
+
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
+
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
+
+            if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
+                break
+
+        pbar.close()
+
+        final_q = qdata_f32 + best_delta
+        final_q = torch.clamp(final_q.detach(), -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        qdata = _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
+        return qdata, best_total_scale
 
     def _check_early_stop(
         self, current_loss: float, curr_lr: float, worse_loss_counter: int
