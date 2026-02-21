@@ -290,7 +290,7 @@ def main():
         "--optimizer",
         type=str,
         default="original",
-        choices=["original", "adamw", "radam"],
+        choices=["original", "adamw", "radam", "prodigy"],
         help="Optimization algorithm.",
     )
     parser.add_argument(

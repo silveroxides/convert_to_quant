@@ -104,6 +104,12 @@ class BaseLearnedConverter(ABC):
 
         # Optimizer configuration
         self.optimizer_choice = optimizer
+        if self.optimizer_choice == "prodigy":
+            try:
+                import prodigyplus.prodigy_plus_schedulefree
+            except ImportError:
+                raise ImportError("User needs to run `pip install prodigy-plus-schedule-free` to use the prodigy optimizer.")
+
         self.num_iter = num_iter
         self.lr = lr
         self.no_learned_rounding = no_learned_rounding
