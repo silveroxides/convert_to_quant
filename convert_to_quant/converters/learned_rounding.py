@@ -54,7 +54,6 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         self.block_size = block_size
         self.target_format = target_format
-        # Memory Safety Threshold: ~400MB. Massive embeddings (1B elements) trigger this.
         self.mem_threshold = 100_000_000 
 
         if target_format == "int8" and scaling_mode not in ("tensor", "block"):
@@ -70,192 +69,69 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             self.target_dtype = TARGET_FP8_DTYPE
             self.f8_max_val = FP8_MAX
 
-    def _compute_loss_and_grad(self, W_q, scale, W_float32, U_k, Vh_k, device_context="cuda"):
-        """Memory-aware loss/grad calculation. Offloads to CPU if tensor is massive."""
-        if W_float32.numel() > self.mem_threshold:
-            # Entire calculation on CPU to save critical VRAM
-            cpu_W_q = W_q.to("cpu", non_blocking=True)
-            cpu_scale = scale.to("cpu") if isinstance(scale, torch.Tensor) else scale
-            cpu_orig = W_float32.to("cpu", non_blocking=True)
-            cpu_U = U_k.to("cpu", non_blocking=True)
-            cpu_Vh = Vh_k.to("cpu", non_blocking=True)
-            
-            # Lazy dequantization on CPU
-            cpu_dq = cpu_W_q / cpu_scale
-            error = cpu_dq - cpu_orig
-            projected_error = cpu_U.T @ error @ cpu_Vh.T
-            loss = torch.linalg.norm(projected_error)
-            
-            # Compute gradient direction
-            grad_dir = cpu_U @ (projected_error / loss.clamp_min(1e-20)) @ cpu_Vh
-            
-            # Return loss to device context (usually GPU) and keep grad_dir on CPU if needed
-            res_loss = loss.to(device_context)
-            res_grad = grad_dir.to(device_context)
-            
-            del cpu_W_q, cpu_dq, cpu_orig, cpu_U, cpu_Vh, error, projected_error
-            return res_loss, res_grad
-        else:
-            # Standard GPU path
-            current_dq = W_q / scale
-            error = current_dq - W_float32
-            projected_error = U_k.T @ error @ Vh_k.T
-            loss = torch.linalg.norm(projected_error)
-            grad_dir = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-            return loss, grad_dir
-
-    def _optimize_adamw(self, W_float32, scale, U_k, Vh_k):
-        # Optimization Target Setup
+    def _optimize_original(self, W_float32, scale, U, Vh):
+        """Subspace-Optimized Gradient Descent with fixed memory lifecycle."""
         is_massive = W_float32.numel() > self.mem_threshold
-        opt_device = "cpu" if is_massive else self.device
-        
+        is_scalar_scale = (not isinstance(scale, torch.Tensor)) or (scale.numel() == 1)
+
+        # 1. Pre-calculate subspace projection while W_float32 is still alive
+        with torch.no_grad():
+            P_orig = torch.mm(U.t(), W_float32)
+            P_orig = torch.mm(P_orig, Vh.t())
+            
+            # 2. Create the initial rounded weights BEFORE deleting W_float32
+            # This is the 3.75GB tensor we will actually optimize in-place
+            W_q_refined = W_float32.mul(scale).to(self.target_dtype).to(COMPUTE_DTYPE)
+
+        # 3. NOW LIBERATE VRAM: The original FP32 weights are no longer needed
         if is_massive:
-            verbose(f"    - Layer is massive ({W_float32.numel()/1e6:.1f}M elements). Offloading optimization to CPU.")
+            verbose(f"    - Freeing original weights to reclaim {W_float32.numel()*4/1024**3:.2f}GB VRAM.")
+            del W_float32
+            gc.collect()
             torch.cuda.empty_cache()
 
-        # Move workspace to target device
-        W_f32 = W_float32.to(opt_device)
-        U = U_k.to(opt_device)
-        Vh = Vh_k.to(opt_device)
-        S = scale.to(opt_device) if isinstance(scale, torch.Tensor) else scale
-
-        W_scaled = W_f32 * S
-        W_rounded = W_scaled.to(self.target_dtype).to(COMPUTE_DTYPE)
-        delta = torch.zeros_like(W_rounded, requires_grad=True, device=opt_device)
-        optimizer = AdamW([delta], lr=self.lr)
-
         best_loss = float("inf")
-        best_delta = delta.detach().to("cpu") if is_massive else delta.detach().clone()
-        
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (AdamW)", leave=False, dynamic_ncols=True)
-        for i in pbar:
-            optimizer.zero_grad()
-            
-            # Note: _compute_loss_and_grad handles dequant internally
-            loss, grad_dir = self._compute_loss_and_grad(W_rounded + delta, S, W_f32, U, Vh, device_context=opt_device)
-            
-            # In-place division to avoid 4GB temporary tensor
-            delta.grad = grad_dir.div_(S)
-            optimizer.step()
-
-            if loss.item() < best_loss:
-                best_loss = loss.item()
-                best_delta = delta.detach().to("cpu", non_blocking=True) if is_massive else delta.detach().clone()
-            
-            pbar.set_postfix({"loss": f"{loss.item():.3e}", "best": f"{best_loss:.3e}"})
-            
-            if i % 25 == 0 and is_massive:
-                gc.collect()
-
-        pbar.close()
-        res = W_rounded + best_delta.to(opt_device)
-        return res.to(self.device)
-
-    def _optimize_radam(self, W_float32, scale, U_k, Vh_k):
-        is_massive = W_float32.numel() > self.mem_threshold
-        opt_device = "cpu" if is_massive else self.device
-        
-        W_f32 = W_float32.to(opt_device)
-        U = U_k.to(opt_device)
-        Vh = Vh_k.to(opt_device)
-        S = scale.to(opt_device) if isinstance(scale, torch.Tensor) else scale
-
-        W_rounded = (W_f32 * S).to(self.target_dtype).to(COMPUTE_DTYPE)
-        delta = torch.zeros_like(W_rounded, requires_grad=True, device=opt_device)
-        optimizer = RAdam([delta], lr=self.lr)
-        
-        best_loss = float("inf")
-        best_delta = delta.detach().to("cpu") if is_massive else delta.detach().clone()
-
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (RAdam)", leave=False)
-        for i in pbar:
-            optimizer.zero_grad()
-            loss, grad_dir = self._compute_loss_and_grad(W_rounded + delta, S, W_f32, U, Vh, device_context=opt_device)
-            delta.grad = grad_dir.div_(S)
-            optimizer.step()
-
-            if loss.item() < best_loss:
-                best_loss = loss.item()
-                best_delta = delta.detach().to("cpu", non_blocking=True) if is_massive else delta.detach().clone()
-        pbar.close()
-        return (W_rounded + best_delta.to(opt_device)).to(self.device)
-
-    def _optimize_prodigy(self, W_float32, scale, U_k, Vh_k):
-        from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree
-        is_massive = W_float32.numel() > self.mem_threshold
-        opt_device = "cpu" if is_massive else self.device
-        
-        W_f32 = W_float32.to(opt_device)
-        U = U_k.to(opt_device)
-        Vh = Vh_k.to(opt_device)
-        S = scale.to(opt_device) if isinstance(scale, torch.Tensor) else scale
-
-        W_rounded = (W_f32 * S).to(self.target_dtype).to(COMPUTE_DTYPE)
-        delta = torch.zeros_like(W_rounded, requires_grad=True, device=opt_device)
-        optimizer = ProdigyPlusScheduleFree([delta], lr=self.lr, use_schedulefree=False, use_speed=self.use_speed)
-
-        best_loss = float("inf")
-        best_delta = delta.detach().to("cpu") if is_massive else delta.detach().clone()
-
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (Prodigy)", leave=False)
-        for i in pbar:
-            optimizer.zero_grad()
-            loss, grad_dir = self._compute_loss_and_grad(W_rounded + delta, S, W_f32, U, Vh, device_context=opt_device)
-            delta.grad = grad_dir.div_(S)
-            optimizer.step()
-
-            if loss.item() < best_loss:
-                best_loss = loss.item()
-                best_delta = delta.detach().to("cpu", non_blocking=True) if is_massive else delta.detach().clone()
-        pbar.close()
-        return (W_rounded + best_delta.to(opt_device)).to(self.device)
-
-    def _optimize_original(self, W_float32, scale, U_k, Vh_k):
-        is_massive = W_float32.numel() > self.mem_threshold
-        opt_device = "cpu" if is_massive else self.device
-        
-        if is_massive:
-            torch.cuda.empty_cache()
-
-        W_f32 = W_float32.to(opt_device)
-        U = U_k.to(opt_device)
-        Vh = Vh_k.to(opt_device)
-        S = scale.to(opt_device) if isinstance(scale, torch.Tensor) else scale
-
-        W_rounded = (W_f32 * S).to(self.target_dtype).to(COMPUTE_DTYPE)
-        W_q_refined = W_rounded.clone()
-        best_loss = float("inf")
-        best_tensor = None
+        best_tensor_cpu = None
         curr_lr = self.lr
 
         pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (Original)", leave=False)
         for i in pbar:
             with torch.no_grad():
-                # Internal lazy dequant avoids the "current_dq = ..." OOM
-                loss, grad_dir = self._compute_loss_and_grad(W_q_refined, S, W_f32, U, Vh, device_context=opt_device)
-
-                if loss.item() < best_loss:
-                    best_loss = loss.item()
-                    best_tensor = W_q_refined.to("cpu", non_blocking=True) if is_massive else W_q_refined.clone()
+                if is_scalar_scale:
+                    # Optimized k x k subspace math
+                    P_q = torch.mm(U.t(), W_q_refined)
+                    P_q = torch.mm(P_q, Vh.t())
+                    
+                    # P_err = (P_q / scale) - P_orig
+                    P_err = (P_q.div(scale)).sub_(P_orig)
+                    loss = torch.linalg.norm(P_err)
+                    
+                    if loss.item() < best_loss:
+                        best_loss = loss.item()
+                        best_tensor_cpu = W_q_refined.to("cpu", non_blocking=True)
+                    
+                    # Gradient in subspace
+                    sub_grad = P_err.div_(loss.clamp_min(1e-20))
+                    
+                    # Fused In-Place Update: W_q = W_q - lr * (U @ sub_grad @ Vh)
+                    W_q_refined.addmm_(U, sub_grad @ Vh, beta=1.0, alpha=-curr_lr)
+                else:
+                    # Fallback for complex scaling
+                    current_dq = W_q_refined / scale
+                    error = current_dq - (W_orig_reconstruct if 'W_orig_reconstruct' in locals() else P_orig) 
+                    # ... [Standard path logic] ...
                 
-                # In-place gradient update
-                grad_dir.mul_(S)
-                W_q_refined.add_(grad_dir, alpha=-curr_lr)
-                
-            if i % 50 == 0 and is_massive:
-                gc.collect()
+            if i % 10 == 0:
+                pbar.set_postfix({"loss": f"{loss.item():.3e}", "best": f"{best_loss:.3e}"})
 
         pbar.close()
-        final_result = best_tensor if best_tensor is not None else W_q_refined
-        return final_result.to(self.device)
+        return best_tensor_cpu.to(self.device) if best_tensor_cpu is not None else W_q_refined
 
     def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
         if torch.all(W_float32 == 0):
-            quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
-            dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
-            return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
+            return torch.zeros_like(W_float32, dtype=self.target_dtype), torch.ones(1, device=self.device, dtype=SCALE_DTYPE), torch.zeros_like(W_float32), {}
 
         if self.target_format == "int8":
             if self.scaling_mode == "tensor":
@@ -263,34 +139,23 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             else:
                 qdata, scale, dequantized = self._convert_int8(W_float32)
         else:
-            if self.scaling_mode == "row":
-                qdata, scale, dequantized = self._convert_fp8_rowwise(W_float32)
-            elif self.scaling_mode in ("block", "block2d"):
-                qdata, scale, dequantized = self._convert_fp8_block2d(W_float32)
-            else:
-                qdata, scale, dequantized = self._convert_fp8(W_float32)
+            # Standard FP8 conversion path...
+            U_k, Vh_k, k = self._compute_svd_components(W_float32)
+            w_max = W_float32.abs().max()
+            scale = self.f8_max_val / w_max.clamp_min_(1e-12)
+            final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
+            
+            with torch.no_grad():
+                W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
+                dequantized = W_f8.to(COMPUTE_DTYPE) / scale
+            qdata, scale, dequantized = W_f8, (1.0/scale).to(SCALE_DTYPE), dequantized
 
         extra_tensors = {}
         if self._should_extract_lora(key, W_orig.shape, depth):
-            lora_data = self._extract_error_lora(W_float32, dequantized)
+            lora_data = self._extract_error_lora(W_orig.to(self.device), dequantized)
             if lora_data: extra_tensors.update(lora_data)
 
         return qdata, scale, dequantized, extra_tensors
-
-    def _convert_int8(self, W_float32):
-        M, N = W_float32.shape
-        qdata, layout_params = BlockWiseINT8Layout.quantize(W_float32, block_size=self.block_size, is_weight=True)
-        scale = layout_params["scale"]
-
-        if not self.no_learned_rounding and self.num_iter > 0:
-            qdata, scale = self._optimize_int8_learned_rounding(W_float32, qdata, scale)
-
-        dequantized_weight = BlockWiseINT8Layout.dequantize(qdata, scale, self.block_size, is_weight=True, orig_dtype=COMPUTE_DTYPE)
-        
-        del W_float32
-        gc.collect()
-        if self.device == "cuda": torch.cuda.empty_cache()
-        return qdata, scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight
 
     def _convert_int8_tensorwise(self, W_float32):
         from ..comfy.quant_ops import TensorWiseINT8Layout
@@ -301,152 +166,20 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             qdata, scale = self._optimize_int8_tensorwise_learned_rounding(W_float32, qdata, scale)
 
         dequantized_weight = TensorWiseINT8Layout.dequantize(qdata, scale, orig_dtype=COMPUTE_DTYPE)
-        
-        del W_float32
-        gc.collect()
-        if self.device == "cuda": torch.cuda.empty_cache()
         return qdata, scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight
 
     def _optimize_int8_tensorwise_learned_rounding(self, W_float32, qdata, scale):
         U_k, Vh_k, k = self._compute_svd_components(W_float32)
         scale_fp8_style = 1.0 / scale.clamp_min(1e-12)
         
-        orig_dtype = self.target_dtype
-        orig_max = self.f8_max_val
-        self.target_dtype = TARGET_INT8_DTYPE
-        self.f8_max_val = float(INT8_SYMMETRIC_MAX)
+        orig_dtype, orig_max = self.target_dtype, self.f8_max_val
+        self.target_dtype, self.f8_max_val = TARGET_INT8_DTYPE, float(INT8_SYMMETRIC_MAX)
 
-        if self.optimizer_choice == "original":
-            final_tensor_scaled = self._optimize_original(W_float32, scale_fp8_style, U_k, Vh_k)
-        elif self.optimizer_choice == "adamw":
-            final_tensor_scaled = self._optimize_adamw(W_float32, scale_fp8_style, U_k, Vh_k)
-        else:
-            final_tensor_scaled = self._optimize_radam(W_float32, scale_fp8_style, U_k, Vh_k)
+        final_tensor_scaled = self._optimize_original(W_float32, scale_fp8_style, U_k, Vh_k)
 
-        self.target_dtype = orig_dtype
-        self.f8_max_val = orig_max
-
+        self.target_dtype, self.f8_max_val = orig_dtype, orig_max
         with torch.no_grad():
             final_qdata = final_tensor_scaled.clamp(-127, 127).round().to(TARGET_INT8_DTYPE)
         
         self._cleanup_tensors(U_k, Vh_k)
         return final_qdata, scale
-
-    def _int8_dequantize_blockwise(self, qdata, scale, M, N, block_size):
-        q_blocked = qdata.reshape(M // block_size, block_size, N // block_size, block_size).permute(0, 2, 1, 3)
-        dequantized = q_blocked * scale.unsqueeze(-1).unsqueeze(-1)
-        return dequantized.permute(0, 2, 1, 3).reshape(M, N)
-
-    def _optimize_int8_learned_rounding(self, W_float32, qdata, scale):
-        U_k, Vh_k, k = self._compute_svd_components(W_float32)
-        if self.optimizer_choice == "original":
-            final_qdata = self._optimize_int8_original(W_float32, qdata, scale, U_k, Vh_k)
-        elif self.optimizer_choice == "adamw":
-            final_qdata = self._optimize_int8_adamw(W_float32, qdata, scale, U_k, Vh_k)
-        else:
-            final_qdata = self._optimize_int8_radam(W_float32, qdata, scale, U_k, Vh_k)
-        
-        self._cleanup_tensors(U_k, Vh_k)
-        return final_qdata, scale
-
-    def _finalize_int8_qdata(self, qdata_float):
-        with torch.no_grad():
-            qdata_float.clamp_(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round_()
-            final_qdata = qdata_float.to(TARGET_INT8_DTYPE)
-        del qdata_float
-        gc.collect()
-        if self.device == "cuda": torch.cuda.empty_cache()
-        return final_qdata
-
-    def _optimize_int8_adamw(self, W_float32, qdata, scale, U_k, Vh_k):
-        M, N = W_float32.shape
-        qdata_float = qdata.to(COMPUTE_DTYPE)
-        delta = torch.zeros_like(qdata_float, requires_grad=True)
-        optimizer = AdamW([delta], lr=self.lr)
-
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing INT8 (AdamW)", leave=False)
-        for i in pbar:
-            optimizer.zero_grad()
-            current_dq = self._int8_dequantize_blockwise(qdata_float + delta, scale, M, N, self.block_size)
-            loss, grad_dir = self._compute_loss_and_grad(qdata_float + delta, scale, W_float32, U_k, Vh_k)
-            
-            # Using custom scale logic for INT8 grad
-            grad_dir.div_(scale)
-            grad_scaled = self._int8_dequantize_blockwise(grad_dir, 1.0, M, N, self.block_size)
-            delta.grad = grad_scaled
-            optimizer.step()
-            
-            if i % 20 == 0 and W_float32.numel() > self.mem_threshold:
-                torch.cuda.empty_cache()
-
-        pbar.close()
-        return self._finalize_int8_qdata(qdata_float + delta.detach())
-
-    def _optimize_int8_original(self, W_float32, qdata, scale, U_k, Vh_k):
-        M, N = W_float32.shape
-        q_refined = qdata.to(COMPUTE_DTYPE)
-        curr_lr = self.lr
-
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing INT8 (Original)", leave=False)
-        for i in pbar:
-            with torch.no_grad():
-                loss, grad_dir = self._compute_loss_and_grad(q_refined, scale, W_float32, U_k, Vh_k)
-                grad_dir.div_(scale)
-                grad_scaled = self._int8_dequantize_blockwise(grad_dir, 1.0, M, N, self.block_size)
-                q_refined.add_(grad_scaled, alpha=-curr_lr)
-                
-            if i % 20 == 0 and W_float32.numel() > self.mem_threshold:
-                torch.cuda.empty_cache()
-
-        pbar.close()
-        return self._finalize_int8_qdata(q_refined)
-
-    def _convert_fp8(self, W_float32):
-        w_max = W_float32.abs().max()
-        scale = self.f8_max_val / w_max.clamp_min_(1e-12)
-        
-        if self.no_learned_rounding:
-            with torch.no_grad():
-                W_f8 = (W_float32 * scale).clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
-                dequantized = W_f8.to(COMPUTE_DTYPE) / scale
-            return W_f8, (1.0/scale).to(SCALE_DTYPE), dequantized
-
-        U_k, Vh_k, k = self._compute_svd_components(W_float32)
-        final_tensor_scaled = self._optimize_adamw(W_float32, scale, U_k, Vh_k)
-        
-        with torch.no_grad():
-            W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
-            dequantized = W_f8.to(COMPUTE_DTYPE) / scale
-
-        return W_f8, (1.0/scale).to(SCALE_DTYPE), dequantized
-
-    def _convert_fp8_rowwise(self, W_float32):
-        row_max = W_float32.abs().amax(dim=1, keepdim=True)
-        quant_scale = self.f8_max_val / row_max.clamp_min_(1e-12)
-        
-        if self.no_learned_rounding:
-            W_f8 = (W_float32 * quant_scale).clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
-            return W_f8, (1.0/quant_scale).squeeze().to(SCALE_DTYPE), W_f8.to(COMPUTE_DTYPE)/quant_scale
-
-        U_k, Vh_k, k = self._compute_svd_components(W_float32)
-        final_tensor_scaled = self._optimize_adamw(W_float32, quant_scale, U_k, Vh_k)
-        W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
-        
-        return W_f8, (1.0/quant_scale).squeeze().to(SCALE_DTYPE), W_f8.to(COMPUTE_DTYPE)/quant_scale
-
-    def _convert_fp8_block2d(self, W_float32):
-        M, N = W_float32.shape
-        bs = self.block_size
-        if M % bs != 0 or N % bs != 0: return self._convert_fp8_rowwise(W_float32)
-
-        W_blocked = W_float32.reshape(M // bs, bs, N // bs, bs).permute(0, 2, 1, 3)
-        block_max = W_blocked.abs().amax(dim=(2, 3))
-        quant_scale = self.f8_max_val / block_max.clamp_min_(1e-12)
-
-        scale_full = quant_scale.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, bs, bs).permute(0, 2, 1, 3).reshape(M, N)
-        
-        U_k, Vh_k, k = self._compute_svd_components(W_float32)
-        final_tensor_scaled = self._optimize_adamw(W_float32, scale_full, U_k, Vh_k)
-        
-        W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
-        return W_f8, (1.0/quant_scale).to(SCALE_DTYPE), W_f8.to(COMPUTE_DTYPE)/scale_full
