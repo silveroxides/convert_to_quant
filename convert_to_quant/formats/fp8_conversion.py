@@ -11,7 +11,7 @@ import re
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from tqdm import tqdm
 
 from ..constants import (
@@ -76,6 +76,22 @@ def convert_to_fp8_scaled(
     lora_save_path: Optional[str] = None,
     # Added for CLI compatibility
     lora_output: Optional[str] = None,
+    # WiwiOpt parameters
+    wiwi_betas: Tuple[float, float, float] = (0.95, 0.995, 0.99),
+    wiwi_eps: float = 1e-16,
+    wiwi_weight_decay: float = 0.0,
+    wiwi_weight_decay_rate: float = 1.0,
+    wiwi_normuon: bool = True,
+    wiwi_use_compile: bool = True,
+    wiwi_ortho_dtype: Optional[str] = "bfloat16",
+    wiwi_stochastic_fp: bool = True,
+    wiwi_dynamic_lr: bool = True,
+    wiwi_dynamic_lr_boost: bool = True,
+    wiwi_egd: bool = True,
+    wiwi_egd_oja: bool = True,
+    wiwi_egd_method: str = 'past',
+    wiwi_use_poly_betas: bool = True,
+    wiwi_use_muon: bool = True,
     **converter_kwargs,
 ):
     # Ensure filter_flags is a dict
@@ -149,6 +165,23 @@ def convert_to_fp8_scaled(
     converter_kwargs["lora_target"] = lora_target
     converter_kwargs["lora_depth"] = lora_depth
     converter_kwargs["lora_ar_threshold"] = lora_ar_threshold
+
+    # Add WiwiOpt options to converter kwargs
+    converter_kwargs["wiwi_betas"] = wiwi_betas
+    converter_kwargs["wiwi_eps"] = wiwi_eps
+    converter_kwargs["wiwi_weight_decay"] = wiwi_weight_decay
+    converter_kwargs["wiwi_weight_decay_rate"] = wiwi_weight_decay_rate
+    converter_kwargs["wiwi_normuon"] = wiwi_normuon
+    converter_kwargs["wiwi_use_compile"] = wiwi_use_compile
+    converter_kwargs["wiwi_ortho_dtype"] = wiwi_ortho_dtype
+    converter_kwargs["wiwi_stochastic_fp"] = wiwi_stochastic_fp
+    converter_kwargs["wiwi_dynamic_lr"] = wiwi_dynamic_lr
+    converter_kwargs["wiwi_dynamic_lr_boost"] = wiwi_dynamic_lr_boost
+    converter_kwargs["wiwi_egd"] = wiwi_egd
+    converter_kwargs["wiwi_egd_oja"] = wiwi_egd_oja
+    converter_kwargs["wiwi_egd_method"] = wiwi_egd_method
+    converter_kwargs["wiwi_use_poly_betas"] = wiwi_use_poly_betas
+    converter_kwargs["wiwi_use_muon"] = wiwi_use_muon
 
     # Get format-aware block_size default (converters handle their own fixed sizes)
     # This is only used for metadata/display; converters use their __init__ defaults

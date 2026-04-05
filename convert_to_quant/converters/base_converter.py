@@ -62,13 +62,29 @@ class BaseLearnedConverter(ABC):
         lora_target: Optional[str] = None,
         lora_ar_threshold: float = 0.0,
         use_speed: bool = False,
+        # WiwiOpt parameters
+        wiwi_betas: Tuple[float, float, float] = (0.95, 0.995, 0.99),
+        wiwi_eps: float = 1e-16,
+        wiwi_weight_decay: float = 0.0,
+        wiwi_weight_decay_rate: float = 1.0,
+        wiwi_normuon: bool = True,
+        wiwi_use_compile: bool = True,
+        wiwi_ortho_dtype: Optional[torch.dtype] = None,
+        wiwi_stochastic_fp: bool = True,
+        wiwi_dynamic_lr: bool = True,
+        wiwi_dynamic_lr_boost: bool = True,
+        wiwi_egd: bool = True,
+        wiwi_egd_oja: bool = True,
+        wiwi_egd_method: str = 'past',
+        wiwi_use_poly_betas: bool = True,
+        wiwi_use_muon: bool = True,
         **kwargs,
     ):
         """
         Initialize base converter with shared optimization parameters.
 
         Args:
-            optimizer: Optimization algorithm ("original", "adamw", "radam")
+            optimizer: Optimization algorithm ("original", "adamw", "radam", "prodigy", "wiwiopt")
             num_iter: Number of optimization iterations
             top_p: Proportion of principal components to use
             min_k: Minimum number of SVD components
@@ -116,6 +132,23 @@ class BaseLearnedConverter(ABC):
         self.lr = lr
         self.no_learned_rounding = no_learned_rounding
         self.optimizer_kwargs = kwargs
+
+        # WiwiOpt parameters
+        self.wiwi_betas = wiwi_betas
+        self.wiwi_eps = wiwi_eps
+        self.wiwi_weight_decay = wiwi_weight_decay
+        self.wiwi_weight_decay_rate = wiwi_weight_decay_rate
+        self.wiwi_normuon = wiwi_normuon
+        self.wiwi_use_compile = wiwi_use_compile
+        self.wiwi_ortho_dtype = wiwi_ortho_dtype
+        self.wiwi_stochastic_fp = wiwi_stochastic_fp
+        self.wiwi_dynamic_lr = wiwi_dynamic_lr
+        self.wiwi_dynamic_lr_boost = wiwi_dynamic_lr_boost
+        self.wiwi_egd = wiwi_egd
+        self.wiwi_egd_oja = wiwi_egd_oja
+        self.wiwi_egd_method = wiwi_egd_method
+        self.wiwi_use_poly_betas = wiwi_use_poly_betas
+        self.wiwi_use_muon = wiwi_use_muon
 
         # LR schedule configuration
         self.lr_schedule = lr_schedule

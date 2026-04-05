@@ -10,6 +10,7 @@ import torch
 from typing import Tuple, Optional, Dict
 from tqdm import tqdm
 from torch.optim import AdamW, RAdam
+from .wiwi_opt import WiwiOpt
 
 from ..constants import (
     TARGET_FP8_DTYPE,
@@ -130,6 +131,162 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         pbar = tqdm(
             range(self.num_iter),
             desc=f"    Optimizing (AdamW-{schedule_name})",
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for i in pbar:
+            optimizer.zero_grad()
+            W_q_refined = W_rounded + delta
+
+            current_dq = W_q_refined / scale
+            error = current_dq - W_float32
+            projected_error = U_k.T @ error @ Vh_k.T
+            loss = torch.linalg.norm(projected_error)
+
+            loss.backward()
+            optimizer.step()
+
+            current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
+
+            if improved:
+                best_loss = current_loss_val
+                best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # Manual LR update based on schedule (matching _optimize_original)
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
+                elif plateau_counter >= effective_patience:
+                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
+                    if curr_lr > self.lr_min:
+                        old_lr = curr_lr
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
+                        cooldown_counter = effective_cooldown
+                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
+                    plateau_counter = 0
+                else:
+                    if plateau_counter > 0:
+                         debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
+
+            # Schedule-appropriate postfix: show plateau counter or worse counter
+            if schedule_name == "plateau":
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "plateau": f"{plateau_counter}/{effective_patience}",
+                    }
+                )
+            else:
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "worse_count": f"{worse_loss_counter}",
+                    }
+                )
+
+            # Early stopping conditions
+            if (
+                best_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr <= self.early_stop_lr:
+                    info("\n      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    info("\n      - Loss has stalled. Stopping early.")
+                elif best_loss <= self.early_stop_loss:
+                    info("\n      - Loss is negligible. Stopping early.")
+                break
+
+        pbar.close()
+        return W_rounded + best_delta
+
+    def _optimize_wiwiopt(
+        self,
+        W_float32: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
+        """FP8 optimization using WiwiOpt optimizer with manual LR scheduling."""
+        M, N = W_float32.shape
+        W_scaled = W_float32 * scale
+        if self.target_format == "int8":
+            W_rounded = W_scaled.round().to(self.target_dtype).to(COMPUTE_DTYPE)
+        else:
+            W_rounded = W_scaled.to(self.target_dtype).to(COMPUTE_DTYPE)
+        delta = torch.zeros_like(W_rounded, requires_grad=True)
+        curr_lr = self.lr
+        
+        # Initialize WiwiOpt
+        optimizer = WiwiOpt(
+            [delta],
+            lr=curr_lr,
+            betas=self.wiwi_betas,
+            eps=self.wiwi_eps,
+            weight_decay=self.wiwi_weight_decay,
+            weight_decay_rate=self.wiwi_weight_decay_rate,
+            normuon=self.wiwi_normuon,
+            use_compile=self.wiwi_use_compile,
+            ortho_dtype=self.wiwi_ortho_dtype,
+            stochastic_fp=self.wiwi_stochastic_fp,
+            dynamic_lr=self.wiwi_dynamic_lr,
+            dynamic_lr_boost=self.wiwi_dynamic_lr_boost,
+            egd=self.wiwi_egd,
+            egd_oja=self.wiwi_egd_oja,
+            egd_method=self.wiwi_egd_method,
+        )
+
+        schedule_name = self.lr_schedule
+        best_loss = float("inf")
+        best_delta = delta.detach().clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
+
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(
+                W_float32.shape[0], W_float32.shape[1]
+            )
+        )
+
+        pbar = tqdm(
+            range(self.num_iter),
+            desc=f"    Optimizing (WiwiOpt-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -904,6 +1061,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             final_tensor_scaled = self._optimize_radam(W_float32, scale_fp8_style, U_k, Vh_k)
         elif self.optimizer_choice == "prodigy":
             final_tensor_scaled = self._optimize_prodigy(W_float32, scale_fp8_style, U_k, Vh_k)
+        elif self.optimizer_choice == "wiwiopt":
+            final_tensor_scaled = self._optimize_wiwiopt(W_float32, scale_fp8_style, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -971,6 +1130,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             final_qdata = self._optimize_int8_radam(W_float32, qdata, scale, U_k, Vh_k)
         elif self.optimizer_choice == "prodigy":
             final_qdata = self._optimize_int8_prodigy(W_float32, qdata, scale, U_k, Vh_k)
+        elif self.optimizer_choice == "wiwiopt":
+            final_qdata = self._optimize_int8_wiwiopt(W_float32, qdata, scale, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -1006,6 +1167,146 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         pbar = tqdm(
             range(self.num_iter),
             desc=f"    Optimizing INT8 (AdamW-{schedule_name})",
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for i in pbar:
+            optimizer.zero_grad()
+
+            q_refined = qdata_float + delta
+            current_dq = self._int8_dequantize_blockwise(
+                q_refined, scale, M, N, block_size
+            )
+
+            error = current_dq - W_float32
+            projected_error = U_k.T @ error @ Vh_k.T
+            loss = torch.linalg.norm(projected_error)
+
+            loss.backward()
+            optimizer.step()
+
+            current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
+
+            if improved:
+                best_loss = current_loss_val
+                best_delta = delta.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # Manual LR update based on schedule (matching _optimize_int8_original)
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= self.lr_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * self.lr_factor, self.lr_min)
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
+                        cooldown_counter = self.lr_cooldown
+                    plateau_counter = 0
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
+
+            pbar.set_postfix(
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                }
+            )
+
+            # Early stopping conditions
+            if (
+                best_loss <= self.early_stop_loss
+                or curr_lr <= self.early_stop_lr
+                or worse_loss_counter > self.early_stop_stall
+            ):
+                if curr_lr <= self.early_stop_lr:
+                    info("\n      - Learning rate bottomed out. Stopping early.")
+                elif worse_loss_counter > self.early_stop_stall:
+                    info("\n      - Loss has stalled. Stopping early.")
+                elif best_loss <= self.early_stop_loss:
+                    info("\n      - Loss is negligible. Stopping early.")
+                break
+
+        pbar.close()
+
+        final_qdata = (
+            (qdata_float + best_delta)
+            .clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX)
+            .round()
+            .to(TARGET_INT8_DTYPE)
+        )
+        del qdata_float, delta
+        return final_qdata
+
+    def _optimize_int8_wiwiopt(
+        self,
+        W_float32: torch.Tensor,
+        qdata: torch.Tensor,
+        scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+    ) -> torch.Tensor:
+        """INT8 optimization using WiwiOpt optimizer with manual LR scheduling."""
+        M, N = W_float32.shape
+        block_size = self.block_size
+
+        qdata_float = qdata.to(COMPUTE_DTYPE)
+        delta = torch.zeros_like(qdata_float, requires_grad=True)
+
+        curr_lr = self.lr
+        # Initialize WiwiOpt
+        optimizer = WiwiOpt(
+            [delta],
+            lr=curr_lr,
+            betas=self.wiwi_betas,
+            eps=self.wiwi_eps,
+            weight_decay=self.wiwi_weight_decay,
+            weight_decay_rate=self.wiwi_weight_decay_rate,
+            normuon=self.wiwi_normuon,
+            use_compile=self.wiwi_use_compile,
+            ortho_dtype=self.wiwi_ortho_dtype,
+            stochastic_fp=self.wiwi_stochastic_fp,
+            dynamic_lr=self.wiwi_dynamic_lr,
+            dynamic_lr_boost=self.wiwi_dynamic_lr_boost,
+            egd=self.wiwi_egd,
+            egd_oja=self.wiwi_egd_oja,
+            egd_method=self.wiwi_egd_method,
+        )
+
+        schedule_name = self.lr_schedule
+        best_loss = float("inf")
+        best_delta = delta.detach().clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
+
+        pbar = tqdm(
+            range(self.num_iter),
+            desc=f"    Optimizing INT8 (WiwiOpt-{schedule_name})",
             leave=False,
             dynamic_ncols=True,
         )
@@ -1617,6 +1918,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             final_tensor_scaled = self._optimize_prodigy(W_float32, scale, U_k, Vh_k)
         elif self.optimizer_choice == "original":
             final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
+        elif self.optimizer_choice == "wiwiopt":
+            final_tensor_scaled = self._optimize_wiwiopt(W_float32, scale, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -1695,6 +1998,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             final_tensor_scaled = self._optimize_prodigy(W_float32, scale, U_k, Vh_k)
         elif self.optimizer_choice == "original":
             final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
+        elif self.optimizer_choice == "wiwiopt":
+            final_tensor_scaled = self._optimize_wiwiopt(W_float32, scale, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -1787,6 +2092,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             final_tensor_scaled = self._optimize_original(
                 W_float32, scale_full, U_k, Vh_k
             )
+        elif self.optimizer_choice == "wiwiopt":
+            final_tensor_scaled = self._optimize_wiwiopt(W_float32, scale_full, U_k, Vh_k)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 

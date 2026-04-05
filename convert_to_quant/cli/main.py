@@ -290,8 +290,110 @@ def main():
         "--optimizer",
         type=str,
         default="original",
-        choices=["original", "adamw", "radam", "prodigy"],
+        choices=["original", "adamw", "radam", "prodigy", "wiwiopt"],
         help="Optimization algorithm.",
+    )
+    parser.add_argument(
+        "--wiwi_betas",
+        type=float,
+        nargs=3,
+        default=[0.95, 0.995, 0.99],
+        help="[WiwiOpt] Exponents for the de-biased beta schedules (beta1, beta2, beta3).",
+    )
+    parser.add_argument(
+        "--wiwi_eps",
+        type=float,
+        default=1e-16,
+        help="[WiwiOpt] Numerical stability term.",
+    )
+    parser.add_argument(
+        "--wiwi_weight_decay",
+        type=float,
+        default=0.0,
+        help="[WiwiOpt] Decoupled weight decay coefficient.",
+    )
+    parser.add_argument(
+        "--wiwi_weight_decay_rate",
+        type=float,
+        default=1.0,
+        help="[WiwiOpt] Decay the multiplier at which rate weight decay is applied.",
+    )
+    parser.add_argument(
+        "--wiwi_no_normuon",
+        action="store_false",
+        dest="wiwi_normuon",
+        default=True,
+        help="[WiwiOpt] Disable NorMuon second-moment scaling.",
+    )
+    parser.add_argument(
+        "--wiwi_no_compile",
+        action="store_false",
+        dest="wiwi_use_compile",
+        default=True,
+        help="[WiwiOpt] Disable torch.compile for orthogonalization and SVD.",
+    )
+    parser.add_argument(
+        "--wiwi_ortho_dtype",
+        type=str,
+        default="bfloat16",
+        choices=["float32", "bfloat16", "float16"],
+        help="[WiwiOpt] Data type for Newton-Schulz orthogonalization.",
+    )
+    parser.add_argument(
+        "--wiwi_no_stochastic_fp",
+        action="store_false",
+        dest="wiwi_stochastic_fp",
+        default=True,
+        help="[WiwiOpt] Disable stochastic rounding for bfloat16 parameters.",
+    )
+    parser.add_argument(
+        "--wiwi_no_dynamic_lr",
+        action="store_false",
+        dest="wiwi_dynamic_lr",
+        default=True,
+        help="[WiwiOpt] Disable per-row dynamic learning rate adjustment.",
+    )
+    parser.add_argument(
+        "--wiwi_no_dynamic_lr_boost",
+        action="store_false",
+        dest="wiwi_dynamic_lr_boost",
+        default=True,
+        help="[WiwiOpt] Disable atan2-based learning rate boost factor.",
+    )
+    parser.add_argument(
+        "--wiwi_no_egd",
+        action="store_false",
+        dest="wiwi_egd",
+        default=True,
+        help="[WiwiOpt] Disable Egalitarian Gradient Descent preconditioning.",
+    )
+    parser.add_argument(
+        "--wiwi_no_egd_oja",
+        action="store_false",
+        dest="wiwi_egd_oja",
+        default=True,
+        help="[WiwiOpt] Disable lightweight Oja approximation for EGD (default: True, use --wiwi_egd_method svd to override).",
+    )
+    parser.add_argument(
+        "--wiwi_egd_method",
+        type=str,
+        default="past",
+        choices=["past", "oja", "svd"],
+        help="[WiwiOpt] Method for online decomposition tracking.",
+    )
+    parser.add_argument(
+        "--wiwi_no_poly_betas",
+        action="store_false",
+        dest="wiwi_use_poly_betas",
+        default=True,
+        help="[WiwiOpt] Disable internal polynomial-decay warm-up for beta coefficients.",
+    )
+    parser.add_argument(
+        "--wiwi_no_muon",
+        action="store_false",
+        dest="wiwi_use_muon",
+        default=True,
+        help="[WiwiOpt] Disable Newton-Schulz orthogonalization (Muon). Recommended to disable for quantization.",
     )
     parser.add_argument(
         "--num_iter",
@@ -837,6 +939,22 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 low_memory=args.low_memory,
                 # Prodigy specific
                 use_speed=args.use_speed,
+                # WiwiOpt parameters
+                wiwi_betas=tuple(args.wiwi_betas),
+                wiwi_eps=args.wiwi_eps,
+                wiwi_weight_decay=args.wiwi_weight_decay,
+                wiwi_weight_decay_rate=args.wiwi_weight_decay_rate,
+                wiwi_normuon=args.wiwi_normuon,
+                wiwi_use_compile=args.wiwi_use_compile,
+                wiwi_ortho_dtype=args.wiwi_ortho_dtype,
+                wiwi_stochastic_fp=args.wiwi_stochastic_fp,
+                wiwi_dynamic_lr=args.wiwi_dynamic_lr,
+                wiwi_dynamic_lr_boost=args.wiwi_dynamic_lr_boost,
+                wiwi_egd=args.wiwi_egd,
+                wiwi_egd_oja=args.wiwi_egd_oja,
+                wiwi_egd_method=args.wiwi_egd_method,
+                wiwi_use_poly_betas=args.wiwi_use_poly_betas,
+                wiwi_use_muon=args.wiwi_use_muon,
                 # LoRA options
                 extract_lora=args.extract_lora,
                 lora_rank=args.lora_rank,
@@ -956,6 +1074,22 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 low_memory=args.low_memory,
                 # Prodigy specific
                 use_speed=args.use_speed,
+                # WiwiOpt parameters
+                wiwi_betas=tuple(args.wiwi_betas),
+                wiwi_eps=args.wiwi_eps,
+                wiwi_weight_decay=args.wiwi_weight_decay,
+                wiwi_weight_decay_rate=args.wiwi_weight_decay_rate,
+                wiwi_normuon=args.wiwi_normuon,
+                wiwi_use_compile=args.wiwi_use_compile,
+                wiwi_ortho_dtype=args.wiwi_ortho_dtype,
+                wiwi_stochastic_fp=args.wiwi_stochastic_fp,
+                wiwi_dynamic_lr=args.wiwi_dynamic_lr,
+                wiwi_dynamic_lr_boost=args.wiwi_dynamic_lr_boost,
+                wiwi_egd=args.wiwi_egd,
+                wiwi_egd_oja=args.wiwi_egd_oja,
+                wiwi_egd_method=args.wiwi_egd_method,
+                wiwi_use_poly_betas=args.wiwi_use_poly_betas,
+                wiwi_use_muon=args.wiwi_use_muon,
                 # LoRA options
                 extract_lora=args.extract_lora,
                 lora_rank=args.lora_rank,
@@ -1264,6 +1398,19 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         early_stop_stall=args.early_stop_stall,
         # Prodigy specific
         use_speed=args.use_speed,
+        # WiwiOpt parameters
+        wiwi_betas=tuple(args.wiwi_betas),
+        wiwi_eps=args.wiwi_eps,
+        wiwi_weight_decay=args.wiwi_weight_decay,
+        wiwi_weight_decay_rate=args.wiwi_weight_decay_rate,
+        wiwi_normuon=args.wiwi_normuon,
+        wiwi_use_compile=args.wiwi_use_compile,
+        wiwi_ortho_dtype=args.wiwi_ortho_dtype,
+        wiwi_stochastic_fp=args.wiwi_stochastic_fp,
+        wiwi_dynamic_lr=args.wiwi_dynamic_lr,
+        wiwi_dynamic_lr_boost=args.wiwi_dynamic_lr_boost,
+        wiwi_egd=args.wiwi_egd,
+        wiwi_egd_method=args.wiwi_egd_method,
         # LoRA options
         extract_lora=args.extract_lora,
         lora_rank=args.lora_rank,

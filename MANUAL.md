@@ -37,7 +37,7 @@ convert_to_quant -i model.safetensors --nvfp4 --comfy_quant
 ### Optimization & Speed
 - `--simple`: Disable SVD-based learned rounding for fast conversion.
 - `--num_iter N`: Number of optimization iterations (default: 1000).
-- `--optimizer [original|adamw|radam]`: Optimization algorithm.
+- `--optimizer [original|adamw|radam|prodigy|wiwiopt]`: Optimization algorithm.
 - `--heur`: Skip layers with poor quantization characteristics.
 
 ### Model-Specific Presets

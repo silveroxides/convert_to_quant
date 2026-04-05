@@ -12,7 +12,7 @@ import os
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from ..constants import (
     AVOID_KEY_NAMES,
@@ -74,6 +74,21 @@ def convert_to_nvfp4(
     low_memory: bool = False,
     # Prodigy
     use_speed: bool = False,
+    # WiwiOpt parameters
+    wiwi_betas: Tuple[float, float, float] = (0.95, 0.995, 0.99),
+    wiwi_eps: float = 1e-16,
+    wiwi_weight_decay: float = 0.0,
+    wiwi_weight_decay_rate: float = 1.0,
+    wiwi_normuon: bool = True,
+    wiwi_use_compile: bool = True,
+    wiwi_ortho_dtype: Optional[str] = "bfloat16",
+    wiwi_stochastic_fp: bool = True,
+    wiwi_dynamic_lr: bool = True,
+    wiwi_dynamic_lr_boost: bool = True,
+    wiwi_egd: bool = True,
+    wiwi_egd_oja: bool = True,
+    wiwi_egd_method: str = 'past',
+    wiwi_use_poly_betas: bool = True,
     # LoRA extraction options
     extract_lora: bool = False,
     lora_rank: int = 16,
@@ -164,6 +179,21 @@ def convert_to_nvfp4(
             scale_optimization=scale_optimization,
             lr=lr,
             use_speed=use_speed,
+            # WiwiOpt parameters
+            wiwi_betas=wiwi_betas,
+            wiwi_eps=wiwi_eps,
+            wiwi_weight_decay=wiwi_weight_decay,
+            wiwi_weight_decay_rate=wiwi_weight_decay_rate,
+            wiwi_normuon=wiwi_normuon,
+            wiwi_use_compile=wiwi_use_compile,
+            wiwi_ortho_dtype=wiwi_ortho_dtype,
+            wiwi_stochastic_fp=wiwi_stochastic_fp,
+            wiwi_dynamic_lr=wiwi_dynamic_lr,
+            wiwi_dynamic_lr_boost=wiwi_dynamic_lr_boost,
+            wiwi_egd=wiwi_egd,
+            wiwi_egd_oja=wiwi_egd_oja,
+            wiwi_egd_method=wiwi_egd_method,
+            wiwi_use_poly_betas=wiwi_use_poly_betas,
             # LoRA options
             extract_lora=extract_lora,
             lora_rank=lora_rank,

@@ -74,6 +74,22 @@ LEARNED_ROUNDING_ARGS = {
     "top_p",
     "min_k",
     "max_k",
+    # WiwiOpt parameters
+    "wiwi_betas",
+    "wiwi_eps",
+    "wiwi_weight_decay",
+    "wiwi_weight_decay_rate",
+    "wiwi_normuon",
+    "wiwi_use_compile",
+    "wiwi_ortho_dtype",
+    "wiwi_stochastic_fp",
+    "wiwi_dynamic_lr",
+    "wiwi_dynamic_lr_boost",
+    "wiwi_egd",
+    "wiwi_egd_oja",
+    "wiwi_egd_method",
+    "wiwi_use_poly_betas",
+    "wiwi_use_muon",
 }
 
 MODES_ARGS = {
@@ -222,7 +238,13 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Optimizer Settings:")
         print("-" * 40)
 
-        opt_args = ["optimizer", "num_iter", "lr", "lr_schedule"]
+        opt_args = [
+            "optimizer", "num_iter", "lr", "lr_schedule",
+            "wiwi_betas", "wiwi_eps", "wiwi_weight_decay", "wiwi_weight_decay_rate",
+            "wiwi_normuon", "wiwi_use_compile", "wiwi_ortho_dtype", "wiwi_stochastic_fp",
+            "wiwi_dynamic_lr", "wiwi_dynamic_lr_boost", "wiwi_egd", "wiwi_egd_oja", "wiwi_egd_method",
+            "wiwi_use_poly_betas", "wiwi_use_muon"
+        ]
         for action in self._all_actions:
             if self._get_dest_name(action) in opt_args:
                 line = self._format_action_help(action)

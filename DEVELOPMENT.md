@@ -1,6 +1,30 @@
 
 ---
 
+## 2026-04-05: WiwiOpt Optimizer Integration
+
+### Session Summary
+Implemented the `WiwiOpt` optimizer (V1.3 with CAME-style factorization) across all learned rounding converters. `WiwiOpt` combines several stabilization and acceleration techniques: RMS-based gradient normalization, Egalitarian Gradient Descent (EGD) preconditioning via low-rank SVD, polynomial-schedule momentum, Newton-Schulz orthogonalization (Muon), NorMuon scaling, cautious masking, and dynamic learning rate adjustment.
+
+### Files Created
+- `convert_to_quant/converters/wiwi_opt.py`: Ported `WiwiOpt` class and associated utility functions (`orthogonalize`, `sanger_update`, `past_update`, etc.).
+
+### Files Modified
+- `convert_to_quant/converters/base_converter.py`: Added `WiwiOpt` hyperparameters to `BaseLearnedConverter`.
+- `convert_to_quant/cli/argument_parser.py`: Registered new `WiwiOpt` parameters.
+- `convert_to_quant/cli/main.py`: Added `wiwiopt` to `--optimizer` choices and implemented parsing for associated CLI flags.
+- `convert_to_quant/formats/fp8_conversion.py`: Passed `WiwiOpt` parameters to converters.
+- `convert_to_quant/formats/nvfp4_conversion.py`: Passed `WiwiOpt` parameters to `LearnedNVFP4Converter`.
+- `convert_to_quant/formats/mxfp8_conversion.py`: Passed `WiwiOpt` parameters to `LearnedMXFP8Converter`.
+- `convert_to_quant/converters/learned_rounding.py`: Implemented `_optimize_wiwiopt` and `_optimize_int8_wiwiopt`.
+- `convert_to_quant/converters/learned_nvfp4.py`: Implemented `_optimize_wiwiopt`.
+- `convert_to_quant/converters/learned_mxfp8.py`: Implemented `_optimize_wiwiopt`.
+
+### Usage
+Run conversion with `--optimizer wiwiopt`. Associated flags include `--wiwi_betas`, `--wiwi_weight_decay`, `--wiwi_no_normuon`, `--wiwi_no_compile`, `--wiwi_ortho_dtype`, `--wiwi_no_dynamic_lr`, `--wiwi_no_egd`, etc.
+
+---
+
 ## 2026-02-21: Prodigy Optimizer Support
 
 ### Session Summary

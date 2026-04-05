@@ -15,6 +15,7 @@ from typing import Tuple, Optional, Dict
 import torch
 from torch.optim import AdamW, RAdam
 from tqdm import tqdm
+from .wiwi_opt import WiwiOpt
 
 from ..constants import (
     FP4_E2M1_MAX,
@@ -322,6 +323,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             qdata, final_total_scale = self._optimize_radam(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
         elif self.optimizer_choice == "prodigy":
             qdata, final_total_scale = self._optimize_prodigy(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
+        elif self.optimizer_choice == "wiwiopt":
+            qdata, final_total_scale = self._optimize_wiwiopt(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
         else:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
 
@@ -569,6 +572,180 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         # Convert best continuous values to FP4 encoding
         best_qdata = best_qdata if best_qdata is not None else W_q_refined
         qdata = _f32_to_floatx_unpacked(best_qdata.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
+        return qdata, best_total_scale
+
+    def _optimize_wiwiopt(
+        self,
+        W_float32: torch.Tensor,
+        total_scale: torch.Tensor,
+        U_k: torch.Tensor,
+        Vh_k: torch.Tensor,
+        per_tensor_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """NVFP4 optimization using WiwiOpt optimizer.
+
+        Supports scale_optimization modes: fixed, iterative (not implemented), joint (STE).
+        """
+        M, N = W_float32.shape
+
+        # Start with continuous pre-scaled values
+        tensor_blocks = W_float32.reshape(M, -1, self.block_size)
+        W_q_initial = tensor_blocks / total_scale.unsqueeze(-1)
+        W_q_initial = torch.clamp(W_q_initial, -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        # Snap to FP4 grid
+        q_tmp = _f32_to_floatx_unpacked(W_q_initial, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        W_q_initial = _floatx_unpacked_to_f32(q_tmp, F4_E2M1_EBITS, F4_E2M1_MBITS)
+        qdata_f32 = W_q_initial.view(M, N)
+
+        delta = torch.zeros_like(qdata_f32, requires_grad=True)
+        curr_lr = self.lr
+
+        # For joint mode: initialize learnable block scales
+        current_total_scale = total_scale.clone()
+        params_to_opt = [delta]
+        if self.scale_optimization == "joint":
+            block_scales_float = (total_scale / per_tensor_scale).clone().requires_grad_(True)
+            params_to_opt.append(block_scales_float)
+            best_block_scales = block_scales_float.detach().clone()
+        else:
+            block_scales_float = None
+            best_block_scales = None
+
+        # Initialize WiwiOpt
+        optimizer = WiwiOpt(
+            params_to_opt,
+            lr=curr_lr,
+            betas=self.wiwi_betas,
+            eps=self.wiwi_eps,
+            weight_decay=self.wiwi_weight_decay,
+            weight_decay_rate=self.wiwi_weight_decay_rate,
+            normuon=self.wiwi_normuon,
+            use_compile=self.wiwi_use_compile,
+            ortho_dtype=self.wiwi_ortho_dtype,
+            stochastic_fp=self.wiwi_stochastic_fp,
+            dynamic_lr=self.wiwi_dynamic_lr,
+            dynamic_lr_boost=self.wiwi_dynamic_lr_boost,
+            egd=self.wiwi_egd,
+            egd_oja=self.wiwi_egd_oja,
+            egd_method=self.wiwi_egd_method,
+        )
+
+        schedule_name = self.lr_schedule
+        best_loss = float("inf")
+        best_delta = delta.detach().clone()
+        best_total_scale = total_scale.clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
+
+        # Shape-aware plateau parameters
+        effective_patience, effective_factor, effective_cooldown = (
+            self._compute_shape_aware_plateau_params(M, N)
+        )
+
+        mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
+        pbar = tqdm(
+            range(self.num_iter),
+            desc=f"    Optimizing NVFP4 (WiwiOpt-{schedule_name}{mode_suffix})",
+            leave=False,
+            dynamic_ncols=True,
+        )
+
+        for i in pbar:
+            optimizer.zero_grad()
+
+            q_refined = qdata_f32 + delta
+
+            # For joint mode: apply STE to get effective scales
+            if self.scale_optimization == "joint":
+                block_scales_ste = self._ste_fp8_scale(block_scales_float)
+                current_total_scale = per_tensor_scale * block_scales_ste
+
+            current_dq = self._nvfp4_dequantize_blockwise(q_refined, current_total_scale, M, N)
+
+            error = current_dq - W_float32
+            projected_error = U_k.T @ error @ Vh_k.T
+            loss = torch.linalg.norm(projected_error)
+
+            loss.backward()
+            optimizer.step()
+
+            # Clamp block scales to valid range after optimizer step
+            if self.scale_optimization == "joint":
+                with torch.no_grad():
+                    block_scales_float.clamp_(min=1e-6, max=F8_E4M3_MAX)
+
+            current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
+
+            if improved:
+                best_loss = current_loss_val
+                best_delta = delta.detach().clone()
+                best_total_scale = current_total_scale.detach().clone()
+                if self.scale_optimization == "joint":
+                    best_block_scales = block_scales_float.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # LR schedule update
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                for pg in optimizer.param_groups:
+                    pg["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= effective_patience:
+                    if curr_lr > self.lr_min:
+                        old_lr = curr_lr
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
+                        for pg in optimizer.param_groups:
+                            pg["lr"] = curr_lr
+                        cooldown_counter = effective_cooldown
+                    plateau_counter = 0
+            else:  # 'adaptive' - cosine-based schedule
+                # Use counter before reset for boost calculation to prevent compounding
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i,
+                    (M, N), self.early_stop_lr
+                )
+                if lr_updated:
+                    curr_lr = new_lr
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
+
+                # Reset counter after boost in no-reset adaptive mode
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
+
+            if schedule_name == "plateau":
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}",
+                })
+
+            if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
+                break
+
+        pbar.close()
+
+        final_q = qdata_f32 + best_delta
+        final_q = torch.clamp(final_q.detach(), -FP4_E2M1_MAX, FP4_E2M1_MAX)
+        qdata = _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
         return qdata, best_total_scale
 
     def _optimize_adamw(
