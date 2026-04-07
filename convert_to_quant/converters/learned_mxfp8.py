@@ -58,7 +58,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         pad_to_32x: bool = True,
         scale_refinement_rounds: int = 1,
         scale_optimization: str = "fixed",
-        lr: float = 8.077300000003e-3,
+        lr: float = 1.0,
         extract_lora: bool = False,
         lora_rank: int = 32,
         lora_depth: int = 1,

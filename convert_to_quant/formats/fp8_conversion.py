@@ -62,7 +62,7 @@ def convert_to_fp8_scaled(
     skip_inefficient_layers: bool = False,
     include_input_scale: bool = False,
     no_learned_rounding: bool = False,
-    save_quant_metadata: bool = False,
+    save_quant_metadata: bool = True,
     layer_config: Optional[Dict[str, Any]] = None,
     layer_config_fullmatch: bool = False,
     low_memory: bool = False,
@@ -121,7 +121,7 @@ def convert_to_fp8_scaled(
         )
         comfy_quant = True
     else:
-        comfy_quant = False
+        comfy_quant = True
 
     # Use unified loader (handles both standard and low-memory modes)
     try:

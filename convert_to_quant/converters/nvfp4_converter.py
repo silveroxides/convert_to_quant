@@ -60,7 +60,7 @@ class NVFP4Converter:
         block_size: int = 16,
         pad_to_16x: bool = True,
         optimize: bool = True,
-        num_iter: int = 100,
+        num_iter: int = 2000,
         lr: float = 1e-3,
     ):
         if block_size != 16:

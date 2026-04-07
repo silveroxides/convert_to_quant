@@ -30,7 +30,7 @@ def convert_fp8_scaled_to_comfy_quant(
     hp_filter: Optional[str] = None,
     full_precision_mm: bool = False,
     include_input_scale: bool = False,
-    save_quant_metadata: bool = False,
+    save_quant_metadata: bool = True,
 ):
     """
     Convert legacy fp8_scaled format to comfy_quant format.

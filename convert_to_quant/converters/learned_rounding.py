@@ -37,7 +37,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         scaling_mode: str = "tensor",
         block_size: int = 64,
         target_format: str = "fp8",
-        lr: float = 8.077300000003e-3,
+        lr: float = 1.0,
         extract_lora: bool = False,
         lora_rank: int = 32,
         lora_depth: int = 1,

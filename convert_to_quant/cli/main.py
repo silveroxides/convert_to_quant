@@ -277,7 +277,7 @@ def main():
     parser.add_argument(
         "--calib_samples",
         type=int,
-        default=6144,
+        default=3072,
         help="Number of random samples for bias correction.",
     )
     parser.add_argument(
@@ -289,20 +289,20 @@ def main():
     parser.add_argument(
         "--optimizer",
         type=str,
-        default="original",
+        default="prodigy",
         choices=["original", "adamw", "radam", "prodigy"],
         help="Optimization algorithm.",
     )
     parser.add_argument(
         "--num_iter",
         type=int,
-        default=1000,
+        default=4000,
         help="Total optimization iterations per tensor.",
     )
     parser.add_argument(
         "--lr",
         type=float,
-        default=8.077300000003e-3,
+        default=1.0,
         help="[AdamW/RAdam/Original] Initial learning rate.",
     )
     parser.add_argument(
@@ -324,18 +324,18 @@ def main():
         help="[exponential] Decay factor per step (default: 0.99)",
     )
     parser.add_argument(
-        "--lr_patience", type=int, default=9, help="[plateau] Steps before decay"
+        "--lr_patience", type=int, default=1, help="[plateau] Steps before decay"
     )
     parser.add_argument(
         "--lr_factor", type=float, default=0.95, help="[plateau, adaptive] LR reduction factor"
     )
     parser.add_argument(
-        "--lr_min", type=float, default=1e-10, help="[plateau] Minimum LR bound"
+        "--lr_min", type=float, default=1e-8, help="[plateau] Minimum LR bound"
     )
     parser.add_argument(
         "--lr_cooldown",
         type=int,
-        default=6,
+        default=0,
         help="[plateau, adaptive] Steps to wait after reduction(plateau, adaptive) or improvement(adaptive) before resuming normal operation",
     )
     parser.add_argument(
@@ -370,21 +370,21 @@ def main():
     parser.add_argument(
         "--early-stop-loss",
         type=float,
-        default=1e-8,
+        default=5e-9,
         dest="early_stop_loss",
         help="Early stop when loss drops below this value. (default: 1e-8)",
     )
     parser.add_argument(
         "--early-stop-lr",
         type=float,
-        default=1e-10,
+        default=1.01e-8,
         dest="early_stop_lr",
         help="Early stop when LR drops below this value. (default: 1e-10)",
     )
     parser.add_argument(
         "--early-stop-stall",
         type=int,
-        default=1000,
+        default=2000,
         dest="early_stop_stall",
         help="Early stop when worse_loss_counter exceeds this. (default: 1000)",
     )
@@ -412,12 +412,12 @@ def main():
         help="Proportion of principal components (SVD) to use.",
     )
     parser.add_argument(
-        "--min_k", type=int, default=64, help="Minimum number of principal components."
+        "--min_k", type=int, default=256, help="Minimum number of principal components."
     )
     parser.add_argument(
         "--max_k",
         type=int,
-        default=1024,
+        default=1280,
         help="Maximum number of principal components.",
     )
 

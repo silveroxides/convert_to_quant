@@ -26,7 +26,7 @@ def convert_int8_to_comfy_quant(
     output_file: str,
     block_size: int = 128,
     include_input_scale: bool = False,
-    save_quant_metadata: bool = False,
+    save_quant_metadata: bool = True,
 ):
     """
     Convert legacy INT8 quantized models to comfy_quant format.

@@ -140,7 +140,7 @@ def edit_comfy_quant(
     remove_keys: Optional[List[str]] = None,
     add_keys_str: Optional[str] = None,
     layer_filter: Optional[str] = None,
-    save_quant_metadata: bool = False,
+    save_quant_metadata: bool = True,
 ):
     """
     Edit comfy_quant layer configurations and _quantization_metadata in a model.
