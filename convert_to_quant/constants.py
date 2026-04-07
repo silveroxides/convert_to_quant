@@ -254,6 +254,16 @@ MODEL_FILTERS = {
         "category": "video",
         "highprec": LTXV2_LAYER_KEYNAMES,
     },
+    "ltx2": {
+        "help": "LTX v2 / v2.3: keep some transformer blocks high-precision and exclude vae and vocoder",
+        "category": "video",
+        "highprec": LTXV2_LAYER_KEYNAMES,
+    },
+    "ltx2_3": {
+        "help": "LTX v2.3: keep some transformer blocks high-precision and exclude vae and vocoder",
+        "category": "video",
+        "highprec": LTXV2_LAYER_KEYNAMES,
+    },
 }
 
 
