@@ -26,6 +26,7 @@ def create_comfy_quant_tensor(
     format_type: str,
     block_size: Optional[int] = None,
     full_precision_matrix_mult: Optional[bool] = None,
+    orig_dtype: Optional[str] = None,
 ) -> torch.Tensor:
     """
     Create a .comfy_quant layer configuration tensor for ComfyUI.
@@ -36,6 +37,8 @@ def create_comfy_quant_tensor(
         block_size: Block/group size for quantization (for block-based formats)
         full_precision_matrix_mult: If True, adds "full_precision_matrix_mult": True.
                                     If False or None, this key is omitted.
+        orig_dtype: The torch.dtype of the tensor before quantization. Valid ones are "torch.bfloat16",
+                     "torch.float16" or "torch.float32"
 
     Returns:
         torch.uint8 tensor containing JSON-encoded layer configuration
@@ -49,6 +52,8 @@ def create_comfy_quant_tensor(
     if full_precision_matrix_mult is True:
         comfy_quant["full_precision_matrix_mult"] = True
 
+    if orig_dtype is not None:
+        comfy_quant["orig_dtype"] = str(orig_dtype)
     return dict_to_tensor(comfy_quant)
 
 def fix_comfy_quant_params_structure(
@@ -402,6 +407,8 @@ def edit_comfy_quant(
                     meta_entry["group_size"] = config["group_size"]
                 if config.get("full_precision_matrix_mult"):
                     meta_entry["full_precision_matrix_mult"] = True
+                if "orig_dtype" in config:
+                    meta_entry["orig_dtype"] = config["orig_dtype"]
                 generated_layers[base_name] = meta_entry
             except Exception as e:
                 warning(f"  WARNING: Failed to parse {key}: {e}")

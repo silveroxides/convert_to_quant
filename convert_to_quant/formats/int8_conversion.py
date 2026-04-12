@@ -17,7 +17,7 @@ from ..constants import (
     SCALE_DTYPE,
     NORMALIZE_SCALES_ENABLED,
 )
-from ..utils.tensor_utils import normalize_tensorwise_scales
+from ..utils.tensor_utils import normalize_tensorwise_scales, tensor_to_dict
 from ..utils.comfy_quant import create_comfy_quant_tensor, fix_comfy_quant_params_structure
 from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
 
@@ -186,6 +186,7 @@ def convert_int8_to_comfy_quant(
                         detected_format,
                         block_size=detected_block_size,
                         full_precision_matrix_mult=None,
+                        orig_dtype=str(weight.dtype),
                     )
                     output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
@@ -195,6 +196,9 @@ def convert_int8_to_comfy_quant(
                         # int8 is always blockwise in this context, so check is simple or implicit
                         if detected_block_size is not None:
                             meta_entry["group_size"] = detected_block_size
+                        
+                        # Add original dtype to metadata
+                        meta_entry["orig_dtype"] = str(weight.dtype)
 
                         quant_metadata_layers[base_name] = meta_entry
             else:
@@ -253,6 +257,7 @@ def convert_int8_to_comfy_quant(
                     detected_format,
                     block_size=detected_block_size,
                     full_precision_matrix_mult=None,
+                    orig_dtype=str(weight.dtype),
                 )
                 output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
@@ -261,6 +266,9 @@ def convert_int8_to_comfy_quant(
                     meta_entry = {"format": detected_format}
                     if detected_block_size is not None:
                         meta_entry["group_size"] = detected_block_size
+                    
+                    # Add original dtype to metadata
+                    meta_entry["orig_dtype"] = str(weight.dtype)
 
                     quant_metadata_layers[base_name] = meta_entry
 

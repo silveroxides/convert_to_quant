@@ -523,12 +523,18 @@ def convert_to_fp8_scaled(
                 new_tensors[f"{base_name}.weight_scale"] = block_scales.to(device="cpu")
                 comfy_quant_format = "mxfp8"
                 block_size_for_meta = 32  # MXFP8 fixed block size
-                comfy_quant_tensor = create_comfy_quant_tensor(
-                    "mxfp8",
-                    block_size=32,
-                    full_precision_matrix_mult=layer_full_precision_mm
-                    if layer_full_precision_mm
-                    else None,
+                if layer_full_precision_mm:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        "mxfp8",
+                        block_size=32,
+                        full_precision_matrix_mult=True,
+                        orig_dtype=str(original_tensor.dtype),
+                    )
+                else:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        "mxfp8",
+                        block_size=32,
+                        orig_dtype=str(original_tensor.dtype),
                 )
             elif is_nvfp4:
                 # NVFP4 format - dual scaling (block + per-tensor)
@@ -536,13 +542,20 @@ def convert_to_fp8_scaled(
                 new_tensors[f"{base_name}.weight_scale_2"] = per_tensor_scale.to(device="cpu", dtype=torch.float32)
                 comfy_quant_format = "nvfp4"
                 block_size_for_meta = 16  # NVFP4 fixed block size
-                comfy_quant_tensor = create_comfy_quant_tensor(
-                    "nvfp4",
-                    block_size=16,
-                    full_precision_matrix_mult=layer_full_precision_mm
-                    if layer_full_precision_mm
-                    else None,
-                )
+                if layer_full_precision_mm:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        "nvfp4",
+                        block_size=16,
+                        full_precision_matrix_mult=True,
+                        orig_dtype=str(original_tensor.dtype),
+                    )
+                else:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        "nvfp4",
+                        block_size=16,
+                        orig_dtype=str(original_tensor.dtype),
+                    )
+
             elif is_int8:
                 new_tensors[f"{base_name}.weight_scale"] = (
                     dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
@@ -555,13 +568,19 @@ def convert_to_fp8_scaled(
                     block_size_for_meta = layer_block_size
 
                 # Use correct INT8 format
-                comfy_quant_tensor = create_comfy_quant_tensor(
-                    comfy_quant_format,
-                    block_size=block_size_for_meta,
-                    full_precision_matrix_mult=layer_full_precision_mm
-                    if layer_full_precision_mm
-                    else None,
-                )
+                if layer_full_precision_mm:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        comfy_quant_format,
+                        block_size=block_size_for_meta,
+                        full_precision_matrix_mult=True,
+                        orig_dtype=str(original_tensor.dtype),
+                    )
+                else:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        comfy_quant_format,
+                        block_size=block_size_for_meta,
+                        orig_dtype=str(original_tensor.dtype),
+                    )
                 # Add input_scale only for block-wise INT8
                 if comfy_quant_format == "int8_blockwise":
                     new_tensors[f"{base_name}.input_scale"] = torch.tensor(
@@ -597,13 +616,19 @@ def convert_to_fp8_scaled(
                 comfy_quant_format = fp8_format
                 block_size_for_meta = fp8_block_size
 
-                comfy_quant_tensor = create_comfy_quant_tensor(
-                    fp8_format,
-                    block_size=fp8_block_size,
-                    full_precision_matrix_mult=layer_full_precision_mm
-                    if layer_full_precision_mm
-                    else None,
-                )
+                if layer_full_precision_mm:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        fp8_format,
+                        block_size=fp8_block_size,
+                        full_precision_matrix_mult=True,
+                        orig_dtype=str(original_tensor.dtype),
+                    )
+                else:
+                    comfy_quant_tensor = create_comfy_quant_tensor(
+                        fp8_format,
+                        block_size=fp8_block_size,
+                        orig_dtype=str(original_tensor.dtype),
+                    )
                 # Add input_scale for FP8: use weight_scale for t5xxl/mistral/visual, 1.0 otherwise
                 if include_input_scale or text_encoder_filter:
                     if text_encoder_filter:
@@ -623,7 +648,11 @@ def convert_to_fp8_scaled(
             # Collect metadata if enabled
             if save_quant_metadata:
                 # Reconstruct the dict that was used to create the tensor
-                meta_entry = {"format": comfy_quant_format}
+                meta_entry = {
+                    "format": comfy_quant_format,
+                    "orig_dtype": str(original_tensor.dtype),
+                }
+                print(f"DEBUG: Adding to meta_entry for {base_name}: {meta_entry}")
                 block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise", "mxfp8", "nvfp4"}
                 if (
                     block_size_for_meta is not None
