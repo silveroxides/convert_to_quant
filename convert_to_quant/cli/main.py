@@ -3,6 +3,7 @@ CLI main function for convert_to_quant.
 
 Entry point that handles argument parsing and dispatches to appropriate conversion functions.
 """
+
 import argparse
 import os
 import sys
@@ -36,6 +37,7 @@ from ..pinned_transfer import set_verbose as set_pinned_verbose
 import json
 from safetensors import safe_open
 
+
 def load_input_scales(path: str) -> dict:
     """Load input scales from JSON or safetensors file.
 
@@ -45,19 +47,22 @@ def load_input_scales(path: str) -> dict:
     Returns:
         Dict mapping layer base names to input_scale values (float)
     """
-    if path.endswith('.json'):
+    if path.endswith(".json"):
         with open(path) as f:
             return json.load(f)
-    elif path.endswith('.safetensors'):
+    elif path.endswith(".safetensors"):
         scales = {}
         with safe_open(path, framework="pt") as f:
             for key in f.keys():
-                if key.endswith('.input_scale'):
-                    base = key.rsplit('.input_scale', 1)[0]
+                if key.endswith(".input_scale"):
+                    base = key.rsplit(".input_scale", 1)[0]
                     scales[base] = f.get_tensor(key).item()
         return scales
     else:
-        raise ValueError(f"Unsupported input scales format: {path}. Use .json or .safetensors")
+        raise ValueError(
+            f"Unsupported input scales format: {path}. Use .json or .safetensors"
+        )
+
 
 def extract_filter_flags(args) -> dict:
     """Extract model filter flags from parsed args with validation.
@@ -81,8 +86,17 @@ def extract_filter_flags(args) -> dict:
             )
         if getattr(args, name):
             flags[name] = True
+
+    # Text model aliases: these flags imply generic_text input_scale behavior
+    TEXT_MODEL_ALIASES = {"qwen35"}
+    if any(flags.get(alias) for alias in TEXT_MODEL_ALIASES):
+        flags["generic_text"] = True
+
     return flags
+
+
 from ..utils.logging import setup_logging, info, minimal, warning
+
 
 def main():
     # Parse args to get verbosity level
@@ -102,7 +116,6 @@ def main():
         lora_args=LORA_ARGS,
     )
 
-
     parser.add_argument(
         "-i", "--input", type=str, required=True, help="Input safetensors file path."
     )
@@ -113,7 +126,11 @@ def main():
         help="Output safetensors file path. Auto-generated if not provided.",
     )
     parser.add_argument(
-        "--comfy_quant", action="store_true", help="Use Comfy quantization method."
+        "--comfy_quant",
+        "--comfy-quant",
+        action="store_true",
+        dest="comfy_quant",
+        help="Use Comfy quantization method.",
     )
     parser.add_argument(
         "--int8",
@@ -132,12 +149,14 @@ def main():
     )
     parser.add_argument(
         "--make-hybrid-mxfp8",
+        "--make_hybrid_mxfp8",
         action="store_true",
         dest="make_hybrid_mxfp8",
         help="Convert an existing MXFP8 model to Hybrid MXFP8 (adds tensorwise fallback for Ada GPUs).",
     )
     parser.add_argument(
         "--tensor-scales",
+        "--tensor_scales",
         type=str,
         default=None,
         dest="tensor_scales_path",
@@ -152,6 +171,7 @@ def main():
     )
     parser.add_argument(
         "--custom-layers",
+        "--custom_layers",
         type=str,
         default=None,
         dest="custom_layers",
@@ -159,6 +179,7 @@ def main():
     )
     parser.add_argument(
         "--exclude-layers",
+        "--exclude_layers",
         type=str,
         default=None,
         dest="exclude_layers",
@@ -166,6 +187,7 @@ def main():
     )
     parser.add_argument(
         "--custom-type",
+        "--custom_type",
         type=str,
         default=None,
         dest="custom_type",
@@ -175,6 +197,7 @@ def main():
     # Custom-type parameter overrides
     parser.add_argument(
         "--custom-block-size",
+        "--custom_block_size",
         type=int,
         default=None,
         dest="custom_block_size",
@@ -182,6 +205,7 @@ def main():
     )
     parser.add_argument(
         "--custom-scaling-mode",
+        "--custom_scaling_mode",
         type=str,
         default=None,
         dest="custom_scaling_mode",
@@ -190,12 +214,14 @@ def main():
     )
     parser.add_argument(
         "--custom-simple",
+        "--custom_simple",
         action="store_true",
         dest="custom_simple",
         help="Use simple quantization for custom-type layers",
     )
     parser.add_argument(
         "--custom-heur",
+        "--custom_heur",
         action="store_true",
         dest="custom_heur",
         help="Apply performance heuristics to custom-type layers",
@@ -203,6 +229,7 @@ def main():
     # Fallback-type parameter overrides
     parser.add_argument(
         "--fallback-block-size",
+        "--fallback_block_size",
         type=int,
         default=None,
         dest="fallback_block_size",
@@ -210,6 +237,7 @@ def main():
     )
     parser.add_argument(
         "--fallback-simple",
+        "--fallback_simple",
         action="store_true",
         dest="fallback_simple",
         help="Use simple quantization for fallback-type layers",
@@ -221,7 +249,10 @@ def main():
     )
     parser.add_argument(
         "--full_precision_matrix_mult",
+        "--full-precision-matrix-mult",
+        "-fpmm",
         action="store_true",
+        dest="full_precision_matrix_mult",
         help="Add full_precision_matrix_mult=True to .comfy_quant metadata.",
     )
     parser.add_argument(
@@ -237,7 +268,9 @@ def main():
     )
     parser.add_argument(
         "--input_scale",
+        "--input-scale",
         action="store_true",
+        dest="input_scale",
         help="Include input_scale tensor (fp32, 1.0) for quantized layers. Works with oconvert-fp8-scaled and --convert-int8-scaled. Always enabled for T5XXL.",
     )
     parser.add_argument(
@@ -257,33 +290,45 @@ def main():
         )
     parser.add_argument(
         "--full_matrix",
+        "--full-matrix",
         action="store_true",
+        dest="full_matrix",
         help="If should use torch.linalg.svd with full matices instead of the torch.svd_lowrank.",
     )
     parser.add_argument(
         "--scaling_mode",
+        "--scaling-mode",
         type=str,
         default="tensor",
+        dest="scaling_mode",
         choices=["tensor", "row", "block", "block3d", "block2d"],
         help="FP8 scaling mode: 'tensor' (1 global scale), 'row' (per-row scale), 'block' (2D tiles like INT8), 'block3d' (per-row-group 3D, legacy). 'block2d' is deprecated alias for 'block'.",
     )
 
     parser.add_argument(
         "--block_size",
+        "--block-size",
+        "--group_size",
+        "--group-size",
         type=int,
         default=None,
-        help="Block size for block-wise quantization (REQUIRED for INT8). Common values: 64, 128.",
+        dest="block_size",
+        help="Block/group size for block-wise quantization. Defaults to 128 when using block scaling mode. Common values: 64, 128.",
     )
     parser.add_argument(
         "--calib_samples",
+        "--calib-samples",
         type=int,
         default=3072,
+        dest="calib_samples",
         help="Number of random samples for bias correction.",
     )
     parser.add_argument(
         "--manual_seed",
+        "--manual-seed",
         type=int,
         default=-1,
+        dest="manual_seed",
         help="Set a manual seed for reproducibility. Use -1 for random.",
     )
     parser.add_argument(
@@ -295,8 +340,10 @@ def main():
     )
     parser.add_argument(
         "--num_iter",
+        "--num-iter",
         type=int,
         default=4000,
+        dest="num_iter",
         help="Total optimization iterations per tensor.",
     )
     parser.add_argument(
@@ -307,52 +354,80 @@ def main():
     )
     parser.add_argument(
         "--use_speed",
+        "--use-speed",
         action="store_true",
+        dest="use_speed",
         help="[Prodigy] Enabled the use_speed parameter for Prodigy optimizer.",
     )
     parser.add_argument(
         "--lr_schedule",
+        "--lr-schedule",
         type=str,
         default="plateau",
+        dest="lr_schedule",
         choices=["adaptive", "exponential", "plateau"],
         help="LR schedule for optimizer: 'adaptive' (special custom), 'exponential' (gamma decay), 'plateau' (reduce on stall)",
     )
     parser.add_argument(
         "--lr_gamma",
+        "--lr-gamma",
         type=float,
         default=0.99,
+        dest="lr_gamma",
         help="[exponential] Decay factor per step (default: 0.99)",
     )
     parser.add_argument(
-        "--lr_patience", type=int, default=1, help="[plateau] Steps before decay"
+        "--lr_patience",
+        "--lr-patience",
+        type=int,
+        default=1,
+        dest="lr_patience",
+        help="[plateau] Steps before decay",
     )
     parser.add_argument(
-        "--lr_factor", type=float, default=0.95, help="[plateau, adaptive] LR reduction factor"
+        "--lr_factor",
+        "--lr-factor",
+        type=float,
+        default=0.95,
+        dest="lr_factor",
+        help="[plateau, adaptive] LR reduction factor",
     )
     parser.add_argument(
-        "--lr_min", type=float, default=1e-8, help="[plateau] Minimum LR bound"
+        "--lr_min",
+        "--lr-min",
+        type=float,
+        default=1e-8,
+        dest="lr_min",
+        help="[plateau] Minimum LR bound",
     )
     parser.add_argument(
         "--lr_cooldown",
+        "--lr-cooldown",
         type=int,
         default=0,
+        dest="lr_cooldown",
         help="[plateau, adaptive] Steps to wait after reduction(plateau, adaptive) or improvement(adaptive) before resuming normal operation",
     )
     parser.add_argument(
         "--lr_threshold",
+        "--lr-threshold",
         type=float,
         default=0.0,
+        dest="lr_threshold",
         help="[plateau] Min improvement to reset patience",
     )
     parser.add_argument(
         "--lr_adaptive_mode",
+        "--lr-adaptive-mode",
         type=str,
         default="simple-reset",
+        dest="lr_adaptive_mode",
         choices=["simple-reset", "no-reset"],
         help="[adaptive] Counter reset behavior (see MANUAL.md)",
     )
     parser.add_argument(
         "--lr-threshold-mode",
+        "--lr_threshold_mode",
         type=str,
         default="rel",
         choices=["rel", "abs"],
@@ -361,6 +436,7 @@ def main():
     )
     parser.add_argument(
         "--lr-shape-influence",
+        "--lr_shape_influence",
         type=float,
         default=1.0,
         dest="lr_shape_influence",
@@ -369,6 +445,8 @@ def main():
     # Early stopping thresholds (--help-advanced)
     parser.add_argument(
         "--early-stop-loss",
+        "--early_stop_loss",
+        "-esloss",
         type=float,
         default=5e-9,
         dest="early_stop_loss",
@@ -376,6 +454,8 @@ def main():
     )
     parser.add_argument(
         "--early-stop-lr",
+        "--early_stop_lr",
+        "-eslr",
         type=float,
         default=1.01e-8,
         dest="early_stop_lr",
@@ -383,6 +463,8 @@ def main():
     )
     parser.add_argument(
         "--early-stop-stall",
+        "--early_stop_stall",
+        "-esstall",
         type=int,
         default=2000,
         dest="early_stop_stall",
@@ -391,6 +473,7 @@ def main():
     # NVFP4 scale optimization (--help-advanced)
     parser.add_argument(
         "--scale-refinement",
+        "--scale_refinement",
         type=int,
         default=1,
         dest="scale_refinement_rounds",
@@ -398,38 +481,50 @@ def main():
     )
     parser.add_argument(
         "--scale-optimization",
+        "--scale_optimization",
         type=str,
         default="fixed",
         dest="scale_optimization",
         choices=["fixed", "iterative", "joint"],
         help="[NVFP4] Scale optimization mode: 'fixed' (default, scales computed once), "
-             "'iterative' (scales recomputed periodically), 'joint' (STE-based joint optimization)",
+        "'iterative' (scales recomputed periodically), 'joint' (STE-based joint optimization)",
     )
     parser.add_argument(
         "--top_p",
+        "--top-p",
         type=float,
         default=0.2,
+        dest="top_p",
         help="Proportion of principal components (SVD) to use.",
     )
     parser.add_argument(
-        "--min_k", type=int, default=256, help="Minimum number of principal components."
+        "--min_k",
+        "--min-k",
+        type=int,
+        default=256,
+        dest="min_k",
+        help="Minimum number of principal components.",
     )
     parser.add_argument(
         "--max_k",
+        "--max-k",
         type=int,
         default=1280,
+        dest="max_k",
         help="Maximum number of principal components.",
     )
 
     # LoRA extraction options (--help-lora)
     parser.add_argument(
         "--extract-lora",
+        "--extract_lora",
         action="store_true",
         dest="extract_lora",
         help="Extract quantization error into separate LoRA adapter layers.",
     )
     parser.add_argument(
         "--lora-rank",
+        "--lora_rank",
         type=int,
         default=32,
         dest="lora_rank",
@@ -437,6 +532,7 @@ def main():
     )
     parser.add_argument(
         "--lora-target",
+        "--lora_target",
         type=str,
         default=None,
         dest="lora_target",
@@ -444,6 +540,7 @@ def main():
     )
     parser.add_argument(
         "--lora-depth",
+        "--lora_depth",
         type=int,
         default=1,
         dest="lora_depth",
@@ -451,6 +548,7 @@ def main():
     )
     parser.add_argument(
         "--lora-ar-threshold",
+        "--lora_ar_threshold",
         type=float,
         default=0.0,
         dest="lora_ar_threshold",
@@ -458,6 +556,7 @@ def main():
     )
     parser.add_argument(
         "--lora-output",
+        "--lora_output",
         type=str,
         default=None,
         dest="lora_output",
@@ -467,12 +566,14 @@ def main():
     # FP8 scaled to comfy_quant conversion mode
     parser.add_argument(
         "--convert-fp8-scaled",
+        "--convert_fp8_scaled",
         action="store_true",
         dest="convert_fp8_scaled",
         help="Convert fp8_scaled model to comfy_quant format (no quantization, just format conversion)",
     )
     parser.add_argument(
         "--hp-filter",
+        "--hp_filter",
         type=str,
         default=None,
         dest="hp_filter",
@@ -480,6 +581,7 @@ def main():
     )
     parser.add_argument(
         "--full-precision-mm",
+        "--full_precision_mm",
         action="store_true",
         dest="full_precision_mm",
         help="Set full_precision_matrix_mult=True in .comfy_quant metadata (for --convert-fp8-scaled)",
@@ -488,6 +590,7 @@ def main():
     # INT8 to comfy_quant conversion mode
     parser.add_argument(
         "--convert-int8-scaled",
+        "--convert_int8_scaled",
         action="store_true",
         dest="convert_int8_scaled",
         help="Convert legacy INT8 model (.scale_weight) to comfy_quant format (.weight_scale + metadata)",
@@ -496,19 +599,23 @@ def main():
     # Legacy input scale addition mode
     parser.add_argument(
         "--legacy_input_add",
+        "--legacy-input-add",
         action="store_true",
+        dest="legacy_input_add",
         help="Add .scale_input tensors to legacy fp8_scaled models (keeps legacy format, adds missing input scales)",
     )
 
     # Legacy FP8 cleanup mode
     parser.add_argument(
         "--cleanup-fp8-scaled",
+        "--cleanup_fp8_scaled",
         action="store_true",
         dest="cleanup_fp8_scaled",
         help="Clean up legacy fp8_scaled model: remove orphaned scales, set scaled_fp8 marker, normalize scales",
     )
     parser.add_argument(
         "--scaled-fp8-marker",
+        "--scaled_fp8_marker",
         type=int,
         default=0,
         choices=[0, 2],
@@ -525,6 +632,7 @@ def main():
     )
     parser.add_argument(
         "--actcal-samples",
+        "--actcal_samples",
         type=int,
         default=64,
         dest="actcal_samples",
@@ -532,6 +640,7 @@ def main():
     )
     parser.add_argument(
         "--actcal-percentile",
+        "--actcal_percentile",
         type=float,
         default=99.9,
         dest="actcal_percentile",
@@ -539,11 +648,13 @@ def main():
     )
     parser.add_argument(
         "--actcal-lora",
+        "--actcal_lora",
         dest="actcal_lora",
         help="LoRA file for informed calibration (uses LoRA_A as input directions)",
     )
     parser.add_argument(
         "--actcal-seed",
+        "--actcal_seed",
         type=int,
         default=42,
         dest="actcal_seed",
@@ -551,6 +662,7 @@ def main():
     )
     parser.add_argument(
         "--actcal-device",
+        "--actcal_device",
         type=str,
         default=None,
         dest="actcal_device",
@@ -560,6 +672,7 @@ def main():
     # Metadata saving option
     parser.add_argument(
         "--save-quant-metadata",
+        "--save_quant_metadata",
         action="store_true",
         dest="save_quant_metadata",
         help="Save quantization metadata in safetensors header (under _quantization_metadata key)",
@@ -568,6 +681,7 @@ def main():
     # Scale normalization toggle (for testing)
     parser.add_argument(
         "--no-normalize-scales",
+        "--no_normalize_scales",
         action="store_true",
         dest="no_normalize_scales",
         help="Disable normalization of 1-element scale arrays to scalars (for testing/compatibility)",
@@ -576,23 +690,26 @@ def main():
     # NVFP4 input scales (from calibration or another NVFP4 model)
     parser.add_argument(
         "--input-scales",
+        "--input_scales",
         type=str,
         default=None,
         dest="input_scales_path",
         help="Path to input scales file (.json or .safetensors). "
-             "JSON format: {'layer.name': 0.015, ...}. "
-             "Safetensors: extracts .input_scale tensors from an existing NVFP4 model.",
+        "JSON format: {'layer.name': 0.015, ...}. "
+        "Safetensors: extracts .input_scale tensors from an existing NVFP4 model.",
     )
 
     # ComfyQuant layer config editing mode
     parser.add_argument(
         "--edit-quant",
+        "--edit_quant",
         action="store_true",
         dest="edit_quant",
         help="Edit .comfy_quant tensors and _quantization_metadata header (add/remove keys)",
     )
     parser.add_argument(
         "--remove-keys",
+        "--remove_keys",
         type=str,
         default=None,
         dest="remove_keys",
@@ -600,6 +717,7 @@ def main():
     )
     parser.add_argument(
         "--add-keys",
+        "--add_keys",
         type=str,
         default=None,
         dest="add_keys",
@@ -607,6 +725,7 @@ def main():
     )
     parser.add_argument(
         "--quant-filter",
+        "--quant_filter",
         type=str,
         default=None,
         dest="quant_filter",
@@ -616,6 +735,7 @@ def main():
     # Per-layer quantization config (JSON file)
     parser.add_argument(
         "--layer-config",
+        "--layer_config",
         type=str,
         default=None,
         dest="layer_config",
@@ -640,6 +760,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     # Dry run / template generation
     parser.add_argument(
         "--dry-run",
+        "--dry_run",
         type=str,
         nargs="?",
         const="analyze",
@@ -652,6 +773,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     # Verbose output for pinned memory transfers
     parser.add_argument(
         "--verbose-pinned",
+        "--verbose_pinned",
         action="store_true",
         dest="verbose_pinned",
         help="Print per-tensor pinned memory transfer details",
@@ -660,12 +782,36 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     # Memory-efficient loading mode
     parser.add_argument(
         "--low-memory",
+        "--low_memory",
+        "-lm",
         action="store_true",
         dest="low_memory",
         help="Use streaming tensor loading to reduce RAM usage (recommended for models >50%% of available RAM)",
     )
 
     args = parser.parse_args()
+
+    # Apply default block_size=128 when block scaling mode is active and no explicit value given
+    if args.block_size is None:
+        needs_block = (
+            (args.int8 and getattr(args, "scaling_mode", "tensor") != "tensor")
+            or getattr(args, "scaling_mode", "tensor")
+            in ("block", "block2d", "block3d")
+            or args.custom_type == "int8"
+            or args.fallback == "int8"
+        )
+        if needs_block:
+            args.block_size = 128
+
+    # Apply default block_size=128 for custom/fallback INT8 if not set
+    if (
+        args.custom_type == "int8"
+        and args.custom_scaling_mode != "tensor"
+        and args.custom_block_size is None
+    ):
+        args.custom_block_size = args.block_size if args.block_size else 128
+    if args.fallback == "int8" and args.fallback_block_size is None:
+        args.fallback_block_size = args.block_size if args.block_size else 128
 
     # Initialize logging framework with user's verbosity preference
     setup_logging(args.verbose)
@@ -788,10 +934,14 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             input_scales = None
             if args.input_scales_path:
                 if not os.path.exists(args.input_scales_path):
-                    print(f"Error: Input scales file not found: {args.input_scales_path}")
+                    print(
+                        f"Error: Input scales file not found: {args.input_scales_path}"
+                    )
                     return
                 input_scales = load_input_scales(args.input_scales_path)
-                print(f"Loaded {len(input_scales)} input scales from: {args.input_scales_path}")
+                print(
+                    f"Loaded {len(input_scales)} input scales from: {args.input_scales_path}"
+                )
 
             # Call convert_to_nvfp4 with explicit args (no **kwargs footgun)
             convert_to_nvfp4(
@@ -1008,9 +1158,17 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     # Handle activation scale calibration mode (separate workflow)
     if args.actcal:
         try:
-            from .calibrate_activation_scales import calibrate_model, patch_model_with_scales, load_lora_tensors
+            from .calibrate_activation_scales import (
+                calibrate_model,
+                patch_model_with_scales,
+                load_lora_tensors,
+            )
         except ImportError:
-            from calibrate_activation_scales import calibrate_model, patch_model_with_scales, load_lora_tensors
+            from calibrate_activation_scales import (
+                calibrate_model,
+                patch_model_with_scales,
+                load_lora_tensors,
+            )
 
         if not args.output:
             base = os.path.splitext(args.input)[0]
@@ -1039,7 +1197,9 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             print(f"  LoRA layers found: {len(lora_tensors)}")
 
         mode = "LoRA-informed" if lora_tensors else "random"
-        print(f"\nCalibrating input_scale using {mode} PTQ ({args.actcal_samples} samples)...")
+        print(
+            f"\nCalibrating input_scale using {mode} PTQ ({args.actcal_samples} samples)..."
+        )
         scales = calibrate_model(
             tensors,
             calib_samples=args.actcal_samples,
@@ -1099,7 +1259,9 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
 
     # Determine which formats require block_size
     primary_needs_block_size = args.int8 and args.scaling_mode != "tensor"
-    custom_needs_block_size = args.custom_type == "int8" and args.custom_scaling_mode != "tensor"
+    custom_needs_block_size = (
+        args.custom_type == "int8" and args.custom_scaling_mode != "tensor"
+    )
     fallback_needs_block_size = args.fallback == "int8"
 
     # Validate block_size for primary format
@@ -1168,7 +1330,9 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         has_filters = any(filter_flags.values())
         has_custom = bool(args.custom_layers)
         mixed_suffix = "mixed" if (has_filters or has_custom) else ""
-        output_file = f"{base}_{prefix}{format_str}{mixed_suffix}{scaling_str}.safetensors"
+        output_file = (
+            f"{base}_{prefix}{format_str}{mixed_suffix}{scaling_str}.safetensors"
+        )
     else:
         output_file = args.output
 
@@ -1272,6 +1436,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         lora_ar_threshold=args.lora_ar_threshold,
         lora_output=args.lora_output,
     )
+
 
 if __name__ == "__main__":
     main()

@@ -3,6 +3,7 @@ Constants and configuration values for convert_to_quant.
 
 Contains model-specific key name filters and dtype settings.
 """
+
 import torch
 
 # --- Model-specific exclusion lists (layers to skip quantization) ---
@@ -129,6 +130,27 @@ ZIMAGE_LAYER_KEYNAMES = [
     "time_text_embed",
 ]
 ZIMAGE_REFINER_LAYER_KEYNAMES = ["context_refiner", "noise_refiner"]
+ANIMA_LAYER_KEYNAMES = [
+    "net.blocks.0.",
+    "net.blocks.1.adaln_modulation",
+    "final_layer",
+    "llm_adapter",
+    "t_embedder",
+    "x_embedder",
+]
+QWEN35_AVOID_KEY_NAMES = [
+    ".layers.0.",
+    ".layers.63.",
+    "lm_head",
+    "embed_tokens",
+    "in_proj_a",
+    "in_proj_b",
+    "visual.pos_embed",
+    "visual.patch_embed",
+    "merger",
+    "mtp.fc",
+    "visual.blocks.0.",
+]
 LTXV2_LAYER_KEYNAMES = [
     "scale_shift_table",
     "text_embedding_projection",
@@ -167,6 +189,11 @@ LTXV2_LAYER_KEYNAMES = [
 
 MODEL_FILTERS = {
     # Text Encoders
+    "qwen35": {
+        "help": "Qwen2.5 text/multimodal model: skip first/last layers, embeddings, visual components",
+        "category": "text",
+        "exclude": QWEN35_AVOID_KEY_NAMES,
+    },
     "t5xxl": {
         "help": "T5-XXL text encoder: skip norms/biases, remove decoder layers",
         "category": "text",
@@ -188,6 +215,11 @@ MODEL_FILTERS = {
         "category": "text",
     },
     # Diffusion Models (Flux-style)
+    "anima": {
+        "help": "Anima diffusion model: keep first blocks, adaln_modulation, final/embedding layers high-precision",
+        "category": "diffusion",
+        "highprec": ANIMA_LAYER_KEYNAMES,
+    },
     "flux2": {
         "help": "Flux.2: keep modulation/guidance/time/final layers high-precision",
         "category": "diffusion",
@@ -259,25 +291,30 @@ MODEL_FILTERS = {
 
 def build_exclusion_patterns(active_filters: dict) -> tuple:
     """
-    Build layer exclusion patterns from active filter flags.
+    Build layer skip/remove patterns from active filter flags.
+
+    "exclude" and "highprec" keys in MODEL_FILTERS are functionally identical:
+    both mean "do not quantize this layer". Only "remove" is distinct (layer
+    deleted from output entirely, used only by t5xxl).
 
     Args:
         active_filters: Dict of filter_name -> bool (e.g., {"radiance": True, "t5xxl": False})
 
     Returns:
-        Tuple of (exclude_patterns, highprec_patterns, remove_patterns)
+        Tuple of (skip_patterns, skip_patterns, remove_patterns)
+        First two elements are identical (combined exclude+highprec) for backwards compat.
     """
-    exclude = []
-    highprec = []
+    skip = []
     remove = []
 
     for name, cfg in MODEL_FILTERS.items():
         if active_filters.get(name, False):
-            exclude.extend(cfg.get("exclude", []))
-            highprec.extend(cfg.get("highprec", []))
+            skip.extend(cfg.get("exclude", []))
+            skip.extend(cfg.get("highprec", []))
             remove.extend(cfg.get("remove", []))
 
-    return exclude, highprec, remove
+    return skip, skip, remove
+
 
 # --- Dtype settings ---
 TARGET_FP8_DTYPE = torch.float8_e4m3fn
@@ -316,28 +353,28 @@ E8M0_BIAS = 127  # Exponent bias for E8M0 format (value = 2^(exp - 127))
 #   - min_lr: minimum LR floor for decay operations at this tier
 ADAPTIVE_LR_TIERS_IMPROVE = [
     # (counter_threshold, multiplier, max_lr)
-    (0, 1.25, 100.0),     # counter < 50: boost by 1.25x
-    (50, 1.375, 100.0),   # 50 <= counter < 75
-    (75, 1.5, 100.0),     # 75 <= counter < 100
-    (100, 1.75, 100.0),   # 100 <= counter < 125
-    (125, 2.0, 100.0),    # 125 <= counter < 150
-    (150, 2.25, 100.0),   # 150 <= counter < 200
-    (200, 2.5, 100.0),    # 200 <= counter < 250
-    (250, 2.75, 100.0),   # 250 <= counter < 300
-    (300, 3.0, 100.0),    # counter >= 300
+    (0, 1.25, 100.0),  # counter < 50: boost by 1.25x
+    (50, 1.375, 100.0),  # 50 <= counter < 75
+    (75, 1.5, 100.0),  # 75 <= counter < 100
+    (100, 1.75, 100.0),  # 100 <= counter < 125
+    (125, 2.0, 100.0),  # 125 <= counter < 150
+    (150, 2.25, 100.0),  # 150 <= counter < 200
+    (200, 2.5, 100.0),  # 200 <= counter < 250
+    (250, 2.75, 100.0),  # 250 <= counter < 300
+    (300, 3.0, 100.0),  # counter >= 300
 ]
 
 ADAPTIVE_LR_TIERS_DECAY = [
     # (counter_threshold, multiplier, min_lr)
-    (0, 0.95, 9e-8),      # counter < 26: decay by 0.95x
-    (26, 0.97, 8e-8),     # 26 <= counter < 51
-    (51, 0.985, 7e-8),    # 51 <= counter < 76
-    (76, 0.9875, 6e-8),   # 76 <= counter < 101
-    (101, 0.98875, 5e-8), # 101 <= counter < 151
-    (151, 0.99, 4e-8),    # 151 <= counter < 201
-    (201, 0.99125, 3e-8), # 201 <= counter < 251
+    (0, 0.95, 9e-8),  # counter < 26: decay by 0.95x
+    (26, 0.97, 8e-8),  # 26 <= counter < 51
+    (51, 0.985, 7e-8),  # 51 <= counter < 76
+    (76, 0.9875, 6e-8),  # 76 <= counter < 101
+    (101, 0.98875, 5e-8),  # 101 <= counter < 151
+    (151, 0.99, 4e-8),  # 151 <= counter < 201
+    (201, 0.99125, 3e-8),  # 201 <= counter < 251
     (251, 0.9925, 2e-8),  # 251 <= counter < 301
-    (301, 0.995, 5e-9),   # counter >= 301
+    (301, 0.995, 5e-9),  # counter >= 301
 ]
 
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
