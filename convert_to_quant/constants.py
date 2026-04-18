@@ -176,6 +176,7 @@ LTXV2_LAYER_KEYNAMES = [
     "vae.decoder",
     "vae.encoder",
     "vocoder",
+    "to_gate_logits",
 ]
 
 # --- Model Filter Registry ---
