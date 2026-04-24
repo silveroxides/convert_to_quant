@@ -406,6 +406,17 @@ def main():
              "'iterative' (scales recomputed periodically), 'joint' (STE-based joint optimization)",
     )
     parser.add_argument(
+        "--hi-first",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        dest="hi_first",
+        help="[NVFP4] Nibble packing order. --hi-first (default) stores the even-indexed "
+             "element in the high nibble of each packed byte, matching comfy-kitchen's default. "
+             "Use --no-hi-first only when targeting a consumer kernel that expects the opposite "
+             "layout. The chosen order is recorded in per-tensor .comfy_quant metadata under "
+             "'nibble_order'. Ignored for FP8, INT8, and MXFP8.",
+    )
+    parser.add_argument(
         "--top_p",
         type=float,
         default=0.2,
@@ -804,6 +815,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 simple=args.simple,
                 num_iter=args.num_iter,
                 heur=args.heur,
+                hi_first=args.hi_first,
                 calib_samples=args.calib_samples,
                 seed=seed,
                 # Optimizer/LR options

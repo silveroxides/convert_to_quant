@@ -66,6 +66,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         lora_depth: int = 1,
         lora_target: Optional[str] = None,
         lora_ar_threshold: float = 0.0,
+        hi_first: bool = True,
         **kwargs,
     ):
         """
@@ -101,6 +102,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         self.block_size = block_size
         self.pad_to_16x = pad_to_16x
         self.scale_optimization = scale_optimization
+        # Nibble packing order for FP4 storage. See float_utils.pack_uint4.
+        self.hi_first = hi_first
         # For iterative mode, use provided rounds; for others, ignore
         self.scale_refinement_rounds = max(1, scale_refinement_rounds) if scale_optimization == "iterative" else 1
 
@@ -186,7 +189,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             scaled_block_scales_fp8 = torch.clamp(scaled_block_scales_fp8, max=F8_E4M3_MAX)
 
         # Pack to uint8
-        data_packed = pack_uint4(qdata)
+        data_packed = pack_uint4(qdata, hi_first=self.hi_first)
 
         # Convert block scales to cuBLAS tiled layout
         blocked_scales = to_blocked(

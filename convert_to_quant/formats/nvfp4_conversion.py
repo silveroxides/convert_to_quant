@@ -39,6 +39,7 @@ def convert_to_nvfp4(
     simple: bool = False,
     num_iter: int = 2000,
     heur: bool = False,
+    hi_first: bool = True,
     verbose_output: bool = True,  # kept for API compat, actual logging uses logging.py
     # Calibration options (for bias correction)
     calib_samples: int = 3072,
@@ -96,6 +97,7 @@ def convert_to_nvfp4(
     info("-" * 60)
     info("Target format: NVFP4 (FP4 E2M1 block quantization)")
     info(f"Block size: {FP4_BLOCK_SIZE}")
+    info(f"Nibble order: {'hi_first' if hi_first else 'lo_first'}")
     info("-" * 60)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -133,6 +135,7 @@ def convert_to_nvfp4(
         converter = NVFP4Converter(
             block_size=FP4_BLOCK_SIZE,
             pad_to_16x=True,
+            hi_first=hi_first,
         )
         use_learned = False
         info("NVFP4 Simple mode (no learned rounding optimization)")
@@ -147,6 +150,7 @@ def convert_to_nvfp4(
             pad_to_16x=True,
             full_matrix=full_matrix,
             no_learned_rounding=False,
+            hi_first=hi_first,
             lr_schedule=lr_schedule,
             lr_gamma=lr_gamma,
             lr_patience=lr_patience,
@@ -342,6 +346,7 @@ def convert_to_nvfp4(
             "group_size": FP4_BLOCK_SIZE,
             "orig_dtype": str(tensor.dtype),
             "orig_shape": list(tensor.shape),
+            "nibble_order": "hi_first" if hi_first else "lo_first",
         }
         output_tensors[f"{base_key}.comfy_quant"] = dict_to_tensor(metadata)
         quant_metadata[base_key] = metadata

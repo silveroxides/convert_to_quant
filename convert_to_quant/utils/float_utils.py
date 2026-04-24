@@ -48,20 +48,37 @@ def up_size(size: tuple) -> tuple:
     """Double the last dimension (for unpacking)."""
     return (*size[:-1], size[-1] * 2)
 
-def pack_uint4(uint8_data: torch.Tensor) -> torch.Tensor:
-    """Pack two 4-bit values into one uint8."""
+def pack_uint4(uint8_data: torch.Tensor, hi_first: bool = True) -> torch.Tensor:
+    """Pack two 4-bit values into one uint8.
+
+    Args:
+        uint8_data: uint8 tensor with 4-bit values in the low nibble.
+        hi_first: If True (default), the even-indexed element is stored in the
+            high nibble of each packed byte. This matches comfy-kitchen's
+            hi_first=True default. If False, the even-indexed element goes to
+            the low nibble. Must be kept consistent between pack and unpack.
+    """
     shape = uint8_data.shape
     assert shape[-1] % 2 == 0
     uint8_data = uint8_data.contiguous().view(-1)
-    return (uint8_data[::2] << 4 | uint8_data[1::2]).view(down_size(shape))
+    if hi_first:
+        return (uint8_data[::2] << 4 | uint8_data[1::2]).view(down_size(shape))
+    else:
+        return (uint8_data[1::2] << 4 | uint8_data[::2]).view(down_size(shape))
 
-def unpack_uint4(uint8_data: torch.Tensor) -> torch.Tensor:
-    """Unpack uint8 into two 4-bit values."""
+def unpack_uint4(uint8_data: torch.Tensor, hi_first: bool = True) -> torch.Tensor:
+    """Unpack uint8 into two 4-bit values.
+
+    hi_first must match the packing order used to produce the input.
+    """
     assert uint8_data.is_contiguous()
     shape = uint8_data.shape
-    first_elements = (uint8_data >> 4).to(torch.uint8)
-    second_elements = (uint8_data & 0b1111).to(torch.uint8)
-    return torch.stack([first_elements, second_elements], dim=-1).view(up_size(shape))
+    hi = (uint8_data >> 4).to(torch.uint8)
+    lo = (uint8_data & 0b1111).to(torch.uint8)
+    if hi_first:
+        return torch.stack([hi, lo], dim=-1).view(up_size(shape))
+    else:
+        return torch.stack([lo, hi], dim=-1).view(up_size(shape))
 
 def _float8_round(x: torch.Tensor) -> torch.Tensor:
     """Round to FP8 precision."""
@@ -238,9 +255,9 @@ def from_blocked(blocked_matrix: torch.Tensor, num_rows: int, num_cols: int) -> 
     return unblocked[:num_rows, :num_cols]
 
 
-def fp4_x2_to_f32(packed_fp4: torch.Tensor) -> torch.Tensor:
+def fp4_x2_to_f32(packed_fp4: torch.Tensor, hi_first: bool = True) -> torch.Tensor:
     """Unpack and dequantize FP4 E2M1 values to float32."""
-    unpacked = unpack_uint4(packed_fp4)
+    unpacked = unpack_uint4(packed_fp4, hi_first=hi_first)
     return _floatx_unpacked_to_f32(unpacked, F4_E2M1_EBITS, F4_E2M1_MBITS)
 
 

@@ -59,6 +59,8 @@ ADVANCED_ARGS = {
     # NVFP4 scale optimization
     "scale_refinement_rounds",
     "scale_optimization",
+    # NVFP4 nibble packing
+    "hi_first",
 }
 
 LEARNED_ROUNDING_ARGS = {
@@ -417,6 +419,17 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         scale_args = ["scale_refinement_rounds", "scale_optimization"]
         for action in self._all_actions:
             if self._get_dest_name(action) in scale_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("NVFP4 Nibble Packing:")
+        print("-" * 40)
+
+        nibble_args = ["hi_first"]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in nibble_args:
                 line = self._format_action_help(action)
                 if line:
                     print(line)

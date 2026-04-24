@@ -8,6 +8,7 @@ Uses comfy-kitchen CUDA/Triton kernels when available, with PyTorch fallback.
 
 Based on comfy-kitchen (Comfy Org, Apache-2.0) and PyTorch AO (Meta, BSD-3-Clause).
 """
+import inspect
 import math
 from typing import Tuple, Optional
 
@@ -32,12 +33,22 @@ from ..utils.float_utils import (
     F4_E2M1_MBITS,
 )
 
-# Check for comfy-kitchen availability
+# Check for comfy-kitchen availability and whether it supports hi_first.
+# hi_first was added to a fork; stock comfy-kitchen may not have it yet.
+# We feature-detect to stay compatible with both versions.
 try:
     import comfy_kitchen as ck
     HAS_COMFY_KITCHEN = True
+    _CK_QUANT_HAS_HI_FIRST = (
+        "hi_first" in inspect.signature(ck.quantize_nvfp4).parameters
+    )
+    _CK_DEQUANT_HAS_HI_FIRST = (
+        "hi_first" in inspect.signature(ck.dequantize_nvfp4).parameters
+    )
 except ImportError:
     HAS_COMFY_KITCHEN = False
+    _CK_QUANT_HAS_HI_FIRST = False
+    _CK_DEQUANT_HAS_HI_FIRST = False
 
 
 class NVFP4Converter:
@@ -62,6 +73,7 @@ class NVFP4Converter:
         optimize: bool = True,
         num_iter: int = 2000,
         lr: float = 1e-3,
+        hi_first: bool = True,
     ):
         if block_size != 16:
             raise ValueError("NVFP4 requires block_size=16")
@@ -71,6 +83,9 @@ class NVFP4Converter:
         self.optimize = optimize
         self.num_iter = num_iter
         self.lr = lr
+        # Nibble packing order for FP4 storage. True = even-index in high nibble,
+        # matching comfy-kitchen's hi_first=True default. See pack_uint4 docs.
+        self.hi_first = hi_first
 
     def quantize(
         self,
@@ -97,11 +112,18 @@ class NVFP4Converter:
 
         per_tensor_scale = per_tensor_scale.to(device=device, dtype=torch.float32)
 
-        # Use comfy-kitchen kernel if available
-        if HAS_COMFY_KITCHEN:
-            # CUDA kernel requires FP16/BF16 input (not float32)
+        # Use comfy-kitchen kernel when available, with feature-detection for hi_first.
+        # Fall back to local PyTorch path when kitchen is absent OR when the caller
+        # wants lo-first and the installed kitchen doesn't support the flag yet.
+        can_use_kitchen = HAS_COMFY_KITCHEN and (
+            _CK_QUANT_HAS_HI_FIRST or self.hi_first is True
+        )
+        if can_use_kitchen:
+            kwargs = {"pad_16x": self.pad_to_16x}
+            if _CK_QUANT_HAS_HI_FIRST:
+                kwargs["hi_first"] = self.hi_first
             qdata, block_scales = ck.quantize_nvfp4(
-                tensor.to(torch.bfloat16), per_tensor_scale, pad_16x=self.pad_to_16x
+                tensor.to(torch.bfloat16), per_tensor_scale, **kwargs
             )
             return qdata, block_scales, per_tensor_scale
 
@@ -159,7 +181,7 @@ class NVFP4Converter:
         data_lp = _f32_to_floatx_unpacked(data_scaled.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
 
         # Pack two FP4 values per uint8
-        data_packed = pack_uint4(data_lp)
+        data_packed = pack_uint4(data_lp, hi_first=self.hi_first)
 
         # Convert block scales to cuBLAS tiled layout
         blocked_scales = to_blocked(
@@ -188,9 +210,16 @@ class NVFP4Converter:
         Returns:
             Dequantized tensor
         """
-        # Use comfy-kitchen kernel if available
-        if HAS_COMFY_KITCHEN:
-            return ck.dequantize_nvfp4(qdata, per_tensor_scale, block_scales, output_dtype)
+        can_use_kitchen = HAS_COMFY_KITCHEN and (
+            _CK_DEQUANT_HAS_HI_FIRST or self.hi_first is True
+        )
+        if can_use_kitchen:
+            kwargs = {}
+            if _CK_DEQUANT_HAS_HI_FIRST:
+                kwargs["hi_first"] = self.hi_first
+            return ck.dequantize_nvfp4(
+                qdata, per_tensor_scale, block_scales, output_dtype, **kwargs
+            )
 
         # Fallback: PyTorch implementation
         return self._dequantize_pytorch(qdata, per_tensor_scale, block_scales, output_dtype)
@@ -204,7 +233,7 @@ class NVFP4Converter:
     ) -> torch.Tensor:
         """Pure PyTorch dequantization fallback."""
         # Unpack FP4 data
-        data_unpacked = unpack_uint4(qdata)
+        data_unpacked = unpack_uint4(qdata, hi_first=self.hi_first)
 
         # Convert unpacked FP4 to float32
         data_f32 = _floatx_unpacked_to_f32(data_unpacked, F4_E2M1_EBITS, F4_E2M1_MBITS)
@@ -235,6 +264,7 @@ def quantize_nvfp4(
     tensor: torch.Tensor,
     per_tensor_scale: Optional[torch.Tensor] = None,
     pad_to_16x: bool = True,
+    hi_first: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Convenience function to quantize a tensor to NVFP4 format.
@@ -243,11 +273,12 @@ def quantize_nvfp4(
         tensor: Input tensor (2D)
         per_tensor_scale: Optional global scale (auto-computed if None)
         pad_to_16x: Pad dimensions to be divisible by 16
+        hi_first: Nibble packing order (default True, matches comfy-kitchen default)
 
     Returns:
         Tuple of (quantized_data, block_scales, per_tensor_scale)
     """
-    converter = NVFP4Converter(pad_to_16x=pad_to_16x, optimize=False)
+    converter = NVFP4Converter(pad_to_16x=pad_to_16x, optimize=False, hi_first=hi_first)
     return converter.quantize(tensor, per_tensor_scale)
 
 
@@ -256,6 +287,7 @@ def dequantize_nvfp4(
     block_scales: torch.Tensor,
     per_tensor_scale: torch.Tensor,
     output_dtype: torch.dtype = torch.bfloat16,
+    hi_first: bool = True,
 ) -> torch.Tensor:
     """
     Convenience function to dequantize NVFP4 tensor.
@@ -265,9 +297,10 @@ def dequantize_nvfp4(
         block_scales: Block scales in cuBLAS tiled layout
         per_tensor_scale: Global scale factor
         output_dtype: Target output dtype
+        hi_first: Nibble packing order — must match the order used during quantization
 
     Returns:
         Dequantized tensor
     """
-    converter = NVFP4Converter(optimize=False)
+    converter = NVFP4Converter(optimize=False, hi_first=hi_first)
     return converter.dequantize(qdata, per_tensor_scale, block_scales, output_dtype)
