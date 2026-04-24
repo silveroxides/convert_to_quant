@@ -30,6 +30,7 @@ from ..formats.format_migration import convert_fp8_scaled_to_comfy_quant
 from ..formats.int8_conversion import convert_int8_to_comfy_quant
 from ..formats.legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
 from ..formats.nvfp4_conversion import convert_to_nvfp4
+from ..formats.svdquant_w4a4_conversion import convert_to_svdquant_w4a4
 from ..formats.mxfp8_conversion import convert_to_mxfp8
 from ..formats.hybrid_mxfp8_conversion import convert_to_hybrid_mxfp8
 from ..utils.comfy_quant import edit_comfy_quant
@@ -141,6 +142,13 @@ def main():
         "--nvfp4",
         action="store_true",
         help="Use NVFP4 (FP4 E2M1) block quantization. Requires Blackwell GPU (SM >= 10.0/12.0) for inference.",
+    )
+    parser.add_argument(
+        "--svdquant-w4a4",
+        "--svdquant_w4a4",
+        action="store_true",
+        dest="svdquant_w4a4",
+        help="Use SVDQuant W4A4 quantization (int4 weight + int4 activation, SVD low-rank correction). Requires SM >= 8.0 (Ampere+) for inference.",
     )
     parser.add_argument(
         "--mxfp8",
@@ -512,6 +520,57 @@ def main():
         default=1280,
         dest="max_k",
         help="Maximum number of principal components.",
+    )
+
+    # SVDQuant W4A4 options (--help-experimental)
+    parser.add_argument(
+        "--svdquant-rank",
+        "--svdquant_rank",
+        type=int,
+        default=32,
+        dest="svdquant_rank",
+        help="[SVDQuant W4A4] SVD rank for low-rank LoRA correction (default: 32). "
+             "Higher rank = better quality, more memory. 0 disables the correction.",
+    )
+    parser.add_argument(
+        "--smooth-mode",
+        "--smooth_mode",
+        type=str,
+        default="weight_only",
+        dest="smooth_mode",
+        choices=["weight_only", "ones", "external"],
+        help="[SVDQuant W4A4] Smooth factor mode. "
+             "'weight_only' (default): per-channel power-law heuristic from weight magnitudes. "
+             "'ones': no smoothing (identity). "
+             "'external': load from --smooth-file.",
+    )
+    parser.add_argument(
+        "--smooth-alpha",
+        "--smooth_alpha",
+        type=float,
+        default=0.5,
+        dest="smooth_alpha",
+        help="[SVDQuant W4A4] Power for 'weight_only' smooth heuristic (default: 0.5). "
+             "0.5 is the standard SmoothQuant geometric-mean approximation.",
+    )
+    parser.add_argument(
+        "--smooth-file",
+        "--smooth_file",
+        type=str,
+        default=None,
+        dest="smooth_file",
+        help="[SVDQuant W4A4] Path to .safetensors with pre-computed smooth factors "
+             "(for --smooth-mode external). Keys: '{base_key}.smooth_factor'.",
+    )
+    parser.add_argument(
+        "--act-unsigned-layers",
+        "--act_unsigned_layers",
+        type=str,
+        default=None,
+        dest="act_unsigned_layers",
+        help="[SVDQuant W4A4] Regex matching layers whose activations are always "
+             "non-negative (post-GELU fc2 in Qwen-style architectures). Matched layers "
+             "use unsigned int4 [0,15] quantization. Example: '.*ff_net.*proj'.",
     )
 
     # LoRA extraction options (--help-lora)
@@ -996,6 +1055,55 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
                 lora_output=args.lora_output,
             )
             return
+
+    # Handle SVDQuant W4A4 quantization mode (separate workflow)
+    if args.svdquant_w4a4:
+        if not args.output:
+            base = os.path.splitext(args.input)[0]
+            rank_suffix = f"_r{args.svdquant_rank}" if args.svdquant_rank > 0 else "_r0"
+            filter_flags = extract_filter_flags(args)
+            has_filters = any(filter_flags.values())
+            has_custom = bool(args.custom_layers)
+            mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+            args.output = f"{base}_svdquant_w4a4{rank_suffix}{mixed_suffix}.safetensors"
+
+        if not os.path.exists(args.input):
+            print(f"Error: Input file not found: {args.input}")
+            return
+
+        if os.path.abspath(args.input) == os.path.abspath(args.output):
+            print("Error: Output file cannot be same as input.")
+            return
+
+        seed = (
+            int(torch.randint(0, 2**32 - 1, ()).item())
+            if args.manual_seed == -1
+            else args.manual_seed
+        )
+        print(f"Using seed: {seed}")
+
+        filter_flags = extract_filter_flags(args)
+
+        convert_to_svdquant_w4a4(
+            args.input,
+            args.output,
+            # Layer selection
+            filter_flags=filter_flags,
+            exclude_layers=args.exclude_layers,
+            # SVDQuant options
+            rank=args.svdquant_rank,
+            smooth_mode=args.smooth_mode,
+            smooth_alpha=args.smooth_alpha,
+            smooth_file=args.smooth_file,
+            act_unsigned_layers=args.act_unsigned_layers,
+            # Bias correction
+            calib_samples=args.calib_samples,
+            seed=seed,
+            # Misc
+            heur=args.heur,
+            low_memory=args.low_memory,
+        )
+        return
 
     # Handle Hybrid MXFP8 conversion mode (separate workflow)
     if args.make_hybrid_mxfp8:

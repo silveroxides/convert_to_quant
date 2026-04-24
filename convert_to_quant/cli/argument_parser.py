@@ -16,6 +16,12 @@ from ..constants import MODEL_FILTERS
 EXPERIMENTAL_ARGS = {
     "int8",
     "nvfp4",
+    "svdquant_w4a4",
+    "svdquant_rank",
+    "smooth_mode",
+    "smooth_alpha",
+    "smooth_file",
+    "act_unsigned_layers",
     "mxfp8",
     "make_hybrid_mxfp8",
     "tensor_scales_path",
@@ -256,6 +262,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         format_args = [
             "int8",
             "nvfp4",
+            "svdquant_w4a4",
             "mxfp8",
             "make_hybrid_mxfp8",
             "tensor_scales_path",
@@ -265,6 +272,23 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         ]
         for action in self._all_actions:
             if self._get_dest_name(action) in format_args:
+                line = self._format_action_help(action)
+                if line:
+                    print(line)
+
+        print()
+        print("SVDQuant W4A4 Options:")
+        print("-" * 40)
+
+        svdquant_args = [
+            "svdquant_rank",
+            "smooth_mode",
+            "smooth_alpha",
+            "smooth_file",
+            "act_unsigned_layers",
+        ]
+        for action in self._all_actions:
+            if self._get_dest_name(action) in svdquant_args:
                 line = self._format_action_help(action)
                 if line:
                     print(line)

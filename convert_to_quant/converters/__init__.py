@@ -5,6 +5,7 @@ from .nvfp4_converter import NVFP4Converter, quantize_nvfp4, dequantize_nvfp4
 from .learned_nvfp4 import LearnedNVFP4Converter
 from .mxfp8_converter import MXFP8Converter, quantize_mxfp8, dequantize_mxfp8
 from .learned_mxfp8 import LearnedMXFP8Converter
+from .svdquant_w4a4_converter import SVDQuantW4A4Converter
 __all__ = [
     "BaseLearnedConverter",
     "LearnedRoundingConverter",
@@ -16,6 +17,7 @@ __all__ = [
     "quantize_mxfp8",
     "dequantize_mxfp8",
     "LearnedMXFP8Converter",
+    "SVDQuantW4A4Converter",
 ]
 
 
