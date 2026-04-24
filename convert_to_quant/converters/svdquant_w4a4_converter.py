@@ -210,8 +210,16 @@ class SVDQuantW4A4Converter:
             )
 
         if effective_rank > 0:
+            # SVD is computed on W (original, unsmoothed weight) because the LoRA branch
+            # runs on raw unsmoothed activations at inference time:
+            #   lora_act = x @ proj_down   (kernel applies LoRA before smooth, on raw x)
+            #   quant_path = quantize(x / smooth) @ W_residual_int4
+            # Using W_smoothed here would produce proj_down columns that expect x/smooth,
+            # but the kernel feeds raw x — causing a systematic scale error that corrupts
+            # output. The residual is still taken from W_smoothed so that the int4 path
+            # is quantizing the smooth-adjusted remainder (lower outlier magnitude).
             proj_up, proj_down = self._compute_svd_correction(
-                W_smoothed, effective_rank, label
+                W, effective_rank, label
             )
             W_residual = W_smoothed - (proj_up.float() @ proj_down.float().T)
         else:
@@ -307,8 +315,8 @@ class SVDQuantW4A4Converter:
             S = S_full[:rank]
             Vh = Vh_full[:rank, :].T  # (K, rank)
 
-        proj_up = (U * S).to(torch.float32)    # (N, R) -- absorbs singular values
-        proj_down = Vh.to(torch.float32)        # (K, R)
+        proj_up = (U * S).to(torch.float32).contiguous()    # (N, R) -- absorbs singular values
+        proj_down = Vh.to(torch.float32).contiguous()        # (K, R)
         return proj_up, proj_down
 
     def _quantize_int4(

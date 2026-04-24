@@ -163,8 +163,10 @@ class LearnedSVDQuantW4A4Converter(BaseLearnedConverter):
             )
 
         if effective_rank > 0:
+            # SVD on W (original unsmoothed weight): LoRA runs on raw x at inference,
+            # not x/smooth. See svdquant_w4a4_converter.py for full explanation.
             proj_up, proj_down = self._simple._compute_svd_correction(
-                W_smoothed, effective_rank, label
+                W_float32, effective_rank, label
             )
             W_residual = W_smoothed - (proj_up.float() @ proj_down.float().T)
         else:
