@@ -46,6 +46,7 @@ from safetensors.torch import save_file
 
 from ..constants import AVOID_KEY_NAMES, MODEL_FILTERS, COMPUTE_DTYPE
 from ..converters.svdquant_w4a4_converter import SVDQuantW4A4Converter
+from ..converters.learned_svdquant_w4a4 import LearnedSVDQuantW4A4Converter
 from ..utils.tensor_utils import dict_to_tensor, compute_bias_correction
 from ..utils.comfy_quant import should_skip_layer_for_performance
 from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
@@ -72,6 +73,30 @@ def convert_to_svdquant_w4a4(
     smooth_alpha: float = 0.5,
     smooth_file: Optional[str] = None,
     act_unsigned_layers: Optional[str] = None,
+    # Simple vs learned
+    simple: bool = False,
+    # Learned rounding optimizer options (ignored when simple=True)
+    num_iter: int = 2000,
+    optimizer: str = "prodigy",
+    lr: float = 1.0,
+    lr_schedule: str = "plateau",
+    top_p: float = 0.2,
+    min_k: int = 128,
+    max_k: int = 1280,
+    full_matrix: bool = False,
+    lr_gamma: float = 0.99,
+    lr_patience: int = 1,
+    lr_factor: float = 0.95,
+    lr_min: float = 1e-8,
+    lr_cooldown: int = 0,
+    lr_threshold: float = 0.0,
+    lr_adaptive_mode: str = "simple-reset",
+    lr_shape_influence: float = 1.0,
+    lr_threshold_mode: str = "rel",
+    early_stop_loss: float = 5e-9,
+    early_stop_lr: float = 1.01e-8,
+    early_stop_stall: int = 2000,
+    use_speed: bool = False,
     # Bias correction
     calib_samples: int = 3072,
     seed: int = 42,
@@ -84,28 +109,22 @@ def convert_to_svdquant_w4a4(
     Args:
         input_file: Path to input float .safetensors file.
         output_file: Path to write the converted .safetensors file.
-        filter_flags: Model-specific layer exclusion dict from CLI
-            (e.g. {"qwen": True, "flux2": False}).
+        filter_flags: Model-specific layer exclusion dict from CLI.
         exclude_layers: Regex pattern for additional layers to skip.
         rank: SVD rank for low-rank LoRA correction (default 32).
-            0 disables the correction (plain symmetric int4 with smoothing).
-        smooth_mode: Smooth factor computation mode.
-            "weight_only" (default) -- per-channel power-law heuristic.
-            "ones"                  -- identity (no smoothing).
-            "external"              -- load from smooth_file.
+            0 disables the correction.
+        smooth_mode: "weight_only" (default), "ones", or "external".
         smooth_alpha: Power for "weight_only" mode (default 0.5).
-        smooth_file: Path to .safetensors file with pre-computed smooth
-            tensors. Keys must match the model's layer base names with a
-            ".smooth_factor" suffix (e.g. "transformer_blocks.0.attn.to_q.smooth_factor").
-            Required when smooth_mode="external".
-        act_unsigned_layers: Regex matching layer keys whose activations are
-            always non-negative (post-GELU fc2). Matched layers are quantized
-            with unsigned int4 [0,15] and the flag is stored in metadata.
-        calib_samples: Number of random calibration samples for bias correction.
-        seed: Random seed for calibration data generation.
-        heur: If True, skip layers that are unlikely to benefit from int4
-            quantization (very small or very square layers).
-        low_memory: If True, load tensors one at a time to reduce peak RAM.
+        smooth_file: Path to pre-computed smooth .safetensors (external mode).
+        act_unsigned_layers: Regex identifying post-GELU fc2 layers for
+            unsigned int4 [0,15] quantization.
+        simple: If True, skip learned rounding (round-to-nearest only).
+        num_iter / optimizer / lr / ...: Learned rounding parameters.
+            Ignored when simple=True.
+        calib_samples: Random calibration samples for bias correction.
+        seed: Random seed.
+        heur: Skip layers unlikely to benefit from int4.
+        low_memory: Load tensors one at a time to reduce peak RAM.
     """
     info(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
     info("-" * 60)
@@ -113,6 +132,7 @@ def convert_to_svdquant_w4a4(
     info(f"SVD rank    : {rank}")
     info(f"Group size  : {_GROUP_SIZE} (fixed)")
     info(f"Smooth mode : {smooth_mode}" + (f" (alpha={smooth_alpha})" if smooth_mode == "weight_only" else ""))
+    info(f"Mode        : {'simple (no learned rounding)' if simple else f'learned ({optimizer})'}")
     if act_unsigned_layers:
         info(f"Unsigned act: {act_unsigned_layers}")
     info("-" * 60)
@@ -196,12 +216,44 @@ def convert_to_svdquant_w4a4(
                 )
 
     # ---- Converter ----------------------------------------------------------
-    converter = SVDQuantW4A4Converter(
-        rank=rank,
-        smooth_mode=smooth_mode,
-        smooth_alpha=smooth_alpha,
-        device=device,
-    )
+    if simple:
+        converter = SVDQuantW4A4Converter(
+            rank=rank,
+            smooth_mode=smooth_mode,
+            smooth_alpha=smooth_alpha,
+            device=device,
+        )
+    else:
+        converter = LearnedSVDQuantW4A4Converter(
+            rank=rank,
+            smooth_mode=smooth_mode,
+            smooth_alpha=smooth_alpha,
+            # Optimizer
+            optimizer=optimizer,
+            num_iter=num_iter,
+            lr=lr,
+            lr_schedule=lr_schedule,
+            top_p=top_p,
+            min_k=min_k,
+            max_k=max_k,
+            full_matrix=full_matrix,
+            # LR schedule
+            lr_gamma=lr_gamma,
+            lr_patience=lr_patience,
+            lr_factor=lr_factor,
+            lr_min=lr_min,
+            lr_cooldown=lr_cooldown,
+            lr_threshold=lr_threshold,
+            lr_adaptive_mode=lr_adaptive_mode,
+            lr_shape_influence=lr_shape_influence,
+            lr_threshold_mode=lr_threshold_mode,
+            # Early stopping
+            early_stop_loss=early_stop_loss,
+            early_stop_lr=early_stop_lr,
+            early_stop_stall=early_stop_stall,
+            use_speed=use_speed,
+            device=device,
+        )
 
     output_tensors: Dict[str, torch.Tensor] = {}
     quant_metadata: Dict[str, dict] = {}
@@ -238,12 +290,18 @@ def convert_to_svdquant_w4a4(
         N, K = tensor.shape
         is_unsigned = bool(unsigned_regex and unsigned_regex.search(key))
 
+        # Extract block depth from key for learned converter heuristics.
+        depth = -1
+        depth_match = re.search(r"\.(\d+)\.", key)
+        if depth_match:
+            depth = int(depth_match.group(1))
+
         # External smooth: look up by base_key
         ext_smooth = external_smooth.get(base_key) if smooth_mode == "external" else None
 
         try:
             qweight, wscales, proj_down, proj_up, smooth_factor, dequant_w = (
-                converter.convert(tensor, key=key, smooth=ext_smooth)
+                converter.convert(tensor, key=key, depth=depth, smooth=ext_smooth)
             )
         except Exception as e:
             warning(f"  Conversion failed for {key}: {e}. Keeping original weight.")
@@ -289,13 +347,14 @@ def convert_to_svdquant_w4a4(
 
         # ---- .comfy_quant metadata ------------------------------------------
         layer_meta = {
-            "format":       _FORMAT_STRING,
-            "group_size":   _GROUP_SIZE,
-            "rank":         actual_rank,
-            "orig_dtype":   str(tensor.dtype),
-            "orig_shape":   list(tensor.shape),
-            "act_unsigned": is_unsigned,
-            "smooth_mode":  smooth_mode,
+            "format":        _FORMAT_STRING,
+            "group_size":    _GROUP_SIZE,
+            "rank":          actual_rank,
+            "orig_dtype":    str(tensor.dtype),
+            "orig_shape":    list(tensor.shape),
+            "act_unsigned":  is_unsigned,
+            "smooth_mode":   smooth_mode,
+            "learned_round": not simple,
         }
         output_tensors[f"{base_key}.comfy_quant"] = dict_to_tensor(layer_meta)
         quant_metadata[base_key] = layer_meta
