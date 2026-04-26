@@ -7,26 +7,23 @@ per-tensor + per-block scaling for Blackwell GPU inference.
 Uses LearnedNVFP4Converter (SVD optimization) by default.
 Use --simple to switch to raw NVFP4Converter.
 """
+
 import gc
 import os
+from typing import Dict, Optional
+
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Optional
 
-from ..constants import (
-    AVOID_KEY_NAMES,
-    MODEL_FILTERS,
-    FP4_BLOCK_SIZE,
-    NORMALIZE_SCALES_ENABLED,
-    COMPUTE_DTYPE,
-)
-from ..converters.nvfp4_converter import NVFP4Converter
+from ..constants import AVOID_KEY_NAMES, COMPUTE_DTYPE, FP4_BLOCK_SIZE, MODEL_FILTERS, NORMALIZE_SCALES_ENABLED
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
-from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
+from ..converters.nvfp4_converter import NVFP4Converter
 from ..utils.comfy_quant import should_skip_layer_for_performance
+from ..utils.logging import debug, error, info, log_debug, minimal, verbose, warning
 from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
-from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
+from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
+
 
 @log_debug
 def convert_to_nvfp4(
@@ -121,6 +118,7 @@ def convert_to_nvfp4(
     exclude_regex_pattern = None
     if exclude_layers:
         import re
+
         try:
             exclude_regex_pattern = re.compile(exclude_layers)
             info(f"Layer exclusion enabled: pattern '{exclude_layers}'")
@@ -130,10 +128,7 @@ def convert_to_nvfp4(
 
     # Select converter based on --simple flag
     if simple:
-        converter = NVFP4Converter(
-            block_size=FP4_BLOCK_SIZE,
-            pad_to_16x=True,
-        )
+        converter = NVFP4Converter(block_size=FP4_BLOCK_SIZE, pad_to_16x=True)
         use_learned = False
         info("NVFP4 Simple mode (no learned rounding optimization)")
     else:
@@ -192,10 +187,7 @@ def convert_to_nvfp4(
     original_metadata = loader.metadata()
 
     # Filter to only weight tensors for quantization
-    weight_keys = sorted([
-        k for k in all_keys
-        if k.endswith(".weight") and loader.get_ndim(k) == 2
-    ])
+    weight_keys = sorted([k for k in all_keys if k.endswith(".weight") and loader.get_ndim(k) == 2])
     total_weights = len(weight_keys)
 
     # Generate calibration data for bias correction (always, even in simple mode)
@@ -207,13 +199,7 @@ def convert_to_nvfp4(
             in_features = shape[1]
             if in_features not in calibration_data_cache:
                 verbose(f"  - Found new input dimension: {in_features}.")
-                calibration_data_cache[in_features] = torch.randn(
-                    calib_samples,
-                    in_features,
-                    dtype=COMPUTE_DTYPE,
-                    generator=seed_generator,
-                    device=seed_device,
-                )
+                calibration_data_cache[in_features] = torch.randn(calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device)
     info("Simulated calibration data generated.\n")
 
     info(f"Found {total_weights} weight tensors to potentially process.")
@@ -234,14 +220,14 @@ def convert_to_nvfp4(
 
         # Skip non-2D tensors (NVFP4 requires 2D)
         if tensor.dim() != 2:
-            info(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: non-2D tensor)")
+            info(f"({i + 1}/{total_weights}) Skipping tensor: {key} (Reason: non-2D tensor)")
             output_tensors[key] = tensor
             skipped_count += 1
             continue
 
         # Skip if exclusion pattern matched
         if exclusion_reason:
-            info(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})")
+            info(f"({i + 1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})")
             output_tensors[key] = tensor
             skipped_count += 1
             continue
@@ -250,17 +236,18 @@ def convert_to_nvfp4(
         if heur:
             should_skip, skip_reason = should_skip_layer_for_performance(tensor, FP4_BLOCK_SIZE)
             if should_skip:
-                info(f"({i+1}/{total_weights}) Skipping tensor: {key} (Reason: {skip_reason})")
+                info(f"({i + 1}/{total_weights}) Skipping tensor: {key} (Reason: {skip_reason})")
                 output_tensors[key] = tensor
                 skipped_count += 1
                 continue
 
-        info(f"({i+1}/{total_weights}) Processing tensor: {key}")
+        info(f"({i + 1}/{total_weights}) Processing tensor: {key}")
 
         # Quantize to NVFP4
         # Extract block depth from key (look for .0. .1. etc patterns)
         depth = -1
         import re
+
         depth_match = re.search(r"\.(\d+)\.", key)
         if depth_match:
             depth = int(depth_match.group(1))
@@ -271,7 +258,7 @@ def convert_to_nvfp4(
             qdata, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(tensor, key=key, depth=depth)
             # Crop dequant_w back to original shape if it was padded
             if dequant_w.shape != tensor.shape:
-                dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
+                dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
         else:
             # Transfer to GPU for simple quantization
             tensor_gpu = tensor.to(device=device, dtype=torch.float32)
@@ -280,7 +267,7 @@ def convert_to_nvfp4(
             dequant_w = converter.dequantize(qdata, per_tensor_scale, block_scales, output_dtype=torch.float32)
             # Crop dequant_w back to original shape if it was padded
             if dequant_w.shape != tensor.shape:
-                dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
+                dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
             del tensor_gpu
             extra_tensors = {}
 
@@ -303,9 +290,7 @@ def convert_to_nvfp4(
 
         # Optional: input_scale from calibration (scalar float32)
         if input_scales and base_key in input_scales:
-            output_tensors[f"{base_key}.input_scale"] = torch.tensor(
-                input_scales[base_key], dtype=torch.float32
-            )
+            output_tensors[f"{base_key}.input_scale"] = torch.tensor(input_scales[base_key], dtype=torch.float32)
 
         # Bias correction (matching FP8 logic)
         bias_key = f"{base_key}.bias"
@@ -313,36 +298,28 @@ def convert_to_nvfp4(
             # Apply bias correction even in simple mode for better accuracy
             verbose(f"  - Adjusting corresponding bias: {bias_key}")
             with torch.no_grad():
-                    original_bias = loader.get_tensor(bias_key)
-                    in_features = tensor.shape[1]
-                    if in_features not in calibration_data_cache:
-                        warning("  - WARNING: No calibration data for bias correction.")
-                        output_tensors[bias_key] = original_bias
-                    else:
-                        X_calib_dev = calibration_data_cache[in_features].to(device=device)
-                        W_orig_dev = tensor.to(device=device, dtype=COMPUTE_DTYPE)
-                        W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
-                        b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
-                        weight_error = W_orig_dev - W_dequant_dev
-                        output_error = X_calib_dev @ weight_error.T
-                        bias_correction = output_error.mean(dim=0)
-                        b_new = b_orig_dev - bias_correction
-                        output_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
-                        verbose(
-                            f"    - Original bias mean : {original_bias.mean().item():.6f}\n"
-                            f"    - Corrected bias mean: {output_tensors[bias_key].mean().item():.6f}"
-                        )
-                        del W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new
-                        if device == "cuda":
-                            torch.cuda.empty_cache()
+                original_bias = loader.get_tensor(bias_key)
+                in_features = tensor.shape[1]
+                if in_features not in calibration_data_cache:
+                    warning("  - WARNING: No calibration data for bias correction.")
+                    output_tensors[bias_key] = original_bias
+                else:
+                    X_calib_dev = calibration_data_cache[in_features].to(device=device)
+                    W_orig_dev = tensor.to(device=device, dtype=COMPUTE_DTYPE)
+                    W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
+                    b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
+                    weight_error = W_orig_dev - W_dequant_dev
+                    output_error = X_calib_dev @ weight_error.T
+                    bias_correction = output_error.mean(dim=0)
+                    b_new = b_orig_dev - bias_correction
+                    output_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
+                    verbose(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {output_tensors[bias_key].mean().item():.6f}")
+                    del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
+                    if device == "cuda":
+                        torch.cuda.empty_cache()
 
         # Always create .comfy_quant metadata tensor (required for NVFP4)
-        metadata = {
-            "format": "nvfp4",
-            "group_size": FP4_BLOCK_SIZE,
-            "orig_dtype": str(tensor.dtype),
-            "orig_shape": list(tensor.shape),
-        }
+        metadata = {"format": "nvfp4", "group_size": FP4_BLOCK_SIZE, "orig_dtype": str(tensor.dtype), "orig_shape": list(tensor.shape)}
         output_tensors[f"{base_key}.comfy_quant"] = dict_to_tensor(metadata)
         quant_metadata[base_key] = metadata
 
@@ -377,6 +354,7 @@ def convert_to_nvfp4(
     output_metadata = dict(original_metadata)
     if quant_metadata:
         import json
+
         # Wrap in proper structure with format_version and layers (matching FP8)
         full_metadata = {"format_version": "1.0", "layers": quant_metadata}
         output_metadata["_quantization_metadata"] = json.dumps(full_metadata)

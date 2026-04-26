@@ -1,7 +1,7 @@
-
 import os
 import subprocess
 import sys
+
 
 def run_test(name, cmd_args, expected_file=None):
     print(f"\n[TEST] {name}")
@@ -26,7 +26,9 @@ def run_test(name, cmd_args, expected_file=None):
         return False
     return True
 
+
 import argparse
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run functional regression tests.")
@@ -48,65 +50,25 @@ def main():
 
     tests = [
         # 1. FP8 Simple
-        {
-            "name": "FP8 Simple",
-            "args": ["-i", input_file, "--simple", "--output", "out_fp8_simple.safetensors"],
-            "expected": "out_fp8_simple.safetensors"
-        },
+        {"name": "FP8 Simple", "args": ["-i", input_file, "--simple", "--output", "out_fp8_simple.safetensors"], "expected": "out_fp8_simple.safetensors"},
         # 2. FP8 Learned (1 iter)
-        {
-            "name": "FP8 Learned",
-            "args": ["-i", input_file, "--num_iter", "1", "--output", "out_fp8_learned.safetensors"],
-            "expected": "out_fp8_learned.safetensors"
-        },
+        {"name": "FP8 Learned", "args": ["-i", input_file, "--num_iter", "1", "--output", "out_fp8_learned.safetensors"], "expected": "out_fp8_learned.safetensors"},
         # 3. INT8
-        {
-            "name": "INT8 Simple",
-            "args": ["-i", input_file, "--int8", "--simple", "--block_size", "128", "--output", "out_int8.safetensors"],
-            "expected": "out_int8.safetensors"
-        },
+        {"name": "INT8 Simple", "args": ["-i", input_file, "--int8", "--simple", "--block_size", "128", "--output", "out_int8.safetensors"], "expected": "out_int8.safetensors"},
         # 4. NVFP4 Simple
-        {
-            "name": "NVFP4 Simple",
-            "args": ["-i", input_file, "--nvfp4", "--simple", "--output", "out_nvfp4_simple.safetensors"],
-            "expected": "out_nvfp4_simple.safetensors"
-        },
+        {"name": "NVFP4 Simple", "args": ["-i", input_file, "--nvfp4", "--simple", "--output", "out_nvfp4_simple.safetensors"], "expected": "out_nvfp4_simple.safetensors"},
         # 5. NVFP4 Learned
-        {
-            "name": "NVFP4 Learned",
-            "args": ["-i", input_file, "--nvfp4", "--num_iter", "1", "--output", "out_nvfp4_learned.safetensors"],
-            "expected": "out_nvfp4_learned.safetensors"
-        },
+        {"name": "NVFP4 Learned", "args": ["-i", input_file, "--nvfp4", "--num_iter", "1", "--output", "out_nvfp4_learned.safetensors"], "expected": "out_nvfp4_learned.safetensors"},
         # 6. Filter Check (Flux2) - should run without error
-        {
-            "name": "Filter Flux2",
-            "args": ["-i", input_file, "--flux2", "--simple", "--output", "out_flux2.safetensors"],
-            "expected": "out_flux2.safetensors"
-        },
+        {"name": "Filter Flux2", "args": ["-i", input_file, "--flux2", "--simple", "--output", "out_flux2.safetensors"], "expected": "out_flux2.safetensors"},
         # 7. Custom Layers
-        {
-            "name": "Custom Layers",
-            "args": ["-i", input_file, "--simple", "--custom-layers", "transformer", "--custom-type", "int8", "--custom-block-size", "128", "--output", "out_custom.safetensors"],
-            "expected": "out_custom.safetensors"
-        },
+        {"name": "Custom Layers", "args": ["-i", input_file, "--simple", "--custom-layers", "transformer", "--custom-type", "int8", "--custom-block-size", "128", "--output", "out_custom.safetensors"], "expected": "out_custom.safetensors"},
         # 8. Logging - Minimal
-        {
-            "name": "Log Minimal",
-            "args": ["-i", input_file, "--simple", "--verbose", "MINIMAL", "--output", "out_log_min.safetensors"],
-            "expected": "out_log_min.safetensors"
-        },
+        {"name": "Log Minimal", "args": ["-i", input_file, "--simple", "--verbose", "MINIMAL", "--output", "out_log_min.safetensors"], "expected": "out_log_min.safetensors"},
         # 9. Logging - Verbose
-        {
-            "name": "Log Verbose",
-            "args": ["-i", input_file, "--simple", "--verbose", "VERBOSE", "--output", "out_log_verb.safetensors"],
-            "expected": "out_log_verb.safetensors"
-        },
+        {"name": "Log Verbose", "args": ["-i", input_file, "--simple", "--verbose", "VERBOSE", "--output", "out_log_verb.safetensors"], "expected": "out_log_verb.safetensors"},
         # 10. Logging - Debug
-        {
-            "name": "Log Debug",
-            "args": ["-i", input_file, "--simple", "--verbose", "DEBUG", "--output", "out_log_debug.safetensors"],
-            "expected": "out_log_debug.safetensors"
-        }
+        {"name": "Log Debug", "args": ["-i", input_file, "--simple", "--verbose", "DEBUG", "--output", "out_log_debug.safetensors"], "expected": "out_log_debug.safetensors"},
     ]
 
     passed = 0
@@ -121,6 +83,7 @@ def main():
     for t in tests:
         if t["expected"] and os.path.exists(t["expected"]):
             os.remove(t["expected"])
+
 
 if __name__ == "__main__":
     main()

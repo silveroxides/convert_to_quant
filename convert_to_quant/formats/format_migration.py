@@ -3,35 +3,25 @@ Format migration utilities for convert_to_quant.
 
 Converts between legacy quantization formats and comfy_quant format.
 """
+
 import gc
 import json
 import os
 import re
+from typing import Any, Dict, Optional
+
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Any, Optional
 from tqdm import tqdm
 
-
-from ..constants import (
-    TARGET_FP8_DTYPE,
-    COMPUTE_DTYPE,
-    SCALE_DTYPE,
-    NORMALIZE_SCALES_ENABLED,
-)
-from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
+from ..constants import COMPUTE_DTYPE, NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, TARGET_FP8_DTYPE
 from ..utils.comfy_quant import create_comfy_quant_tensor, fix_comfy_quant_params_structure
-from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
+from ..utils.logging import debug, error, info, log_debug, minimal, verbose, warning
+from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
 
-def convert_fp8_scaled_to_comfy_quant(
-    input_file: str,
-    output_file: str,
-    hp_filter: Optional[str] = None,
-    full_precision_mm: bool = False,
-    include_input_scale: bool = False,
-    save_quant_metadata: bool = True,
-):
+
+def convert_fp8_scaled_to_comfy_quant(input_file: str, output_file: str, hp_filter: Optional[str] = None, full_precision_mm: bool = False, include_input_scale: bool = False, save_quant_metadata: bool = True):
     """
     Convert legacy fp8_scaled format to comfy_quant format.
 
@@ -73,9 +63,7 @@ def convert_fp8_scaled_to_comfy_quant(
 
     # Verify this is an fp8_scaled model
     if "scaled_fp8" not in tensors:
-        error(
-            "ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)"
-        )
+        error("ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)")
         error("       Use this mode only for legacy fp8_scaled format models.")
         return
 
@@ -156,9 +144,7 @@ def convert_fp8_scaled_to_comfy_quant(
                 output_tensors[f"{base_name}.input_scale"] = scale_input
             elif include_input_scale:
                 # No scale_input but flag is set - add default input_scale (scalar)
-                output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                    1.0, dtype=torch.float32
-                )
+                output_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32)
 
             # Detect format and block_size from scale_weight tensor shape
             # Scale shape conventions from quant_ops.py layouts:
@@ -172,9 +158,7 @@ def convert_fp8_scaled_to_comfy_quant(
                 # No scale tensor - assume tensor-wise (this shouldn't happen for valid FP8 models)
                 format_type = "float8_e4m3fn"
                 block_size = None
-                verbose(
-                    f"    → Format: {format_type} (missing scale, assumed tensor-wise)"
-                )
+                verbose(f"    → Format: {format_type} (missing scale, assumed tensor-wise)")
             elif scale_weight.numel() == 1:
                 # Scalar or single-element tensor → tensor-wise scaling
                 format_type = "float8_e4m3fn"
@@ -186,9 +170,7 @@ def convert_fp8_scaled_to_comfy_quant(
                     # One scale per row → row-wise
                     format_type = "float8_e4m3fn_rowwise"
                     block_size = None
-                    verbose(
-                        f"    → Format: {format_type} (scale shape={scale_weight.shape}, M={M})"
-                    )
+                    verbose(f"    → Format: {format_type} (scale shape={scale_weight.shape}, M={M})")
                 else:
                     # 1D but doesn't match M - could be flattened block scale
                     # Try to infer block_size: scale_count = (M//bs) * (N//bs) = M*N / bs^2
@@ -201,21 +183,15 @@ def convert_fp8_scaled_to_comfy_quant(
                         if bs * bs == bs_squared and M % bs == 0 and N % bs == 0:
                             format_type = "float8_e4m3fn_blockwise"
                             block_size = bs
-                            verbose(
-                                f"    → Format: {format_type} (scale 1D flattened, inferred bs={bs})"
-                            )
+                            verbose(f"    → Format: {format_type} (scale 1D flattened, inferred bs={bs})")
                         else:
                             format_type = "float8_e4m3fn"
                             block_size = None
-                            verbose(
-                                f"    → Format: {format_type} (scale 1D unknown pattern, fallback)"
-                            )
+                            verbose(f"    → Format: {format_type} (scale 1D unknown pattern, fallback)")
                     else:
                         format_type = "float8_e4m3fn"
                         block_size = None
-                        verbose(
-                            f"    → Format: {format_type} (scale 1D, cannot infer block)"
-                        )
+                        verbose(f"    → Format: {format_type} (scale 1D, cannot infer block)")
             elif scale_weight.ndim == 2:
                 # 2D scale - most likely block-wise: (M//bs, N//bs)
                 scale_M, scale_N = scale_weight.shape
@@ -226,23 +202,17 @@ def convert_fp8_scaled_to_comfy_quant(
                         # Square blocks
                         format_type = "float8_e4m3fn_blockwise"
                         block_size = bs_M
-                        verbose(
-                            f"    → Format: {format_type} (scale 2D, bs={block_size})"
-                        )
+                        verbose(f"    → Format: {format_type} (scale 2D, bs={block_size})")
                     else:
                         # Non-square blocks - use smaller dimension as block_size
                         format_type = "float8_e4m3fn_blockwise"
                         block_size = min(bs_M, bs_N)
-                        verbose(
-                            f"    → Format: {format_type} (scale 2D non-square, bs={block_size})"
-                        )
+                        verbose(f"    → Format: {format_type} (scale 2D non-square, bs={block_size})")
                 else:
                     # Doesn't divide evenly - fallback
                     format_type = "float8_e4m3fn"
                     block_size = None
-                    verbose(
-                        f"    → Format: {format_type} (scale 2D but dims don't divide)"
-                    )
+                    verbose(f"    → Format: {format_type} (scale 2D but dims don't divide)")
             elif scale_weight.ndim == 3:
                 # 3D scale - likely Block3DFP8Layout: (M, N//bs, 1)
                 scale_M, scale_blocks, scale_last = scale_weight.shape
@@ -258,18 +228,10 @@ def convert_fp8_scaled_to_comfy_quant(
                 # Unknown ndim
                 format_type = "float8_e4m3fn"
                 block_size = None
-                verbose(
-                    f"    → Format: {format_type} (scale ndim={scale_weight.ndim} unknown)"
-                )
+                verbose(f"    → Format: {format_type} (scale ndim={scale_weight.ndim} unknown)")
 
             # Create .comfy_quant metadata
-            comfy_quant_tensor = create_comfy_quant_tensor(
-                format_type,
-                block_size=block_size,
-                full_precision_matrix_mult=full_precision_mm
-                if full_precision_mm
-                else None,
-            )
+            comfy_quant_tensor = create_comfy_quant_tensor(format_type, block_size=block_size, full_precision_matrix_mult=full_precision_mm if full_precision_mm else None)
             output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
             # Collect metadata if enabled
@@ -289,13 +251,9 @@ def convert_fp8_scaled_to_comfy_quant(
             output_tensors[f"{base_name}.weight"] = weight
 
             if scale_weight is not None:
-                verbose(
-                    f"  Removing dummy scale_weight from high-precision layer: {base_name}"
-                )
+                verbose(f"  Removing dummy scale_weight from high-precision layer: {base_name}")
             if scale_input is not None:
-                verbose(
-                    f"  Removing dummy scale_input from high-precision layer: {base_name}"
-                )
+                verbose(f"  Removing dummy scale_input from high-precision layer: {base_name}")
 
     # Add other tensors (bias, norms, etc.) - also fix any incorrect comfy_quant structures
     fixed_comfy_quant_count = 0
@@ -317,17 +275,11 @@ def convert_fp8_scaled_to_comfy_quant(
                 violations.append(base_name)
 
         if violations:
-            error(
-                "ERROR: The following layers matched hp-filter but are FP8 (not high-precision):"
-            )
+            error("ERROR: The following layers matched hp-filter but are FP8 (not high-precision):")
             for v in violations:
                 error(f"  - {v}")
-            error(
-                "\nThese layers have float8_e4m3fn weights. If they should be high-precision,"
-            )
-            error(
-                "the input model needs to be regenerated with correct layer exclusions."
-            )
+            error("\nThese layers have float8_e4m3fn weights. If they should be high-precision,")
+            error("the input model needs to be regenerated with correct layer exclusions.")
             return
 
         # Report matched hp layers
@@ -343,18 +295,13 @@ def convert_fp8_scaled_to_comfy_quant(
     info(f"  Other tensors:         {len(other_tensors)}")
     info(f"  Total output tensors:  {len(output_tensors)}")
     if fixed_comfy_quant_count > 0:
-        info(
-            f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)"
-        )
+        info(f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)")
     info("-" * 60)
 
     # Save output
     info(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(
-            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
-            exist_ok=True,
-        )
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else ".", exist_ok=True)
 
         # Prepare metadata args - merge original metadata with new quantization metadata
         output_metadata = dict(original_metadata)  # Start with original metadata
@@ -362,9 +309,7 @@ def convert_fp8_scaled_to_comfy_quant(
         if save_quant_metadata and quant_metadata_layers:
             full_metadata = {"format_version": "1.0", "layers": quant_metadata_layers}
             output_metadata["_quantization_metadata"] = json.dumps(full_metadata)
-            verbose(
-                f"  Adding quantization metadata for {len(quant_metadata_layers)} layers"
-            )
+            verbose(f"  Adding quantization metadata for {len(quant_metadata_layers)} layers")
 
         save_kwargs = {"metadata": output_metadata} if output_metadata else {}
 

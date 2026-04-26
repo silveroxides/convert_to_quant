@@ -3,27 +3,23 @@ Legacy format cleanup utilities for convert_to_quant.
 
 Handles legacy fp8_scaled format cleanup and input_scale addition.
 """
+
 import gc
 import json
 import os
+from typing import Any, Dict
+
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Any
 from tqdm import tqdm
 
-from ..constants import (
-    TARGET_FP8_DTYPE,
-    SCALE_DTYPE,
-    NORMALIZE_SCALES_ENABLED,
-)
+from ..constants import NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, TARGET_FP8_DTYPE
+from ..utils.logging import debug, error, info, log_debug, minimal, verbose, warning
 from ..utils.tensor_utils import normalize_tensorwise_scales
-from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
 
-def add_legacy_input_scale(
-    input_file: str,
-    output_file: str,
-):
+
+def add_legacy_input_scale(input_file: str, output_file: str):
     """
     Add .scale_input tensors to legacy fp8_scaled models.
 
@@ -62,9 +58,7 @@ def add_legacy_input_scale(
 
     # Verify this is an fp8_scaled model
     if "scaled_fp8" not in tensors:
-        error(
-            "ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)"
-        )
+        error("ERROR: This does not appear to be an fp8_scaled model (missing 'scaled_fp8' marker)")
         error("       Use this mode only for legacy fp8_scaled format models.")
         return
 
@@ -127,10 +121,7 @@ def add_legacy_input_scale(
     # Save output
     info(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(
-            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
-            exist_ok=True,
-        )
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else ".", exist_ok=True)
         # Normalize any 1-element scale tensors to scalars
         output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:
@@ -145,12 +136,8 @@ def add_legacy_input_scale(
         error(f"FATAL: Error saving file '{output_file}': {e}")
         return
 
-def cleanup_fp8_scaled(
-    input_file: str,
-    output_file: str,
-    marker_size: int = 0,
-    add_scale_input: bool = False,
-):
+
+def cleanup_fp8_scaled(input_file: str, output_file: str, marker_size: int = 0, add_scale_input: bool = False):
     """
     Clean up legacy fp8_scaled models.
 
@@ -275,10 +262,7 @@ def cleanup_fp8_scaled(
     # Save output
     info(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(
-            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
-            exist_ok=True,
-        )
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else ".", exist_ok=True)
         # Normalize any 1-element scale tensors to scalars
         output_tensors, normalized_count = normalize_tensorwise_scales(output_tensors, NORMALIZE_SCALES_ENABLED)
         if normalized_count > 0:

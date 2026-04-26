@@ -8,33 +8,19 @@ Uses comfy-kitchen CUDA/Triton kernels when available, with PyTorch fallback.
 
 Based on comfy-kitchen (Comfy Org, Apache-2.0) and PyTorch AO (Meta, BSD-3-Clause).
 """
+
 import math
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import torch
 
-from ..constants import (
-    FP4_E2M1_MAX,
-    FP4_BLOCK_SIZE,
-    COMPUTE_DTYPE,
-)
-from ..utils.float_utils import (
-    F8_E4M3_MAX,
-    roundup,
-    pack_uint4,
-    unpack_uint4,
-    to_blocked,
-    from_blocked,
-    _f32_to_floatx_unpacked,
-    _floatx_unpacked_to_f32,
-    _float8_round,
-    F4_E2M1_EBITS,
-    F4_E2M1_MBITS,
-)
+from ..constants import COMPUTE_DTYPE, FP4_BLOCK_SIZE, FP4_E2M1_MAX
+from ..utils.float_utils import F4_E2M1_EBITS, F4_E2M1_MBITS, F8_E4M3_MAX, _f32_to_floatx_unpacked, _float8_round, _floatx_unpacked_to_f32, from_blocked, pack_uint4, roundup, to_blocked, unpack_uint4
 
 # Check for comfy-kitchen availability
 try:
     import comfy_kitchen as ck
+
     HAS_COMFY_KITCHEN = True
 except ImportError:
     HAS_COMFY_KITCHEN = False
@@ -55,14 +41,7 @@ class NVFP4Converter:
         lr: Learning rate for optimization
     """
 
-    def __init__(
-        self,
-        block_size: int = 16,
-        pad_to_16x: bool = True,
-        optimize: bool = True,
-        num_iter: int = 2000,
-        lr: float = 1e-3,
-    ):
+    def __init__(self, block_size: int = 16, pad_to_16x: bool = True, optimize: bool = True, num_iter: int = 2000, lr: float = 1e-3):
         if block_size != 16:
             raise ValueError("NVFP4 requires block_size=16")
 
@@ -72,11 +51,7 @@ class NVFP4Converter:
         self.num_iter = num_iter
         self.lr = lr
 
-    def quantize(
-        self,
-        tensor: torch.Tensor,
-        per_tensor_scale: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def quantize(self, tensor: torch.Tensor, per_tensor_scale: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Quantize tensor to NVFP4 format.
 
@@ -100,19 +75,13 @@ class NVFP4Converter:
         # Use comfy-kitchen kernel if available
         if HAS_COMFY_KITCHEN:
             # CUDA kernel requires FP16/BF16 input (not float32)
-            qdata, block_scales = ck.quantize_nvfp4(
-                tensor.to(torch.bfloat16), per_tensor_scale, pad_16x=self.pad_to_16x
-            )
+            qdata, block_scales = ck.quantize_nvfp4(tensor.to(torch.bfloat16), per_tensor_scale, pad_16x=self.pad_to_16x)
             return qdata, block_scales, per_tensor_scale
 
         # Fallback: PyTorch implementation (matches comfy-kitchen exactly)
         return self._quantize_pytorch(tensor, per_tensor_scale)
 
-    def _quantize_pytorch(
-        self,
-        tensor: torch.Tensor,
-        per_tensor_scale: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _quantize_pytorch(self, tensor: torch.Tensor, per_tensor_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Pure PyTorch quantization fallback (matches comfy-kitchen exactly)."""
         orig_shape = tensor.shape
         device = tensor.device
@@ -123,9 +92,7 @@ class NVFP4Converter:
             padded_rows = roundup(rows, 16)
             padded_cols = roundup(cols, 16)
             if padded_rows != rows or padded_cols != cols:
-                tensor = torch.nn.functional.pad(
-                    tensor, (0, padded_cols - cols, 0, padded_rows - rows)
-                )
+                tensor = torch.nn.functional.pad(tensor, (0, padded_cols - cols, 0, padded_rows - rows))
                 orig_shape = tensor.shape
 
         # Reshape to blocks
@@ -145,7 +112,7 @@ class NVFP4Converter:
         total_scale = per_tensor_scale * scaled_block_scales_fp32
 
         # Handle zero blocks (from padding): avoid 0/0 NaN - matches comfy-kitchen
-        zero_scale_mask = (total_scale == 0)
+        zero_scale_mask = total_scale == 0
         total_scale_safe = torch.where(zero_scale_mask, torch.ones_like(total_scale), total_scale)
 
         # Scale and quantize data
@@ -162,20 +129,11 @@ class NVFP4Converter:
         data_packed = pack_uint4(data_lp)
 
         # Convert block scales to cuBLAS tiled layout
-        blocked_scales = to_blocked(
-            scaled_block_scales_fp8.to(torch.float8_e4m3fn),
-            flatten=False
-        )
+        blocked_scales = to_blocked(scaled_block_scales_fp8.to(torch.float8_e4m3fn), flatten=False)
 
         return data_packed, blocked_scales, per_tensor_scale
 
-    def dequantize(
-        self,
-        qdata: torch.Tensor,
-        per_tensor_scale: torch.Tensor,
-        block_scales: torch.Tensor,
-        output_dtype: torch.dtype = torch.bfloat16,
-    ) -> torch.Tensor:
+    def dequantize(self, qdata: torch.Tensor, per_tensor_scale: torch.Tensor, block_scales: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
         """
         Dequantize NVFP4 tensor back to float.
 
@@ -195,13 +153,7 @@ class NVFP4Converter:
         # Fallback: PyTorch implementation
         return self._dequantize_pytorch(qdata, per_tensor_scale, block_scales, output_dtype)
 
-    def _dequantize_pytorch(
-        self,
-        qdata: torch.Tensor,
-        per_tensor_scale: torch.Tensor,
-        block_scales: torch.Tensor,
-        output_dtype: torch.dtype = torch.bfloat16,
-    ) -> torch.Tensor:
+    def _dequantize_pytorch(self, qdata: torch.Tensor, per_tensor_scale: torch.Tensor, block_scales: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
         """Pure PyTorch dequantization fallback."""
         # Unpack FP4 data
         data_unpacked = unpack_uint4(qdata)
@@ -216,11 +168,7 @@ class NVFP4Converter:
 
         # Unswizzle block_scales from cuBLAS tiled layout
         num_blocks_per_row = orig_shape[1] // self.block_size
-        block_scales_unswizzled = from_blocked(
-            block_scales,
-            num_rows=orig_shape[0],
-            num_cols=num_blocks_per_row
-        )
+        block_scales_unswizzled = from_blocked(block_scales, num_rows=orig_shape[0], num_cols=num_blocks_per_row)
 
         # Compute total scale
         total_scale = per_tensor_scale * block_scales_unswizzled.to(torch.float32)
@@ -231,11 +179,7 @@ class NVFP4Converter:
         return data_dequantized.view(orig_shape).to(output_dtype)
 
 
-def quantize_nvfp4(
-    tensor: torch.Tensor,
-    per_tensor_scale: Optional[torch.Tensor] = None,
-    pad_to_16x: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def quantize_nvfp4(tensor: torch.Tensor, per_tensor_scale: Optional[torch.Tensor] = None, pad_to_16x: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Convenience function to quantize a tensor to NVFP4 format.
 
@@ -251,12 +195,7 @@ def quantize_nvfp4(
     return converter.quantize(tensor, per_tensor_scale)
 
 
-def dequantize_nvfp4(
-    qdata: torch.Tensor,
-    block_scales: torch.Tensor,
-    per_tensor_scale: torch.Tensor,
-    output_dtype: torch.dtype = torch.bfloat16,
-) -> torch.Tensor:
+def dequantize_nvfp4(qdata: torch.Tensor, block_scales: torch.Tensor, per_tensor_scale: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
     """
     Convenience function to dequantize NVFP4 tensor.
 

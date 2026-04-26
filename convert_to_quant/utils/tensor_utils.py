@@ -3,9 +3,12 @@ Tensor utility functions for convert_to_quant.
 
 Provides serialization helpers for dictionary/tensor conversion and scale normalization.
 """
+
 import json
-import torch
 from typing import Dict, Tuple
+
+import torch
+
 
 def dict_to_tensor(data_dict: dict) -> torch.Tensor:
     """
@@ -22,6 +25,7 @@ def dict_to_tensor(data_dict: dict) -> torch.Tensor:
     tensor_data = torch.tensor(list(byte_data), dtype=torch.uint8)
     return tensor_data
 
+
 def tensor_to_dict(tensor_data: torch.Tensor) -> dict:
     """
     Convert a torch.uint8 tensor containing JSON bytes to a dictionary.
@@ -37,10 +41,8 @@ def tensor_to_dict(tensor_data: torch.Tensor) -> dict:
     data_dict = json.loads(json_str)
     return data_dict
 
-def normalize_tensorwise_scales(
-    tensors: Dict[str, torch.Tensor],
-    enabled: bool = True,
-) -> Tuple[Dict[str, torch.Tensor], int]:
+
+def normalize_tensorwise_scales(tensors: Dict[str, torch.Tensor], enabled: bool = True) -> Tuple[Dict[str, torch.Tensor], int]:
     """
     Normalize 1-element scale tensors to scalars in-place.
 
@@ -70,13 +72,8 @@ def normalize_tensorwise_scales(
 
     return tensors, normalized_count
 
-def generate_calibration_data(
-    tensors: Dict[str, torch.Tensor],
-    calib_samples: int,
-    seed: int,
-    device: str,
-    compute_dtype: torch.dtype = torch.float32,
-) -> Dict[int, torch.Tensor]:
+
+def generate_calibration_data(tensors: Dict[str, torch.Tensor], calib_samples: int, seed: int, device: str, compute_dtype: torch.dtype = torch.float32) -> Dict[int, torch.Tensor]:
     """
     Generate random calibration data for each unique input dimension.
 
@@ -102,25 +99,12 @@ def generate_calibration_data(
         if key.endswith(".weight") and tensor.ndim == 2:
             in_features = tensor.shape[1]
             if in_features not in calibration_data_cache:
-                calibration_data_cache[in_features] = torch.randn(
-                    calib_samples,
-                    in_features,
-                    dtype=compute_dtype,
-                    generator=seed_generator,
-                    device=device,
-                )
+                calibration_data_cache[in_features] = torch.randn(calib_samples, in_features, dtype=compute_dtype, generator=seed_generator, device=device)
 
     return calibration_data_cache
 
 
-def compute_bias_correction(
-    original_weight: torch.Tensor,
-    dequantized_weight: torch.Tensor,
-    original_bias: torch.Tensor,
-    calibration_data: torch.Tensor,
-    device: str,
-    compute_dtype: torch.dtype = torch.float32,
-) -> Tuple[torch.Tensor, bool]:
+def compute_bias_correction(original_weight: torch.Tensor, dequantized_weight: torch.Tensor, original_bias: torch.Tensor, calibration_data: torch.Tensor, device: str, compute_dtype: torch.dtype = torch.float32) -> Tuple[torch.Tensor, bool]:
     """
     Compute bias correction based on weight quantization error.
 

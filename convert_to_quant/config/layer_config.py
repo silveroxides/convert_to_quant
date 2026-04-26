@@ -3,15 +3,18 @@ Layer configuration loading and matching for convert_to_quant.
 
 Provides regex-based layer pattern matching for per-layer quantization settings.
 """
+
 import json
 import os
 import re
+from typing import Any, Dict, Optional, Tuple
+
 import torch
-from typing import Dict, Any, Optional, Tuple
 from safetensors import safe_open
 from tqdm import tqdm
 
 from ..constants import VALID_QUANT_FORMATS
+
 
 def pattern_specificity(pattern: str) -> tuple:
     """
@@ -41,6 +44,7 @@ def pattern_specificity(pattern: str) -> tuple:
 
     return (tier, literal_len)
 
+
 def load_layer_config(config_path: str) -> Dict[str, Any]:
     """
     Load and validate layer configuration from JSON file.
@@ -61,9 +65,7 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
         config = json.load(f)
 
     if not isinstance(config, dict):
-        raise ValueError(
-            f"Layer config must be a JSON object, got {type(config).__name__}"
-        )
+        raise ValueError(f"Layer config must be a JSON object, got {type(config).__name__}")
 
     # Validate each entry and compile regex patterns
     compiled_patterns = {}
@@ -74,59 +76,41 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
                 if "format" in settings:
                     fmt = settings["format"]
                     if not fmt:  # Empty string check
-                        raise ValueError(
-                            "_default has empty 'format' field. Use skip:true to skip, or specify a valid format."
-                        )
+                        raise ValueError("_default has empty 'format' field. Use skip:true to skip, or specify a valid format.")
                     if fmt not in VALID_QUANT_FORMATS:
-                        raise ValueError(
-                            f"_default has invalid format '{fmt}'. Valid formats: {sorted(VALID_QUANT_FORMATS)}"
-                        )
+                        raise ValueError(f"_default has invalid format '{fmt}'. Valid formats: {sorted(VALID_QUANT_FORMATS)}")
             continue
 
         if not isinstance(settings, dict):
-            raise ValueError(
-                f"Layer config entry '{key}' must be an object, got {type(settings).__name__}"
-            )
+            raise ValueError(f"Layer config entry '{key}' must be an object, got {type(settings).__name__}")
 
         # Validate regex pattern
         try:
             compiled_patterns[key] = re.compile(key)
         except re.error as e:
-            raise ValueError(
-                f"Layer config entry '{key}' has invalid regex pattern: {e}"
-            )
+            raise ValueError(f"Layer config entry '{key}' has invalid regex pattern: {e}")
 
         # skip:true entries don't need format
         if settings.get("skip", False):
             continue
 
         if "format" not in settings:
-            raise ValueError(
-                f"Layer config entry '{key}' missing required 'format' field (or set skip:true)"
-            )
+            raise ValueError(f"Layer config entry '{key}' missing required 'format' field (or set skip:true)")
 
         fmt = settings["format"]
         if not fmt:  # Empty string check
-            raise ValueError(
-                f"Layer config entry '{key}' has empty 'format' field. Use skip:true to skip, or specify a valid format."
-            )
+            raise ValueError(f"Layer config entry '{key}' has empty 'format' field. Use skip:true to skip, or specify a valid format.")
         if fmt not in VALID_QUANT_FORMATS:
-            raise ValueError(
-                f"Layer config entry '{key}' has invalid format '{fmt}'. "
-                f"Valid formats: {sorted(VALID_QUANT_FORMATS)}"
-            )
+            raise ValueError(f"Layer config entry '{key}' has invalid format '{fmt}'. Valid formats: {sorted(VALID_QUANT_FORMATS)}")
 
     # Store compiled patterns in config for reuse
     config["_compiled_patterns"] = compiled_patterns
 
-    print(
-        f"Loaded layer config with {len([k for k in config if not k.startswith('_')])} layer patterns (regex mode)"
-    )
+    print(f"Loaded layer config with {len([k for k in config if not k.startswith('_')])} layer patterns (regex mode)")
     return config
 
-def get_layer_settings(
-    layer_key: str, config: Dict[str, Any], fullmatch: bool = False
-) -> Optional[Dict[str, Any]]:
+
+def get_layer_settings(layer_key: str, config: Dict[str, Any], fullmatch: bool = False) -> Optional[Dict[str, Any]]:
     """
     Find the most specific matching config entry for a layer using regex.
 
@@ -160,9 +144,7 @@ def get_layer_settings(
                 continue  # Skip invalid patterns
 
         # Use fullmatch or search based on flag
-        match_result = (
-            regex.fullmatch(base_key) if fullmatch else regex.search(base_key)
-        )
+        match_result = regex.fullmatch(base_key) if fullmatch else regex.search(base_key)
         if match_result:
             specificity = pattern_specificity(pattern)
             matches.append((specificity, pattern, settings))
@@ -175,6 +157,7 @@ def get_layer_settings(
 
     # Fall back to _default if present
     return config.get("_default")
+
 
 def generate_config_template(input_file: str, output_path: str, block_size: int = 128):
     """
@@ -243,8 +226,6 @@ def generate_config_template(input_file: str, output_path: str, block_size: int 
         for reason, layers in skipped_reasons.items():
             print(f"    {reason}: {len(layers)} layers")
     print(f"\nTemplate written to: {output_path}")
-    print(
-        "Edit the template to set 'format' for each layer (float8_e4m3fn, int8_blockwise, etc.)"
-    )
+    print("Edit the template to set 'format' for each layer (float8_e4m3fn, int8_blockwise, etc.)")
 
     return viable_count, skipped_count

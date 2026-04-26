@@ -54,6 +54,7 @@ This script can also be run directly to test with synthetic models:
   python tests/example_quantization_error.py
 """
 
+
 def print_welcome():
     """Print welcome message with quick guide."""
     print(__doc__)
@@ -64,45 +65,19 @@ def print_examples():
     print("\n" + "=" * 70)
     print("QUICK COMMAND REFERENCE")
     print("=" * 70)
-    
+
     examples = [
-        (
-            "Test with Synthetic Models",
-            "python tests/example_quantization_error.py"
-        ),
-        (
-            "Measure FP8 Quantization Error",
-            "python tests/measure_quantization_error.py \\\n"
-            "    --original model_bf16.safetensors \\\n"
-            "    --quantized model_fp8.safetensors"
-        ),
-        (
-            "Save Detailed Report",
-            "python tests/measure_quantization_error.py \\\n"
-            "    --original model_bf16.safetensors \\\n"
-            "    --quantized model_fp8.safetensors \\\n"
-            "    --output-report error_report.json"
-        ),
-        (
-            "Compare Only Attention Layers",
-            "python tests/measure_quantization_error.py \\\n"
-            "    --original model_bf16.safetensors \\\n"
-            "    --quantized model_fp8.safetensors \\\n"
-            "    --layers-to-compare \"attention\""
-        ),
-        (
-            "Use CPU Instead of GPU",
-            "python tests/measure_quantization_error.py \\\n"
-            "    --original model_bf16.safetensors \\\n"
-            "    --quantized model_fp8.safetensors \\\n"
-            "    --device cpu"
-        ),
+        ("Test with Synthetic Models", "python tests/example_quantization_error.py"),
+        ("Measure FP8 Quantization Error", "python tests/measure_quantization_error.py \\\n    --original model_bf16.safetensors \\\n    --quantized model_fp8.safetensors"),
+        ("Save Detailed Report", "python tests/measure_quantization_error.py \\\n    --original model_bf16.safetensors \\\n    --quantized model_fp8.safetensors \\\n    --output-report error_report.json"),
+        ("Compare Only Attention Layers", 'python tests/measure_quantization_error.py \\\n    --original model_bf16.safetensors \\\n    --quantized model_fp8.safetensors \\\n    --layers-to-compare "attention"'),
+        ("Use CPU Instead of GPU", "python tests/measure_quantization_error.py \\\n    --original model_bf16.safetensors \\\n    --quantized model_fp8.safetensors \\\n    --device cpu"),
     ]
-    
+
     for title, cmd in examples:
         print(f"\n{title}:")
         print(f"  {cmd}")
-    
+
     print("\n" + "=" * 70)
 
 
@@ -111,7 +86,7 @@ def print_interpretation_guide():
     print("\n" + "=" * 70)
     print("INTERPRETING RESULTS")
     print("=" * 70)
-    
+
     guide = """
 Key Metrics Explained:
 
@@ -175,7 +150,7 @@ def print_workflow():
     print("\n" + "=" * 70)
     print("RECOMMENDED WORKFLOW")
     print("=" * 70)
-    
+
     workflow = """
 Step 1: Start with Synthetic Models (Fast)
 ───────────────────────────────────────────
@@ -240,12 +215,12 @@ Step 5: Validate in Production
 def main():
     """Print all quick-start information."""
     import sys
-    
+
     print_welcome()
     print_examples()
     print_interpretation_guide()
     print_workflow()
-    
+
     print("\n" + "=" * 70)
     print("For more information, see:")
     print("  • tests/QUANTIZATION_ERROR_MEASUREMENT.md (comprehensive guide)")

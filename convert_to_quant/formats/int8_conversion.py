@@ -3,31 +3,24 @@ INT8 conversion utilities for convert_to_quant.
 
 Converts legacy INT8 quantized models to comfy_quant format.
 """
+
 import gc
 import json
 import os
+from typing import Any, Dict, Optional
+
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Any, Optional
 from tqdm import tqdm
 
-from ..constants import (
-    TARGET_INT8_DTYPE,
-    SCALE_DTYPE,
-    NORMALIZE_SCALES_ENABLED,
-)
-from ..utils.tensor_utils import normalize_tensorwise_scales
+from ..constants import NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, TARGET_INT8_DTYPE
 from ..utils.comfy_quant import create_comfy_quant_tensor, fix_comfy_quant_params_structure
-from ..utils.logging import info, verbose, debug, minimal, warning, error, log_debug
+from ..utils.logging import debug, error, info, log_debug, minimal, verbose, warning
+from ..utils.tensor_utils import normalize_tensorwise_scales
 
-def convert_int8_to_comfy_quant(
-    input_file: str,
-    output_file: str,
-    block_size: int = 128,
-    include_input_scale: bool = False,
-    save_quant_metadata: bool = True,
-):
+
+def convert_int8_to_comfy_quant(input_file: str, output_file: str, block_size: int = 128, include_input_scale: bool = False, save_quant_metadata: bool = True):
     """
     Convert legacy INT8 quantized models to comfy_quant format.
 
@@ -142,9 +135,7 @@ def convert_int8_to_comfy_quant(
                     output_tensors[f"{base_name}.input_scale"] = input_scale
                 elif include_input_scale:
                     # No input_scale but flag is set - add default (fp32, 1.0 scalar)
-                    output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        1.0, dtype=torch.float32
-                    )
+                    output_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32)
                 # Detect INT8 format and block_size from weight_scale shape
                 # Scale shape conventions from quant_ops.py layouts:
                 # - BlockWiseINT8Layout: (M//bs, N//bs) - 2D block grid
@@ -153,9 +144,7 @@ def convert_int8_to_comfy_quant(
                 detected_format = "int8_blockwise"
                 if weight_scale is None:
                     detected_block_size = block_size
-                    verbose(
-                        f"    → Format: {detected_format} (no scale, assumed blockwise)"
-                    )
+                    verbose(f"    → Format: {detected_format} (no scale, assumed blockwise)")
                 elif weight_scale.ndim == 2:
                     scale_dim0, scale_dim1 = weight_scale.shape
                     # Check if it's blockwise: (M//bs, N//bs)
@@ -163,30 +152,18 @@ def convert_int8_to_comfy_quant(
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        verbose(
-                            f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})"
-                        )
+                        verbose(f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})")
                     else:
                         detected_block_size = block_size
-                        verbose(
-                            f"    → Format: {detected_format} (scale 2D, cannot identify layout)"
-                        )
+                        verbose(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")
                 else:
                     detected_block_size = block_size
-                    verbose(
-                        f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, assumed blockwise)"
-                    )
+                    verbose(f"    → Format: {detected_format} (scale ndim={weight_scale.ndim}, assumed blockwise)")
 
                 # Check if .comfy_quant already exists in other_tensors
                 if f"{base_name}.comfy_quant" not in other_tensors:
-                    detected_formats[detected_format] = (
-                        detected_formats.get(detected_format, 0) + 1
-                    )
-                    comfy_quant_tensor = create_comfy_quant_tensor(
-                        detected_format,
-                        block_size=detected_block_size,
-                        full_precision_matrix_mult=None,
-                    )
+                    detected_formats[detected_format] = detected_formats.get(detected_format, 0) + 1
+                    comfy_quant_tensor = create_comfy_quant_tensor(detected_format, block_size=detected_block_size, full_precision_matrix_mult=None)
                     output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
                     # Collect metadata if enabled
@@ -209,9 +186,7 @@ def convert_int8_to_comfy_quant(
                     output_tensors[f"{base_name}.input_scale"] = scale_input
                 elif include_input_scale:
                     # No scale_input but flag is set - add default input_scale (fp32, 1.0 scalar)
-                    output_tensors[f"{base_name}.input_scale"] = torch.tensor(
-                        1.0, dtype=torch.float32
-                    )
+                    output_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32)
 
                 # Detect INT8 format and block_size from scale_weight shape
                 # Scale shape conventions from quant_ops.py layouts:
@@ -221,9 +196,7 @@ def convert_int8_to_comfy_quant(
                 detected_format = "int8_blockwise"
                 if scale_weight is None:
                     detected_block_size = block_size
-                    verbose(
-                        f"    → Format: {detected_format} (no scale, assumed blockwise)"
-                    )
+                    verbose(f"    → Format: {detected_format} (no scale, assumed blockwise)")
                 elif scale_weight.ndim == 2:
                     scale_dim0, scale_dim1 = scale_weight.shape
                     # Check if it's blockwise: (M//bs, N//bs)
@@ -231,29 +204,17 @@ def convert_int8_to_comfy_quant(
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        verbose(
-                            f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})"
-                        )
+                        verbose(f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})")
                     else:
                         detected_block_size = block_size
-                        verbose(
-                            f"    → Format: {detected_format} (scale 2D, cannot identify layout)"
-                        )
+                        verbose(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")
                 else:
                     detected_block_size = block_size
-                    verbose(
-                        f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, assumed blockwise)"
-                    )
+                    verbose(f"    → Format: {detected_format} (scale ndim={scale_weight.ndim}, assumed blockwise)")
 
                 # Create .comfy_quant metadata
-                detected_formats[detected_format] = (
-                    detected_formats.get(detected_format, 0) + 1
-                )
-                comfy_quant_tensor = create_comfy_quant_tensor(
-                    detected_format,
-                    block_size=detected_block_size,
-                    full_precision_matrix_mult=None,
-                )
+                detected_formats[detected_format] = detected_formats.get(detected_format, 0) + 1
+                comfy_quant_tensor = create_comfy_quant_tensor(detected_format, block_size=detected_block_size, full_precision_matrix_mult=None)
                 output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 
                 # Collect metadata if enabled
@@ -270,13 +231,9 @@ def convert_int8_to_comfy_quant(
             output_tensors[f"{base_name}.weight"] = weight
 
             if scale_weight is not None:
-                verbose(
-                    f"  Removing dummy scale_weight from high-precision layer: {base_name}"
-                )
+                verbose(f"  Removing dummy scale_weight from high-precision layer: {base_name}")
             if scale_input is not None:
-                verbose(
-                    f"  Removing dummy scale_input from high-precision layer: {base_name}"
-                )
+                verbose(f"  Removing dummy scale_input from high-precision layer: {base_name}")
 
     # Add other tensors (bias, norms, etc.) - also fix any incorrect comfy_quant structures
     fixed_comfy_quant_count = 0
@@ -306,22 +263,18 @@ def convert_int8_to_comfy_quant(
         info(f"  INT8 format (CLI):     {detected_format}")
         info(f"  Block size (CLI):      {detected_block_size}")
     if fixed_comfy_quant_count > 0:
-        info(
-            f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)"
-        )
+        info(f"  Fixed comfy_quant:     {fixed_comfy_quant_count} (nested params → flat)")
     info("-" * 60)
 
     # Save output
     info(f"\nSaving to {output_file}...")
     try:
-        os.makedirs(
-            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
-            exist_ok=True,
-        )
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else ".", exist_ok=True)
         # Prepare metadata - preserve original and add quant metadata if enabled
         output_metadata = dict(original_metadata)
         if save_quant_metadata and quant_metadata_layers:
             import json
+
             full_metadata = {"format_version": "1.0", "layers": quant_metadata_layers}
             output_metadata["_quantization_metadata"] = json.dumps(full_metadata)
         save_kwargs = {"metadata": output_metadata} if output_metadata else {}

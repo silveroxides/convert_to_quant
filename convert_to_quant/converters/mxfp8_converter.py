@@ -8,28 +8,20 @@ Uses comfy-kitchen CUDA/Triton kernels when available, with PyTorch fallback.
 
 Based on comfy-kitchen (Comfy Org, Apache-2.0).
 """
+
 import math
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import torch
 
-from ..constants import (
-    MXFP8_BLOCK_SIZE,
-    MXFP8_DTYPE,
-    E8M0_BIAS,
-    COMPUTE_DTYPE,
-)
-from ..utils.float_utils import (
-    roundup,
-    e8m0_to_f32,
-    mxfp8_to_blocked,
-    mxfp8_from_blocked,
-)
+from ..constants import COMPUTE_DTYPE, E8M0_BIAS, MXFP8_BLOCK_SIZE, MXFP8_DTYPE
+from ..utils.float_utils import e8m0_to_f32, mxfp8_from_blocked, mxfp8_to_blocked, roundup
 from ..utils.logging import info
 
 # Check for comfy-kitchen availability
 try:
     import comfy_kitchen as ck
+
     HAS_COMFY_KITCHEN = True
 except ImportError:
     HAS_COMFY_KITCHEN = False
@@ -50,21 +42,14 @@ class MXFP8Converter:
         pad_to_32x: Pad dimensions to be divisible by 32
     """
 
-    def __init__(
-        self,
-        block_size: int = 32,
-        pad_to_32x: bool = True,
-    ):
+    def __init__(self, block_size: int = 32, pad_to_32x: bool = True):
         if block_size != 32:
             raise ValueError("MXFP8 requires block_size=32")
 
         self.block_size = block_size
         self.pad_to_32x = pad_to_32x
 
-    def quantize(
-        self,
-        tensor: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def quantize(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Quantize tensor to MXFP8 format.
 
@@ -75,10 +60,7 @@ class MXFP8Converter:
             Tuple of (quantized_data_fp8, block_scales_e8m0)
         """
         if not HAS_COMFY_KITCHEN:
-            raise RuntimeError(
-                "MXFP8 quantization requires comfy_kitchen with MXFP8 support. "
-                "Install from the fork with NVIDIA engineer additions."
-            )
+            raise RuntimeError("MXFP8 quantization requires comfy_kitchen with MXFP8 support. Install from the fork with NVIDIA engineer additions.")
 
         needs_padding = False
         orig_shape = tensor.shape
@@ -93,10 +75,7 @@ class MXFP8Converter:
         qdata, block_scales = ck.quantize_mxfp8(tensor, pad_32x=needs_padding)
         return qdata, block_scales
 
-    def _quantize_pytorch(
-        self,
-        tensor: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _quantize_pytorch(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Pure PyTorch quantization fallback (matches comfy-kitchen exactly)."""
         orig_shape = tensor.shape
         device = tensor.device
@@ -107,9 +86,7 @@ class MXFP8Converter:
             padded_rows = roundup(rows, 32)
             padded_cols = roundup(cols, 32)
             if padded_rows != rows or padded_cols != cols:
-                tensor = torch.nn.functional.pad(
-                    tensor, (0, padded_cols - cols, 0, padded_rows - rows)
-                )
+                tensor = torch.nn.functional.pad(tensor, (0, padded_cols - cols, 0, padded_rows - rows))
 
         M, N = tensor.shape
         num_blocks = N // self.block_size
@@ -123,7 +100,7 @@ class MXFP8Converter:
         # Compute scale needed to fit in FP8 range
         fp8_max = torch.finfo(MXFP8_DTYPE).max
         scale_needed = block_max.float() / fp8_max
-        scale_needed = torch.clamp(scale_needed, min=2**(-127))  # Min E8M0 value
+        scale_needed = torch.clamp(scale_needed, min=2 ** (-127))  # Min E8M0 value
 
         # Convert to E8M0 exponent (round up to ensure values fit)
         log2_scale = torch.log2(scale_needed)
@@ -134,43 +111,26 @@ class MXFP8Converter:
         block_scales_f32 = e8m0_to_f32(block_scales_e8m0)
 
         # Handle zero blocks
-        zero_mask = (block_max == 0)
-        block_scales_f32 = torch.where(
-            zero_mask,
-            torch.ones_like(block_scales_f32),
-            block_scales_f32
-        )
+        zero_mask = block_max == 0
+        block_scales_f32 = torch.where(zero_mask, torch.ones_like(block_scales_f32), block_scales_f32)
 
         # Scale data and quantize to FP8 E4M3
         data_scaled = tensor_blocks.float() / block_scales_f32.unsqueeze(-1)
-        data_scaled = torch.where(
-            zero_mask.unsqueeze(-1),
-            torch.zeros_like(data_scaled),
-            data_scaled
-        )
+        data_scaled = torch.where(zero_mask.unsqueeze(-1), torch.zeros_like(data_scaled), data_scaled)
 
         # Clamp to FP8 range and convert
         data_scaled = torch.clamp(data_scaled, -fp8_max, fp8_max)
         qdata = data_scaled.reshape(M, N).to(MXFP8_DTYPE)
 
         # Handle zero blocks in scales
-        block_scales_e8m0 = torch.where(
-            zero_mask,
-            torch.zeros_like(block_scales_e8m0),
-            block_scales_e8m0
-        )
+        block_scales_e8m0 = torch.where(zero_mask, torch.zeros_like(block_scales_e8m0), block_scales_e8m0)
 
         # Convert block scales to cuBLAS tiled layout
         blocked_scales = mxfp8_to_blocked(block_scales_e8m0, flatten=False)
 
         return qdata, blocked_scales
 
-    def dequantize(
-        self,
-        qdata: torch.Tensor,
-        block_scales: torch.Tensor,
-        output_dtype: torch.dtype = torch.bfloat16,
-    ) -> torch.Tensor:
+    def dequantize(self, qdata: torch.Tensor, block_scales: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
         """
         Dequantize MXFP8 tensor back to float.
 
@@ -183,19 +143,11 @@ class MXFP8Converter:
             Dequantized tensor
         """
         if not HAS_COMFY_KITCHEN:
-            raise RuntimeError(
-                "MXFP8 dequantization requires comfy_kitchen with MXFP8 support. "
-                "Install from the fork with NVIDIA engineer additions."
-            )
+            raise RuntimeError("MXFP8 dequantization requires comfy_kitchen with MXFP8 support. Install from the fork with NVIDIA engineer additions.")
 
         return ck.dequantize_mxfp8(qdata, block_scales, output_dtype)
 
-    def _dequantize_pytorch(
-        self,
-        qdata: torch.Tensor,
-        block_scales: torch.Tensor,
-        output_dtype: torch.dtype = torch.bfloat16,
-    ) -> torch.Tensor:
+    def _dequantize_pytorch(self, qdata: torch.Tensor, block_scales: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
         """Pure PyTorch dequantization fallback."""
         orig_shape = qdata.shape
         M, N = orig_shape
@@ -208,11 +160,7 @@ class MXFP8Converter:
 
         # Unswizzle block_scales from cuBLAS tiled layout
         num_blocks_per_row = N // self.block_size
-        block_scales_unswizzled = mxfp8_from_blocked(
-            block_scales,
-            num_rows=M,
-            num_cols=num_blocks_per_row
-        )
+        block_scales_unswizzled = mxfp8_from_blocked(block_scales, num_rows=M, num_cols=num_blocks_per_row)
 
         # Convert E8M0 scales to float32
         scales_f32 = e8m0_to_f32(block_scales_unswizzled)
@@ -223,10 +171,7 @@ class MXFP8Converter:
         return data_dequantized.view(M, N).to(output_dtype)
 
 
-def quantize_mxfp8(
-    tensor: torch.Tensor,
-    pad_to_32x: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+def quantize_mxfp8(tensor: torch.Tensor, pad_to_32x: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Convenience function to quantize a tensor to MXFP8 format.
 
@@ -241,11 +186,7 @@ def quantize_mxfp8(
     return converter.quantize(tensor)
 
 
-def dequantize_mxfp8(
-    qdata: torch.Tensor,
-    block_scales: torch.Tensor,
-    output_dtype: torch.dtype = torch.bfloat16,
-) -> torch.Tensor:
+def dequantize_mxfp8(qdata: torch.Tensor, block_scales: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
     """
     Convenience function to dequantize MXFP8 tensor.
 
