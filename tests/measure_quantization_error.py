@@ -583,21 +583,12 @@ Examples:
     parser.add_argument("--original", type=str, required=True, help="Path to original (BF16/FP32) model")
     parser.add_argument("--quantized", type=str, required=True, help="Path to quantized (FP8) model")
     parser.add_argument(
-        "--layers-to-compare",
-        type=str,
-        default=None,
-        help="Comma-separated layer names to compare (e.g., 'attention,mlp')",
+        "--layers-to-compare", type=str, default=None, help="Comma-separated layer names to compare (e.g., 'attention,mlp')"
     )
     parser.add_argument("--output-report", type=str, default=None, help="Path to save detailed JSON report")
+    parser.add_argument("--top-layers", type=int, default=10, help="Number of worst layers to show in report (default: 10)")
     parser.add_argument(
-        "--top-layers", type=int, default=10, help="Number of worst layers to show in report (default: 10)"
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        choices=["cuda", "cpu"],
-        help="Device to use for computation (default: auto-detect)",
+        "--device", type=str, default=None, choices=["cuda", "cpu"], help="Device to use for computation (default: auto-detect)"
     )
     parser.add_argument(
         "--low-memory",

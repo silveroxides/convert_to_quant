@@ -40,9 +40,7 @@ def manual_stochastic_round_to_float8(x, dtype, generator=None):
 
     abs_x[:] = calc_mantissa(abs_x, exponent, normal_mask, MANTISSA_BITS, EXPONENT_BIAS, generator=generator)
 
-    sign *= torch.where(
-        normal_mask, (2.0 ** (exponent - EXPONENT_BIAS)) * (1.0 + abs_x), (2.0 ** (-EXPONENT_BIAS + 1)) * abs_x
-    )
+    sign *= torch.where(normal_mask, (2.0 ** (exponent - EXPONENT_BIAS)) * (1.0 + abs_x), (2.0 ** (-EXPONENT_BIAS + 1)) * abs_x)
 
     inf = torch.finfo(dtype)
     torch.clamp(sign, min=inf.min, max=inf.max, out=sign)

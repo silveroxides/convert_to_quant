@@ -157,9 +157,7 @@ def convert_int8_to_comfy_quant(
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        verbose(
-                            f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})"
-                        )
+                        verbose(f"    → Format: {detected_format} (scale shape={weight_scale.shape}, bs={detected_block_size})")
                     else:
                         detected_block_size = block_size
                         verbose(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")
@@ -213,9 +211,7 @@ def convert_int8_to_comfy_quant(
                         bs_M = M // scale_dim0
                         bs_K = K // scale_dim1
                         detected_block_size = bs_M if bs_M == bs_K else min(bs_M, bs_K)
-                        verbose(
-                            f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})"
-                        )
+                        verbose(f"    → Format: {detected_format} (scale shape={scale_weight.shape}, bs={detected_block_size})")
                     else:
                         detected_block_size = block_size
                         verbose(f"    → Format: {detected_format} (scale 2D, cannot identify layout)")

@@ -108,9 +108,7 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> Tuple[torch.Tensor, tor
             - A tensor of scaling factors with dtype `torch.float32`.
     """
     assert x.is_contiguous(), "Input tensor must be contiguous"
-    assert x.size(-1) % block_size == 0, (
-        f"Last dimension size must be divisible by block_size (block_size={block_size})"
-    )
+    assert x.size(-1) % block_size == 0, f"Last dimension size must be divisible by block_size (block_size={block_size})"
     y = torch.empty_like(x, dtype=torch.int8)
     s = x.new_empty(*x.size()[:-1], x.size(-1) // block_size, dtype=torch.float32)
     # Grid size should match number of scale elements (one program per block)
@@ -144,9 +142,7 @@ def act_dequant_kernel(x_ptr, s_ptr, y_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y)
 
 
-def act_dequant(
-    x: torch.Tensor, s: torch.Tensor, block_size: int = 128, output_dtype: torch.dtype = None
-) -> torch.Tensor:
+def act_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, output_dtype: torch.dtype = None) -> torch.Tensor:
     """
     Dequantizes the activation tensor `x` using the provided scale tensor.
 
@@ -160,9 +156,7 @@ def act_dequant(
         torch.Tensor: The dequantized activation tensor of the same shape as `x`.
     """
     assert x.is_contiguous() and s.is_contiguous(), "Input tensors must be contiguous"
-    assert x.size(-1) % block_size == 0, (
-        f"Last dimension size must be divisible by block_size (block_size={block_size})"
-    )
+    assert x.size(-1) % block_size == 0, f"Last dimension size must be divisible by block_size (block_size={block_size})"
 
     if output_dtype is None:
         output_dtype = torch.get_default_dtype()
@@ -274,9 +268,7 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask=mask)
 
 
-def weight_dequant(
-    x: torch.Tensor, s: torch.Tensor, block_size: int = 128, output_dtype: torch.dtype = None
-) -> torch.Tensor:
+def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, output_dtype: torch.dtype = None) -> torch.Tensor:
     """
     Dequantizes the given weight tensor using the provided scale tensor.
 
@@ -512,9 +504,7 @@ def int8_gemm(a: torch.Tensor, a_s: torch.Tensor, b: torch.Tensor, b_s: torch.Te
     # let's use float16 as output dtype
     c = a.new_empty(*a.size()[:-1], N, dtype=torch.float16)
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), triton.cdiv(N, META["BLOCK_SIZE_N"]))
-    int8_gemm_kernel[grid](
-        a, b, c, a_s, b_s, M, N, K, BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=input_block_size
-    )
+    int8_gemm_kernel[grid](a, b, c, a_s, b_s, M, N, K, BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=input_block_size)
     return c
 
 
@@ -909,19 +899,7 @@ def int8_gemm_quant(
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), triton.cdiv(N, META["BLOCK_SIZE_N"]))
 
     int8_gemm_quant_kernel[grid](
-        a,
-        b,
-        c,
-        c_s,
-        a_s,
-        b_s,
-        M,
-        N,
-        K,
-        out_block_size,
-        BLOCK_SIZE_M=128,
-        BLOCK_SIZE_N=128,
-        BLOCK_SIZE_K=input_block_size,
+        a, b, c, c_s, a_s, b_s, M, N, K, out_block_size, BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=input_block_size
     )
 
     # Reshape scales to match batch dimensions: (M, n_blocks) -> (*batch_dims, n_blocks)

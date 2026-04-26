@@ -37,9 +37,7 @@ from convert_to_quant.cli.main import extract_filter_flags
 def _has_quant_artifacts(tensors: dict, base: str) -> bool:
     """Return True if any quantization artifact exists for a given base name."""
     return any(
-        k.startswith(base + ".") and k != base + ".weight"
-        for k in tensors
-        if k not in (base + ".weight", base + ".bias")
+        k.startswith(base + ".") and k != base + ".weight" for k in tensors if k not in (base + ".weight", base + ".bias")
     )
 
 
@@ -496,9 +494,7 @@ class TestFilterFlags(unittest.TestCase):
         """embed_tokens and lm_head are in AVOID_KEY_NAMES; nvfp4 skips them."""
         out = self._run_nvfp4({})
         # embed_tokens is in AVOID_KEY_NAMES
-        self.assertFalse(
-            _is_quantized(out, "embed_tokens"), "embed_tokens (AVOID_KEY_NAMES) must not be quantized in nvfp4"
-        )
+        self.assertFalse(_is_quantized(out, "embed_tokens"), "embed_tokens (AVOID_KEY_NAMES) must not be quantized in nvfp4")
         self.assertFalse(_is_quantized(out, "lm_head"), "lm_head (AVOID_KEY_NAMES) must not be quantized in nvfp4")
 
     def test_mxfp8_avoid_key_names_skipped(self):
@@ -514,9 +510,7 @@ class TestFilterFlags(unittest.TestCase):
         """A filter using "highprec" must skip quantization of its patterns."""
         # anima uses highprec
         out = self._run_fp8({"anima": True})
-        self.assertFalse(
-            _is_quantized(out, "net.blocks.0.attn"), "highprec (anima): net.blocks.0.attn must not be quantized"
-        )
+        self.assertFalse(_is_quantized(out, "net.blocks.0.attn"), "highprec (anima): net.blocks.0.attn must not be quantized")
 
     def test_fp8_exclude_skips_qwen35_target(self):
         """A filter using "exclude" must skip quantization of its patterns."""
@@ -534,9 +528,7 @@ class TestFilterFlags(unittest.TestCase):
     def test_fp8_exclude_layers_regex(self):
         """--exclude-layers regex must skip matching layers."""
         out = self._run_fp8({}, exclude_layers=r"net\.blocks\.2")
-        self.assertFalse(
-            _is_quantized(out, "net.blocks.2.attn"), "exclude-layers regex: net.blocks.2.attn should be skipped"
-        )
+        self.assertFalse(_is_quantized(out, "net.blocks.2.attn"), "exclude-layers regex: net.blocks.2.attn should be skipped")
         # Non-matching layer still quantized
         self.assertTrue(_is_quantized(out, "transformer.blocks.2.attn.qkv"))
 

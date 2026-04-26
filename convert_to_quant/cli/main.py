@@ -74,9 +74,7 @@ def extract_filter_flags(args) -> dict:
     flags = {}
     for name in MODEL_FILTERS.keys():
         if not hasattr(args, name):
-            raise RuntimeError(
-                f"BUG: Filter '{name}' in MODEL_FILTERS but not in argparse. Add --{name} to argument_parser.py"
-            )
+            raise RuntimeError(f"BUG: Filter '{name}' in MODEL_FILTERS but not in argparse. Add --{name} to argument_parser.py")
         if getattr(args, name):
             flags[name] = True
 
@@ -110,9 +108,7 @@ def main():
     )
 
     parser.add_argument("-i", "--input", type=str, required=True, help="Input safetensors file path.")
-    parser.add_argument(
-        "-o", "--output", type=str, help="Output safetensors file path. Auto-generated if not provided."
-    )
+    parser.add_argument("-o", "--output", type=str, help="Output safetensors file path. Auto-generated if not provided.")
     parser.add_argument(
         "--comfy_quant", "--comfy-quant", action="store_true", dest="comfy_quant", help="Use Comfy quantization method."
     )
@@ -258,9 +254,7 @@ def main():
 
     for filter_name, filter_cfg in MODEL_FILTERS.items():
         parser.add_argument(
-            f"--{filter_name}",
-            action="store_true",
-            help=filter_cfg.get("help", f"Apply {filter_name} model exclusions"),
+            f"--{filter_name}", action="store_true", help=filter_cfg.get("help", f"Apply {filter_name} model exclusions")
         )
     parser.add_argument(
         "--full_matrix",
@@ -313,12 +307,7 @@ def main():
         help="Optimization algorithm.",
     )
     parser.add_argument(
-        "--num_iter",
-        "--num-iter",
-        type=int,
-        default=4000,
-        dest="num_iter",
-        help="Total optimization iterations per tensor.",
+        "--num_iter", "--num-iter", type=int, default=4000, dest="num_iter", help="Total optimization iterations per tensor."
     )
     parser.add_argument("--lr", type=float, default=1.0, help="[AdamW/RAdam/Original] Initial learning rate.")
     parser.add_argument(
@@ -349,16 +338,9 @@ def main():
         "--lr_patience", "--lr-patience", type=int, default=1, dest="lr_patience", help="[plateau] Steps before decay"
     )
     parser.add_argument(
-        "--lr_factor",
-        "--lr-factor",
-        type=float,
-        default=0.95,
-        dest="lr_factor",
-        help="[plateau, adaptive] LR reduction factor",
+        "--lr_factor", "--lr-factor", type=float, default=0.95, dest="lr_factor", help="[plateau, adaptive] LR reduction factor"
     )
-    parser.add_argument(
-        "--lr_min", "--lr-min", type=float, default=1e-8, dest="lr_min", help="[plateau] Minimum LR bound"
-    )
+    parser.add_argument("--lr_min", "--lr-min", type=float, default=1e-8, dest="lr_min", help="[plateau] Minimum LR bound")
     parser.add_argument(
         "--lr_cooldown",
         "--lr-cooldown",
@@ -449,12 +431,7 @@ def main():
         "'iterative' (scales recomputed periodically), 'joint' (STE-based joint optimization)",
     )
     parser.add_argument(
-        "--top_p",
-        "--top-p",
-        type=float,
-        default=0.2,
-        dest="top_p",
-        help="Proportion of principal components (SVD) to use.",
+        "--top_p", "--top-p", type=float, default=0.2, dest="top_p", help="Proportion of principal components (SVD) to use."
     )
     parser.add_argument(
         "--min_k", "--min-k", type=int, default=256, dest="min_k", help="Minimum number of principal components."
@@ -1073,9 +1050,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
             print("Error: Output file cannot be same as input.")
             return
 
-        cleanup_fp8_scaled(
-            args.input, args.output, marker_size=args.scaled_fp8_marker, add_scale_input=args.input_scale
-        )
+        cleanup_fp8_scaled(args.input, args.output, marker_size=args.scaled_fp8_marker, add_scale_input=args.input_scale)
         return
 
     # Handle activation scale calibration mode (separate workflow)

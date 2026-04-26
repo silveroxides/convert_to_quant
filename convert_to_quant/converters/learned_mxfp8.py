@@ -256,11 +256,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         return dequantized.view(M, N).to(COMPUTE_DTYPE)
 
     def _optimize_mxfp8(
-        self,
-        W_float32: torch.Tensor,
-        block_scales_f32: torch.Tensor,
-        zero_mask: torch.Tensor,
-        block_scales_e8m0: torch.Tensor,
+        self, W_float32: torch.Tensor, block_scales_f32: torch.Tensor, zero_mask: torch.Tensor, block_scales_e8m0: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Apply learned rounding optimization for MXFP8.
 
@@ -384,9 +380,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
 
         for i in pbar:
             with torch.no_grad():
-                current_dq = self._mxfp8_dequantize_blockwise(
-                    W_q_refined, current_block_scales_f32, M, N, discretize=False
-                )
+                current_dq = self._mxfp8_dequantize_blockwise(W_q_refined, current_block_scales_f32, M, N, discretize=False)
                 error = current_dq - W_float32
                 projected_error = U_k.T @ error @ Vh_k.T
                 loss = torch.linalg.norm(projected_error)
@@ -607,9 +601,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                     plateau_counter = 0
                 else:
                     if plateau_counter > 0:
-                        debug(
-                            f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})"
-                        )
+                        debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
@@ -646,11 +638,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 )
 
             # Early stopping conditions
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -766,9 +754,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                     plateau_counter = 0
                 else:
                     if plateau_counter > 0:
-                        debug(
-                            f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})"
-                        )
+                        debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
@@ -805,11 +791,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 )
 
             # Early stopping conditions
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -949,11 +931,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                     }
                 )
 
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:

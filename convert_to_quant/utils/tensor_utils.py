@@ -41,9 +41,7 @@ def tensor_to_dict(tensor_data: torch.Tensor) -> dict:
     return data_dict
 
 
-def normalize_tensorwise_scales(
-    tensors: Dict[str, torch.Tensor], enabled: bool = True
-) -> Tuple[Dict[str, torch.Tensor], int]:
+def normalize_tensorwise_scales(tensors: Dict[str, torch.Tensor], enabled: bool = True) -> Tuple[Dict[str, torch.Tensor], int]:
     """
     Normalize 1-element scale tensors to scalars in-place.
 
@@ -75,11 +73,7 @@ def normalize_tensorwise_scales(
 
 
 def generate_calibration_data(
-    tensors: Dict[str, torch.Tensor],
-    calib_samples: int,
-    seed: int,
-    device: str,
-    compute_dtype: torch.dtype = torch.float32,
+    tensors: Dict[str, torch.Tensor], calib_samples: int, seed: int, device: str, compute_dtype: torch.dtype = torch.float32
 ) -> Dict[int, torch.Tensor]:
     """
     Generate random calibration data for each unique input dimension.

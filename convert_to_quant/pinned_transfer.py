@@ -30,9 +30,7 @@ def reset_pinned_transfer_stats():
     _pinned_transfer_stats = {"pinned": 0, "fallback": 0}
 
 
-def transfer_to_gpu_pinned(
-    tensor: torch.Tensor, device: str = "cuda", dtype: Optional[torch.dtype] = None
-) -> torch.Tensor:
+def transfer_to_gpu_pinned(tensor: torch.Tensor, device: str = "cuda", dtype: Optional[torch.dtype] = None) -> torch.Tensor:
     """Transfer tensor to GPU using pinned memory for faster transfer."""
     global _pinned_transfer_stats
 
@@ -64,9 +62,7 @@ def transfer_to_gpu_pinned(
 
         _pinned_transfer_stats["pinned"] += 1
         if _verbose:
-            print(
-                f"  [pinned_transfer] Pinned: {tensor.shape} ({tensor.numel() * tensor.element_size() / 1024:.1f} KB)"
-            )
+            print(f"  [pinned_transfer] Pinned: {tensor.shape} ({tensor.numel() * tensor.element_size() / 1024:.1f} KB)")
 
         return result
 

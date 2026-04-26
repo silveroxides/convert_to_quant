@@ -159,9 +159,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         per_tensor_scale = (amax / (F8_E4M3_MAX * FP4_E2M1_MAX)).to(dtype=torch.float32)
 
         # Compute initial block scales
-        scaled_block_scales_fp8, total_scale, zero_scale_mask = self._compute_block_scales(
-            W_float32, per_tensor_scale, M, N
-        )
+        scaled_block_scales_fp8, total_scale, zero_scale_mask = self._compute_block_scales(W_float32, per_tensor_scale, M, N)
         total_scale_safe = torch.where(zero_scale_mask, torch.ones_like(total_scale), total_scale)
 
         if self.no_learned_rounding:
@@ -170,9 +168,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             final_total_scale = total_scale
         else:
             # Apply learned rounding optimization (may update scales iteratively)
-            qdata, final_total_scale = self._optimize_nvfp4(
-                W_float32, total_scale_safe, zero_scale_mask, per_tensor_scale
-            )
+            qdata, final_total_scale = self._optimize_nvfp4(W_float32, total_scale_safe, zero_scale_mask, per_tensor_scale)
 
         # Compute final block scales for storage (from final_total_scale)
         # Note: If scales were updated during optimization, we need to recompute the FP8 representation
@@ -240,9 +236,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
     # Alias for use inside optimization loop
     _compute_block_scales_from_tensor = _compute_block_scales
 
-    def _quantize_zeros(
-        self, W_float32: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+    def _quantize_zeros(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         """Handle all-zeros tensor."""
         M, N = W_float32.shape
 
@@ -291,11 +285,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         return dequantized.view(M, N).to(COMPUTE_DTYPE)
 
     def _optimize_nvfp4(
-        self,
-        W_float32: torch.Tensor,
-        total_scale: torch.Tensor,
-        zero_scale_mask: torch.Tensor,
-        per_tensor_scale: torch.Tensor,
+        self, W_float32: torch.Tensor, total_scale: torch.Tensor, zero_scale_mask: torch.Tensor, per_tensor_scale: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply learned rounding optimization for NVFP4.
 
@@ -338,9 +328,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         # This makes forward use quantized, backward use continuous gradients
         return scale_fp8.detach() + (scale_clamped - scale_clamped.detach())
 
-    def _nvfp4_dequantize_blockwise(
-        self, qdata_float: torch.Tensor, total_scale: torch.Tensor, M: int, N: int
-    ) -> torch.Tensor:
+    def _nvfp4_dequantize_blockwise(self, qdata_float: torch.Tensor, total_scale: torch.Tensor, M: int, N: int) -> torch.Tensor:
         """
         Differentiable block-wise NVFP4 dequantization for optimization.
 

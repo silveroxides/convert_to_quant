@@ -75,13 +75,9 @@ def load_layer_config(config_path: str) -> Dict[str, Any]:
                 if "format" in settings:
                     fmt = settings["format"]
                     if not fmt:  # Empty string check
-                        raise ValueError(
-                            "_default has empty 'format' field. Use skip:true to skip, or specify a valid format."
-                        )
+                        raise ValueError("_default has empty 'format' field. Use skip:true to skip, or specify a valid format.")
                     if fmt not in VALID_QUANT_FORMATS:
-                        raise ValueError(
-                            f"_default has invalid format '{fmt}'. Valid formats: {sorted(VALID_QUANT_FORMATS)}"
-                        )
+                        raise ValueError(f"_default has invalid format '{fmt}'. Valid formats: {sorted(VALID_QUANT_FORMATS)}")
             continue
 
         if not isinstance(settings, dict):

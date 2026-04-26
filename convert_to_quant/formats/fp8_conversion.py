@@ -352,9 +352,7 @@ def convert_to_fp8_scaled(
             if fallback:
                 use_fallback = True
                 layer_format = fallback
-                info(
-                    f"({i + 1}/{total_weights}) Processing (fallback {fallback.upper()}): {key} (was: {exclusion_reason})"
-                )
+                info(f"({i + 1}/{total_weights}) Processing (fallback {fallback.upper()}): {key} (was: {exclusion_reason})")
             else:
                 info(f"({i + 1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})")
                 original_tensor = loader.get_tensor(key)
@@ -493,9 +491,7 @@ def convert_to_fp8_scaled(
                     full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
                 )
             elif is_int8:
-                new_tensors[f"{base_name}.weight_scale"] = (
-                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
-                )
+                new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                 if converter.scaling_mode == "tensor":
                     comfy_quant_format = "int8_tensorwise"
                     block_size_for_meta = None
@@ -514,9 +510,7 @@ def convert_to_fp8_scaled(
                     new_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32, device="cpu")
             else:
                 # FP8 format - determine format based on scaling_mode or layer_config
-                new_tensors[f"{base_name}.weight_scale"] = (
-                    dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
-                )
+                new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
 
                 # Select FP8 format type based on layer_config or scaling mode
                 if use_layer_config:
@@ -550,9 +544,7 @@ def convert_to_fp8_scaled(
                 # Add input_scale for FP8: use weight_scale for t5xxl/mistral/visual, 1.0 otherwise
                 if include_input_scale or text_encoder_filter:
                     if text_encoder_filter:
-                        new_tensors[f"{base_name}.input_scale"] = (
-                            dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
-                        )
+                        new_tensors[f"{base_name}.input_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                     else:
                         new_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32, device="cpu")
             new_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor.to(device="cpu")
@@ -575,14 +567,10 @@ def convert_to_fp8_scaled(
             # Add scale_input for non-comfy mode: use dequant_s for t5xxl/mistral, ones for others
             if include_input_scale or text_encoder_filter:
                 if text_encoder_filter:
-                    new_tensors[f"{base_name}.scale_input"] = (
-                        dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
-                    )
+                    new_tensors[f"{base_name}.scale_input"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                 else:
                     # Shape matches scale_weight, filled with 1.0
-                    new_tensors[f"{base_name}.scale_input"] = torch.ones_like(
-                        dequant_s, dtype=SCALE_DTYPE, device="cpu"
-                    )
+                    new_tensors[f"{base_name}.scale_input"] = torch.ones_like(dequant_s, dtype=SCALE_DTYPE, device="cpu")
 
         # Determine if this layer uses simple mode (skip bias correction to save memory)
         layer_uses_simple = custom_simple if use_custom else (fallback_simple if use_fallback else no_learned_rounding)
@@ -641,9 +629,7 @@ def convert_to_fp8_scaled(
             if dequant_s.ndim == 1:
                 info(f"    - Final Dequant Scale value: {new_scale}\n    - Final Weight shape       : {q_tensor.shape}")
             else:
-                info(
-                    f"    - Final Dequant Scale shape: {new_scale.shape}\n    - Final Weight shape       : {q_tensor.shape}"
-                )
+                info(f"    - Final Dequant Scale shape: {new_scale.shape}\n    - Final Weight shape       : {q_tensor.shape}")
         info("-" * 60)
 
     # Copy remaining tensors (bias, norms, etc.)
@@ -710,8 +696,6 @@ def convert_to_fp8_scaled(
         summary_parts.append(f"    - Custom type layers  : {custom_count}")
     if fallback_count > 0:
         summary_parts.append(f"    - Fallback type layers: {fallback_count}")
-    summary_parts.extend(
-        [f"  - Weights skipped       : {skipped_count}", f"  - Final tensor count    : {len(new_tensors)}"]
-    )
+    summary_parts.extend([f"  - Weights skipped       : {skipped_count}", f"  - Final tensor count    : {len(new_tensors)}"])
     info("\n".join(summary_parts))
     info("-" * 60)

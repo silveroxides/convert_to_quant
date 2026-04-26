@@ -239,9 +239,7 @@ def convert_fp8_scaled_to_comfy_quant(
 
             # Create .comfy_quant metadata
             comfy_quant_tensor = create_comfy_quant_tensor(
-                format_type,
-                block_size=block_size,
-                full_precision_matrix_mult=full_precision_mm if full_precision_mm else None,
+                format_type, block_size=block_size, full_precision_matrix_mult=full_precision_mm if full_precision_mm else None
             )
             output_tensors[f"{base_name}.comfy_quant"] = comfy_quant_tensor
 

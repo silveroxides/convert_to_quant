@@ -54,12 +54,7 @@ class NVFP4Converter:
     """
 
     def __init__(
-        self,
-        block_size: int = 16,
-        pad_to_16x: bool = True,
-        optimize: bool = True,
-        num_iter: int = 2000,
-        lr: float = 1e-3,
+        self, block_size: int = 16, pad_to_16x: bool = True, optimize: bool = True, num_iter: int = 2000, lr: float = 1e-3
     ):
         if block_size != 16:
             raise ValueError("NVFP4 requires block_size=16")
@@ -96,9 +91,7 @@ class NVFP4Converter:
         # Use comfy-kitchen kernel if available
         if HAS_COMFY_KITCHEN:
             # CUDA kernel requires FP16/BF16 input (not float32)
-            qdata, block_scales = ck.quantize_nvfp4(
-                tensor.to(torch.bfloat16), per_tensor_scale, pad_16x=self.pad_to_16x
-            )
+            qdata, block_scales = ck.quantize_nvfp4(tensor.to(torch.bfloat16), per_tensor_scale, pad_16x=self.pad_to_16x)
             return qdata, block_scales, per_tensor_scale
 
         # Fallback: PyTorch implementation (matches comfy-kitchen exactly)
@@ -235,10 +228,7 @@ def quantize_nvfp4(
 
 
 def dequantize_nvfp4(
-    qdata: torch.Tensor,
-    block_scales: torch.Tensor,
-    per_tensor_scale: torch.Tensor,
-    output_dtype: torch.dtype = torch.bfloat16,
+    qdata: torch.Tensor, block_scales: torch.Tensor, per_tensor_scale: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16
 ) -> torch.Tensor:
     """
     Convenience function to dequantize NVFP4 tensor.

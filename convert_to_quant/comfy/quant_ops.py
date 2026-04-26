@@ -283,9 +283,7 @@ def _create_transformed_qtensor(qt, transform_fn):
 
 def _handle_device_transfer(qt, target_device, target_dtype=None, target_layout=None, op_name="to"):
     if target_layout is not None and target_layout != torch.strided:
-        logging.warning(
-            f"QuantizedTensor: layout change requested to {target_layout}, but not supported. Ignoring layout."
-        )
+        logging.warning(f"QuantizedTensor: layout change requested to {target_layout}, but not supported. Ignoring layout.")
 
     # Handle device transfer
     current_device = qt._qdata.device
@@ -1471,9 +1469,7 @@ def int8_linear(func, args, kwargs):
 
         # Weight is already in (N, K) format (standard PyTorch weight format)
         # Pass out_quant to _int8_gemm_triton_or_fallback for fused matmul+quant
-        result = _int8_gemm_triton_or_fallback(
-            a_int8, a_scale, b_int8, b_scale, a_block_size, bias=bias, out_quant=out_quant
-        )
+        result = _int8_gemm_triton_or_fallback(a_int8, a_scale, b_int8, b_scale, a_block_size, bias=bias, out_quant=out_quant)
 
         # Handle quantized vs float output
         if out_quant:
@@ -1481,12 +1477,7 @@ def int8_linear(func, args, kwargs):
             output_int8, output_scale = result
 
             # Wrap in QuantizedTensor
-            layout_params = {
-                "scale": output_scale,
-                "block_size": a_block_size,
-                "is_weight": False,
-                "orig_dtype": out_dtype,
-            }
+            layout_params = {"scale": output_scale, "block_size": a_block_size, "is_weight": False, "orig_dtype": out_dtype}
             return QuantizedTensor(output_int8, "BlockWiseINT8Layout", layout_params)
         else:
             # Result is float tensor
@@ -1536,9 +1527,7 @@ def int8_mm(func, args, kwargs):
             b_int8 = b_int8.t().contiguous()
             b_scale = b_scale.t().contiguous()
 
-        result = _int8_gemm_triton_or_fallback(
-            a_int8, a_scale, b_int8, b_scale, a_block_size, bias=None, out_quant=out_quant
-        )
+        result = _int8_gemm_triton_or_fallback(a_int8, a_scale, b_int8, b_scale, a_block_size, bias=None, out_quant=out_quant)
 
         # Handle quantized vs float output
         if out_quant:
@@ -1546,12 +1535,7 @@ def int8_mm(func, args, kwargs):
             output_int8, output_scale = result
 
             # Wrap in QuantizedTensor
-            layout_params = {
-                "scale": output_scale,
-                "block_size": a_block_size,
-                "is_weight": False,
-                "orig_dtype": out_dtype,
-            }
+            layout_params = {"scale": output_scale, "block_size": a_block_size, "is_weight": False, "orig_dtype": out_dtype}
             return QuantizedTensor(output_int8, "BlockWiseINT8Layout", layout_params)
         else:
             # Result is float tensor
@@ -1612,9 +1596,7 @@ def int8_addmm(func, args, kwargs):
             b_scale = b_scale.t().contiguous()
 
         # Use fused Triton kernel (combines matmul + bias + optional quant)
-        result = _int8_gemm_triton_or_fallback(
-            a_int8, a_scale, b_int8, b_scale, a_block_size, bias=bias, out_quant=out_quant
-        )
+        result = _int8_gemm_triton_or_fallback(a_int8, a_scale, b_int8, b_scale, a_block_size, bias=bias, out_quant=out_quant)
 
         # Handle quantized vs float output
         if out_quant:
@@ -1622,12 +1604,7 @@ def int8_addmm(func, args, kwargs):
             output_int8, output_scale = result
 
             # Wrap in QuantizedTensor
-            layout_params = {
-                "scale": output_scale,
-                "block_size": a_block_size,
-                "is_weight": False,
-                "orig_dtype": out_dtype,
-            }
+            layout_params = {"scale": output_scale, "block_size": a_block_size, "is_weight": False, "orig_dtype": out_dtype}
             return QuantizedTensor(output_int8, "BlockWiseINT8Layout", layout_params)
         else:
             # Result is float tensor
@@ -1849,9 +1826,7 @@ def int8_gelu(func, args, kwargs):
         fp_output = torch.nn.functional.gelu(fp_input)
 
         # Quantize output
-        output_qdata, output_layout_params = BlockWiseINT8Layout.quantize(
-            fp_output, block_size=block_size, is_weight=False
-        )
+        output_qdata, output_layout_params = BlockWiseINT8Layout.quantize(fp_output, block_size=block_size, is_weight=False)
         output_layout_params["orig_dtype"] = orig_dtype
 
         return QuantizedTensor(output_qdata, "BlockWiseINT8Layout", output_layout_params)
@@ -1898,9 +1873,7 @@ def int8_add_(func, args, kwargs):
             result_fp = target_fp + other_fp
 
             # Requantize as weight
-            result_qdata, result_layout_params = BlockWiseINT8Layout.quantize(
-                result_fp, block_size=block_size, is_weight=True
-            )
+            result_qdata, result_layout_params = BlockWiseINT8Layout.quantize(result_fp, block_size=block_size, is_weight=True)
             result_layout_params["orig_dtype"] = orig_dtype
 
             # Update target in-place by copying the new quantized data
@@ -2042,10 +2015,7 @@ def tensorwise_int8_addmm(func, args, kwargs):
 
         try:
             output = torch._scaled_mm(
-                plain_input.float().contiguous(),
-                plain_weight.float().contiguous(),
-                scale=float(scale_a * scale_b),
-                bias=bias,
+                plain_input.float().contiguous(), plain_weight.float().contiguous(), scale=float(scale_a * scale_b), bias=bias
             )
             if isinstance(output, tuple):
                 output = output[0]

@@ -180,14 +180,8 @@ def compute_activation_scale(
         # Generate noise on CPU then move (for reproducibility)
         noise1 = torch.randn(x_base.shape, generator=generator, device="cpu").to(device)
         noise2 = torch.randn(x_base.shape, generator=generator, device="cpu").to(device)
-        x_calib = torch.cat(
-            [
-                x_base,
-                x_base + 0.1 * noise1,
-                x_base + 0.2 * noise2,
-                x_base * -1,  # Also test negative directions
-            ]
-        )
+        # Also test negative directions
+        x_calib = torch.cat([x_base, x_base + 0.1 * noise1, x_base + 0.2 * noise2, x_base * -1])
 
         # Normalize to unit variance (like random inputs would have)
         x_calib = x_calib / x_calib.std().clamp(min=1e-6)
@@ -595,18 +589,13 @@ Examples:
     parser.add_argument("input", help="Input safetensors model file")
     parser.add_argument("-o", "--output", help="Output safetensors file with calibrated input_scale values")
     parser.add_argument("--json", dest="json_output", help="Export computed scales to JSON file")
-    parser.add_argument(
-        "--lora", dest="lora_path", help="LoRA file for informed calibration (uses LoRA_A as input directions)"
-    )
+    parser.add_argument("--lora", dest="lora_path", help="LoRA file for informed calibration (uses LoRA_A as input directions)")
     parser.add_argument(
         "--samples", type=int, default=64, help="Number of calibration samples per layer for random mode (default: 64)"
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
     parser.add_argument(
-        "--percentile",
-        type=float,
-        default=99.9,
-        help="Percentile for absmax computation (default: 99.9, use 100 for true max)",
+        "--percentile", type=float, default=99.9, help="Percentile for absmax computation (default: 99.9, use 100 for true max)"
     )
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress verbose output")
 

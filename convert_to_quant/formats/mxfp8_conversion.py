@@ -15,14 +15,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from typing import Dict, Optional
 
-from ..constants import (
-    AVOID_KEY_NAMES,
-    MODEL_FILTERS,
-    MXFP8_BLOCK_SIZE,
-    MXFP8_DTYPE,
-    NORMALIZE_SCALES_ENABLED,
-    COMPUTE_DTYPE,
-)
+from ..constants import AVOID_KEY_NAMES, MODEL_FILTERS, MXFP8_BLOCK_SIZE, MXFP8_DTYPE, NORMALIZE_SCALES_ENABLED, COMPUTE_DTYPE
 from ..converters.mxfp8_converter import MXFP8Converter
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
@@ -319,16 +312,7 @@ def convert_to_mxfp8(
                         f"    - Original bias mean : {original_bias.mean().item():.6f}\n"
                         f"    - Corrected bias mean: {output_tensors[bias_key].mean().item():.6f}"
                     )
-                    del (
-                        W_orig_dev,
-                        W_dequant_dev,
-                        X_calib_dev,
-                        b_orig_dev,
-                        weight_error,
-                        output_error,
-                        bias_correction,
-                        b_new,
-                    )
+                    del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
                     if device == "cuda":
                         torch.cuda.empty_cache()
 

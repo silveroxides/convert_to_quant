@@ -116,9 +116,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             W_float32.shape[0], W_float32.shape[1]
         )
 
-        pbar = tqdm(
-            range(self.num_iter), desc=f"    Optimizing (AdamW-{schedule_name})", leave=False, dynamic_ncols=True
-        )
+        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (AdamW-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             optimizer.zero_grad()
             W_q_refined = W_rounded + delta
@@ -165,9 +163,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     plateau_counter = 0
                 else:
                     if plateau_counter > 0:
-                        debug(
-                            f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})"
-                        )
+                        debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
@@ -204,11 +200,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 )
 
             # Early stopping conditions
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -246,9 +238,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             W_float32.shape[0], W_float32.shape[1]
         )
 
-        pbar = tqdm(
-            range(self.num_iter), desc=f"    Optimizing (RAdam-{schedule_name})", leave=False, dynamic_ncols=True
-        )
+        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (RAdam-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             optimizer.zero_grad()
             W_q_refined = W_rounded + delta
@@ -295,9 +285,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     plateau_counter = 0
                 else:
                     if plateau_counter > 0:
-                        debug(
-                            f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})"
-                        )
+                        debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
@@ -334,11 +322,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 )
 
             # Early stopping conditions
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -378,9 +362,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             W_float32.shape[0], W_float32.shape[1]
         )
 
-        pbar = tqdm(
-            range(self.num_iter), desc=f"    Optimizing (Prodigy-{schedule_name})", leave=False, dynamic_ncols=True
-        )
+        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (Prodigy-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             optimizer.zero_grad()
             W_q_refined = W_rounded + delta
@@ -427,9 +409,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     plateau_counter = 0
                 else:
                     if plateau_counter > 0:
-                        debug(
-                            f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})"
-                        )
+                        debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
             else:  # 'adaptive' - cosine-based schedule
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
                 new_lr, lr_updated = self._adaptive_lr_update_cosine(
@@ -462,11 +442,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     }
                 )
 
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -525,9 +501,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             effective_factor = self.lr_factor
             effective_cooldown = self.lr_cooldown
 
-        pbar = tqdm(
-            range(self.num_iter), desc=f"    Optimizing (Original-{schedule_name})", leave=False, dynamic_ncols=True
-        )
+        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing (Original-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             with torch.no_grad():
                 current_dq = W_q_refined / scale
@@ -906,9 +880,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         plateau_counter = 0
         cooldown_counter = 0
 
-        pbar = tqdm(
-            range(self.num_iter), desc=f"    Optimizing INT8 (AdamW-{schedule_name})", leave=False, dynamic_ncols=True
-        )
+        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing INT8 (AdamW-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             optimizer.zero_grad()
 
@@ -968,11 +940,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}"})
 
             # Early stopping conditions
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -983,9 +951,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         pbar.close()
 
-        final_qdata = (
-            (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        )
+        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
         del qdata_float, delta
         return final_qdata
 
@@ -1009,9 +975,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         plateau_counter = 0
         cooldown_counter = 0
 
-        pbar = tqdm(
-            range(self.num_iter), desc=f"    Optimizing INT8 (RAdam-{schedule_name})", leave=False, dynamic_ncols=True
-        )
+        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing INT8 (RAdam-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             optimizer.zero_grad()
 
@@ -1071,11 +1035,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}"})
 
             # Early stopping conditions
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -1086,9 +1046,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         pbar.close()
 
-        final_qdata = (
-            (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        )
+        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
         del qdata_float, delta
         return final_qdata
 
@@ -1172,11 +1130,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}"})
 
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
                 if curr_lr <= self.early_stop_lr:
                     info("\n      - Learning rate bottomed out. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
@@ -1187,9 +1141,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         pbar.close()
 
-        final_qdata = (
-            (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        )
+        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
         del qdata_float, delta
         return final_qdata
 
@@ -1238,10 +1190,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             effective_cooldown = self.lr_cooldown
 
         pbar = tqdm(
-            range(self.num_iter),
-            desc=f"    Optimizing INT8 (Original-{schedule_name})",
-            leave=False,
-            dynamic_ncols=True,
+            range(self.num_iter), desc=f"    Optimizing INT8 (Original-{schedule_name})", leave=False, dynamic_ncols=True
         )
         for i in pbar:
             with torch.no_grad():
@@ -1571,8 +1520,6 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             dequant_scale = dequant_scale.to(device=self.device, dtype=SCALE_DTYPE)
             dequantized = W_f8.to(COMPUTE_DTYPE) / scale_full
 
-        self._cleanup_tensors(
-            W_float32, W_blocked, scale_full, scale_broadcast, U_k, Vh_k, final_tensor_scaled, quant_scale
-        )
+        self._cleanup_tensors(W_float32, W_blocked, scale_full, scale_broadcast, U_k, Vh_k, final_tensor_scaled, quant_scale)
 
         return W_f8, dequant_scale, dequantized

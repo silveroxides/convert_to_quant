@@ -256,9 +256,7 @@ def convert_to_nvfp4(
         # Quantize to NVFP4
         if use_learned:
             # LearnedNVFP4Converter returns (qdata, block_scales, per_tensor_scale, dequantized, extra_tensors)
-            qdata, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(
-                tensor, key=key, depth=depth
-            )
+            qdata, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(tensor, key=key, depth=depth)
             # Crop dequant_w back to original shape if it was padded
             if dequant_w.shape != tensor.shape:
                 dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
@@ -320,16 +318,7 @@ def convert_to_nvfp4(
                         f"    - Original bias mean : {original_bias.mean().item():.6f}\n"
                         f"    - Corrected bias mean: {output_tensors[bias_key].mean().item():.6f}"
                     )
-                    del (
-                        W_orig_dev,
-                        W_dequant_dev,
-                        X_calib_dev,
-                        b_orig_dev,
-                        weight_error,
-                        output_error,
-                        bias_correction,
-                        b_new,
-                    )
+                    del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
                     if device == "cuda":
                         torch.cuda.empty_cache()
 

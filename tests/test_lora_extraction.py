@@ -20,15 +20,11 @@ class TestLoraExtraction(unittest.TestCase):
         )
 
         # 3. Block 1 MLP (Elongated) should NOT be targeted
-        self.assertFalse(
-            converter._should_extract_lora("double_blocks.1.img_mlp.0.weight", torch.Size([16384, 4096]), depth=1)
-        )
+        self.assertFalse(converter._should_extract_lora("double_blocks.1.img_mlp.0.weight", torch.Size([16384, 4096]), depth=1))
 
         # 4. Explicit Regex Target
         converter.lora_target_regex = __import__("re").compile("mlp")
-        self.assertTrue(
-            converter._should_extract_lora("double_blocks.1.img_mlp.0.weight", torch.Size([16384, 4096]), depth=1)
-        )
+        self.assertTrue(converter._should_extract_lora("double_blocks.1.img_mlp.0.weight", torch.Size([16384, 4096]), depth=1))
 
     def test_extraction_learned_rounding(self):
         converter = LearnedRoundingConverter(

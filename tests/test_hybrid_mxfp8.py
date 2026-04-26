@@ -22,9 +22,7 @@ class TestHybridMXFP8(unittest.TestCase):
         # Comfy quant
         tensors["layer1.comfy_quant"] = create_comfy_quant_tensor("mxfp8")
 
-        save_file(
-            tensors, self.input_file, metadata={"_quantization_metadata": '{"layers": {"layer1": {"format": "mxfp8"}}}'}
-        )
+        save_file(tensors, self.input_file, metadata={"_quantization_metadata": '{"layers": {"layer1": {"format": "mxfp8"}}}'})
 
         # Create dummy tensor scales model
         scale_tensors = {}

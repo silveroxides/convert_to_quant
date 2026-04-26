@@ -30,9 +30,7 @@ class MockScheduler:
             self.effective_factor = self.lr_factor
             self.effective_cooldown = self.lr_cooldown
 
-        print(
-            f"Schedule: {self.lr_schedule} | Patience: {self.effective_patience} | Factor: {self.effective_factor:.4f}"
-        )
+        print(f"Schedule: {self.lr_schedule} | Patience: {self.effective_patience} | Factor: {self.effective_factor:.4f}")
 
     def step(self, improved):
         if improved:

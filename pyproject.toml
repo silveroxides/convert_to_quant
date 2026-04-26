@@ -47,7 +47,7 @@ where = ["."]
 include = ["convert_to_quant*"]
 
 [tool.ruff]
-line-length = 120
+line-length = 128
 
 [tool.ruff.format]
 skip-magic-trailing-comma = true

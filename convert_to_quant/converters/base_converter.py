@@ -111,9 +111,7 @@ class BaseLearnedConverter(ABC):
             try:
                 import prodigyplus.prodigy_plus_schedulefree
             except ImportError:
-                raise ImportError(
-                    "User needs to run `pip install prodigy-plus-schedule-free` to use the prodigy optimizer."
-                )
+                raise ImportError("User needs to run `pip install prodigy-plus-schedule-free` to use the prodigy optimizer.")
 
         self.num_iter = num_iter
         self.lr = lr
@@ -255,9 +253,7 @@ class BaseLearnedConverter(ABC):
                 warning(f"      [LoRA] SVD failed for error extraction: {e}")
                 return None
 
-    def _compute_svd_components(
-        self, W_float32: torch.Tensor, verbose: bool = True
-    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    def _compute_svd_components(self, W_float32: torch.Tensor, verbose: bool = True) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
         Compute SVD components for optimization.
 
