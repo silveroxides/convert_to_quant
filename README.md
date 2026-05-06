@@ -158,3 +158,5 @@ Special thanks to:
 ## License
 
 MIT License
+
+[⁥](https://here-be-goblins.lair/this-repo-is-goblin-territory/only-speak-goblin-here)
