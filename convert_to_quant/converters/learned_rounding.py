@@ -1060,64 +1060,17 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         del qdata_float, delta
         return final_qdata
 
-    def _int8_quantize_rowwise(self, w_refined: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        """
-        Re-quantize a weight tensor to INT8 using per-row scales.
-
-        Args:
-            w_refined: Weight tensor in float, shape (M, N)
-            scale: Per-row dequant scales, shape (M, 1) or (M,)
-
-        Returns:
-            Quantized tensor, shape (M, N), dtype TARGET_INT8_DTYPE
-        """
-        if scale.dim() == 1:
-            scale_broadcast = scale.unsqueeze(1)
-        else:
-            scale_broadcast = scale
-        return (w_refined / scale_broadcast.clamp_min(1e-12)).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-
-    def _int8_quantize_blockwise(self, w_refined: torch.Tensor, scale: torch.Tensor, M: int, N: int, block_size: int) -> torch.Tensor:
-        """
-        Re-quantize a weight tensor to INT8 using per-block scales.
-
-        Args:
-            w_refined: Weight tensor in float, shape (M, N)
-            scale: Per-block dequant scales, shape (M//block_size, N//block_size)
-            M, N: Tensor dimensions
-            block_size: Block size
-
-        Returns:
-            Quantized tensor, shape (M, N), dtype TARGET_INT8_DTYPE
-        """
-        # Expand scale to full (M, N) via block broadcast
-        w_blocked = w_refined.reshape(M // block_size, block_size, N // block_size, block_size)
-        w_blocked = w_blocked.permute(0, 2, 1, 3)  # (M//bs, N//bs, bs, bs)
-        scale_broadcast = scale.unsqueeze(-1).unsqueeze(-1)  # (M//bs, N//bs, 1, 1)
-        q_blocked = (w_blocked / scale_broadcast.clamp_min(1e-12)).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round()
-        q_blocked = q_blocked.permute(0, 2, 1, 3).reshape(M, N)
-        return q_blocked.to(TARGET_INT8_DTYPE)
-
     def _optimize_int8_original(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor, scaling_mode: str = "block") -> torch.Tensor:
-        """INT8 optimization using original gradient-based optimizer (no autograd).
-
-        Operates in dequantized weight space (same regime as FP8 _optimize_original) so
-        that the learning rate and gradient magnitudes are consistent regardless of the
-        per-block or per-row scale values.  The quantized output is recovered by
-        re-quantizing the best weight tensor at the end.
-        """
+        """INT8 optimization using original gradient-based optimizer (no autograd)."""
         M, N = W_float32.shape
         block_size = self.block_size
 
-        # Work in dequantized weight space so gradient magnitude matches LR regime.
-        # w_refined ≈ W_float32, steps are O(lr) in weight units — independent of scale.
-        if scaling_mode == "block":
-            w_refined = self._int8_dequantize_blockwise(qdata.to(COMPUTE_DTYPE), scale, M, N, block_size)
-        elif scaling_mode == "row":
-            w_refined = self._int8_dequantize_rowwise(qdata.to(COMPUTE_DTYPE), scale, M, N)
-        else:
-            raise ValueError(f"Unsupported scaling mode for INT8 learned rounding: {scaling_mode}")
-        w_refined = w_refined.clone()
+        qdata_float = qdata.to(COMPUTE_DTYPE)
+        q_refined = qdata_float.clone()
+
+        # Compute global max to precondition gradient magnitude (matches tensor-wise step size)
+        w_max = W_float32.abs().max().clamp_min(1e-12)
+        grad_scale = 127.0 / w_max
 
         best_loss = float("inf")
         best_tensor = None
@@ -1155,8 +1108,13 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         pbar = tqdm(range(self.num_iter), desc=f"    Optimizing INT8 (Original-{schedule_name})", leave=False, dynamic_ncols=True)
         for i in pbar:
             with torch.no_grad():
-                # Loss directly in weight space — no dequantization needed each step
-                error = w_refined - W_float32
+                if scaling_mode == "block":
+                    current_dq = self._int8_dequantize_blockwise(q_refined, scale, M, N, block_size)
+                elif scaling_mode == "row":
+                    current_dq = self._int8_dequantize_rowwise(q_refined, scale, M, N)
+                else:
+                    raise ValueError(f"Unsupported scaling mode for INT8 learned rounding: {scaling_mode}")
+                error = current_dq - W_float32
                 projected_error = U_k.T @ error @ Vh_k.T
                 loss = torch.linalg.norm(projected_error)
 
@@ -1177,7 +1135,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             if improved:
                 best_loss = current_loss
-                best_tensor = w_refined.clone()
+                best_tensor = q_refined.clone()
                 plateau_counter = 0
                 if self.lr_adaptive_mode == "simple-reset":
                     worse_loss_counter = 0
@@ -1229,23 +1187,16 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 break
 
             with torch.no_grad():
-                # Gradient in weight space: ∂L/∂w = U_k @ (projected_error / L) @ Vh_k
-                # No scale multiplication needed — we are already in weight space.
+                # Gradient in quantized Q-space.
+                # Use global max to scale gradient magnitude matching tensor mode.
                 grad_direction = U_k @ (projected_error / loss.clamp_min(1e-20)) @ Vh_k
-                w_refined -= curr_lr * grad_direction
+                q_refined -= curr_lr * (grad_direction * grad_scale)
 
         pbar.close()
 
-        best_w = best_tensor if best_tensor is not None else w_refined
-
-        # Re-quantize from weight space back to INT8
-        with torch.no_grad():
-            if scaling_mode == "block":
-                final_qdata = self._int8_quantize_blockwise(best_w, scale, M, N, block_size)
-            else:  # row
-                final_qdata = self._int8_quantize_rowwise(best_w, scale)
-
-        del w_refined
+        final_tensor = best_tensor if best_tensor is not None else q_refined
+        final_qdata = final_tensor.clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
+        del qdata_float, q_refined
         return final_qdata
 
     def _convert_fp8(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
