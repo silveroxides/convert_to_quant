@@ -111,7 +111,9 @@ def convert_to_fp8_scaled(
     # Calibration cache configuration
     calib_cache_dir = None
     if low_memory and not calib_cpu:
-        calib_cache_dir = tempfile.mkdtemp(prefix="ctq_calib_")
+        out_dir = os.path.dirname(os.path.abspath(output_file)) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        calib_cache_dir = tempfile.mkdtemp(prefix="ctq_calib_", dir=out_dir)
         info(f"Using disk-based calibration cache: {calib_cache_dir}")
         seed_device = "cpu"
     else:
@@ -129,14 +131,11 @@ def convert_to_fp8_scaled(
     # Use unified loader (handles both standard and low-memory modes)
     try:
         loader = MemoryEfficientSafeOpen(input_file, low_memory=low_memory)
-
-        # ... existing logic ...
-
-    finally:
-        # Cleanup
+    except Exception as e:
+        error(f"FATAL: Error loading '{input_file}': {e}")
         if calib_cache_dir and os.path.exists(calib_cache_dir):
             shutil.rmtree(calib_cache_dir)
-            verbose(f"Cleaned up calibration cache: {calib_cache_dir}")
+        return
 
     all_keys = loader.keys()
 
@@ -238,6 +237,8 @@ def convert_to_fp8_scaled(
             custom_pattern = re.compile(custom_layers)
         except re.error as e:
             error(f"ERROR: Invalid regex pattern '{custom_layers}': {e}")
+            if calib_cache_dir and os.path.exists(calib_cache_dir):
+                shutil.rmtree(calib_cache_dir)
             return
 
     # Compile exclude_layers regex pattern
@@ -248,6 +249,8 @@ def convert_to_fp8_scaled(
             info(f"Layer exclusion enabled: pattern '{exclude_layers}'")
         except re.error as e:
             error(f"ERROR: Invalid regex pattern '{exclude_layers}': {e}")
+            if calib_cache_dir and os.path.exists(calib_cache_dir):
+                shutil.rmtree(calib_cache_dir)
             return
 
     calibration_data_cache = {}
@@ -268,7 +271,6 @@ def convert_to_fp8_scaled(
                         save_file({"calib_data": calib_tensor}, cache_path)
                         calibration_data_cache[in_features] = cache_path
                         del calib_tensor
-                        gc.collect()
                     else:
                         # Store in CPU memory
                         calibration_data_cache[in_features] = calib_tensor
@@ -609,7 +611,6 @@ def convert_to_fp8_scaled(
                                 if "out of memory" not in str(e).lower():
                                     raise
 
-                                import gc
                                 for var in ['X_calib_dev', 'W_orig_dev', 'W_dequant_dev', 'b_orig_dev', 'weight_error', 'output_error', 'bias_correction', 'b_new']:
                                     if var in locals():
                                         del locals()[var]
@@ -700,7 +701,13 @@ def convert_to_fp8_scaled(
         info("Conversion complete!")
     except Exception as e:
         error(f"FATAL: Error saving file '{output_file}': {e}")
+        if calib_cache_dir and os.path.exists(calib_cache_dir):
+            shutil.rmtree(calib_cache_dir)
         return
+
+    if calib_cache_dir and os.path.exists(calib_cache_dir):
+        shutil.rmtree(calib_cache_dir)
+        verbose(f"Cleaned up calibration cache: {calib_cache_dir}")
 
     info("-" * 60)
     info("Summary:")
