@@ -547,19 +547,47 @@ def convert_to_fp8_scaled(
                         warning(f"  - WARNING: No calibration data for bias correction of {bias_key}.")
                         new_tensors[bias_key] = original_bias
                     else:
-                        X_calib_dev = calibration_data_cache[in_features].to(device=device)
-                        W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
-                        W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
-                        b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
-                        weight_error = W_orig_dev - W_dequant_dev
-                        output_error = X_calib_dev @ weight_error.T
-                        bias_correction = output_error.mean(dim=0)
-                        b_new = b_orig_dev - bias_correction
-                        new_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
-                        print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
-                        del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
-                        if device == "cuda":
-                            torch.cuda.empty_cache()
+                        total_samples = calibration_data_cache[in_features].shape[0]
+                        current_samples = total_samples
+                        min_samples = max(1, int(total_samples * 0.1))
+                        retry_count = 0
+                        max_retries = 10
+
+                        while True:
+                            try:
+                                X_calib_dev = calibration_data_cache[in_features][:current_samples].to(device=device)
+                                W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
+                                W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
+                                b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
+                                weight_error = W_orig_dev - W_dequant_dev
+                                output_error = X_calib_dev @ weight_error.T
+                                bias_correction = output_error.mean(dim=0)
+                                b_new = b_orig_dev - bias_correction
+                                new_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
+                                print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
+                                del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
+                                if device == "cuda":
+                                    torch.cuda.empty_cache()
+                                break
+                            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                                if "out of memory" not in str(e).lower():
+                                    raise
+
+                                import gc
+                                for var in ['X_calib_dev', 'W_orig_dev', 'W_dequant_dev', 'b_orig_dev', 'weight_error', 'output_error', 'bias_correction', 'b_new']:
+                                    if var in locals():
+                                        del locals()[var]
+                                gc.collect()
+                                if device == "cuda":
+                                    torch.cuda.empty_cache()
+
+                                retry_count += 1
+                                if retry_count > max_retries or current_samples <= min_samples:
+                                    warning(f"  - WARNING: OOM during bias correction even after reducing samples. Giving up.")
+                                    raise
+
+                                current_samples = max(min_samples, int(current_samples * 0.7))
+                                warning(f"  - WARNING: OOM during bias correction. Retrying with {current_samples} samples (attempt {retry_count}).")
             else:
                 # No dequant_w available (shouldn't happen with learned rounding)
                 new_tensors[bias_key] = loader.get_tensor(bias_key)
