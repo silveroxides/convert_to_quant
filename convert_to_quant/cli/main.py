@@ -143,6 +143,7 @@ def main():
 
     parser.add_argument("--block_size", "--block-size", "--group_size", "--group-size", type=int, default=None, dest="block_size", help="Block/group size for block-wise quantization. Defaults to 128 when using block scaling mode. Common values: 64, 128.")
     parser.add_argument("--calib_samples", "--calib-samples", type=int, default=3072, dest="calib_samples", help="Number of random samples for bias correction.")
+    parser.add_argument("--calib_cpu", "--calib-cpu", action="store_true", dest="calib_cpu", help="Store calibration data cache on CPU instead of disk (when using --low-memory). Always True if --low-memory is not used.")
     parser.add_argument("--manual_seed", "--manual-seed", type=int, default=-1, dest="manual_seed", help="Set a manual seed for reproducibility. Use -1 for random.")
     parser.add_argument("--optimizer", type=str, default="prodigy", choices=["original", "adamw", "radam", "prodigy"], help="Optimization algorithm.")
     parser.add_argument("--num_iter", "--num-iter", type=int, default=4000, dest="num_iter", help="Total optimization iterations per tensor.")
@@ -737,6 +738,7 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         filter_flags=filter_flags,
         # Calibration
         calib_samples=args.calib_samples,
+        calib_cpu=args.calib_cpu,
         seed=seed,
         # Format options
         int8=args.int8,

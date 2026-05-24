@@ -9,6 +9,8 @@ import gc
 import json
 import os
 import re
+import shutil
+import tempfile
 from typing import Any, Dict, Optional
 
 import torch
@@ -36,6 +38,7 @@ def convert_to_fp8_scaled(
     filter_flags: Dict[str, bool],
     calib_samples: int,
     seed: int,
+    calib_cpu: bool = False,
     int8: bool = False,
     primary_format: Optional[str] = None,  # Override: "nvfp4", "mxfp8", or None (use int8 flag)
     fallback: Optional[str] = None,
@@ -105,7 +108,15 @@ def convert_to_fp8_scaled(
         warning(f"Format {target_format} requires CUDA kernels. Forcing device='cuda'.")
         device = "cuda"
 
-    seed_device = device
+    # Calibration cache configuration
+    calib_cache_dir = None
+    if low_memory and not calib_cpu:
+        calib_cache_dir = tempfile.mkdtemp(prefix="ctq_calib_")
+        info(f"Using disk-based calibration cache: {calib_cache_dir}")
+        seed_device = "cpu"
+    else:
+        seed_device = "cpu"  # Always use CPU for generation to avoid VRAM leak
+
     seed_generator = torch.Generator(device=seed_device)
     seed_generator.manual_seed(seed)
 
@@ -118,9 +129,14 @@ def convert_to_fp8_scaled(
     # Use unified loader (handles both standard and low-memory modes)
     try:
         loader = MemoryEfficientSafeOpen(input_file, low_memory=low_memory)
-    except Exception as e:
-        error(f"FATAL: Error loading '{input_file}': {e}")
-        return
+
+        # ... existing logic ...
+
+    finally:
+        # Cleanup
+        if calib_cache_dir and os.path.exists(calib_cache_dir):
+            shutil.rmtree(calib_cache_dir)
+            verbose(f"Cleaned up calibration cache: {calib_cache_dir}")
 
     all_keys = loader.keys()
 
@@ -244,7 +260,18 @@ def convert_to_fp8_scaled(
                 in_features = shape[1]
                 if in_features not in calibration_data_cache:
                     verbose(f"  - Found new input dimension: {in_features}.")
-                    calibration_data_cache[in_features] = torch.randn(calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device)
+                    calib_tensor = torch.randn(calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device)
+
+                    if calib_cache_dir:
+                        # Save to disk as safetensors
+                        cache_path = os.path.join(calib_cache_dir, f"calib_{in_features}.safetensors")
+                        save_file({"calib_data": calib_tensor}, cache_path)
+                        calibration_data_cache[in_features] = cache_path
+                        del calib_tensor
+                        gc.collect()
+                    else:
+                        # Store in CPU memory
+                        calibration_data_cache[in_features] = calib_tensor
     info("Simulated calibration data generated.\n")
 
     new_tensors: Dict[str, torch.Tensor] = {}
@@ -547,7 +574,16 @@ def convert_to_fp8_scaled(
                         warning(f"  - WARNING: No calibration data for bias correction of {bias_key}.")
                         new_tensors[bias_key] = original_bias
                     else:
-                        total_samples = calibration_data_cache[in_features].shape[0]
+                        cache_entry = calibration_data_cache[in_features]
+                        if isinstance(cache_entry, str):
+                            # Disk cache: load using UnifiedSafetensorsLoader
+                            with MemoryEfficientSafeOpen(cache_entry, low_memory=True) as calib_loader:
+                                calib_data = calib_loader.get_tensor("calib_data")
+                        else:
+                            # CPU cache
+                            calib_data = cache_entry
+
+                        total_samples = calib_data.shape[0]
                         current_samples = total_samples
                         min_samples = max(1, int(total_samples * 0.1))
                         retry_count = 0
@@ -555,7 +591,7 @@ def convert_to_fp8_scaled(
 
                         while True:
                             try:
-                                X_calib_dev = calibration_data_cache[in_features][:current_samples].to(device=device)
+                                X_calib_dev = calib_data[:current_samples].to(device=device)
                                 W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
                                 W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
                                 b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
@@ -588,6 +624,10 @@ def convert_to_fp8_scaled(
 
                                 current_samples = max(min_samples, int(current_samples * 0.7))
                                 warning(f"  - WARNING: OOM during bias correction. Retrying with {current_samples} samples (attempt {retry_count}).")
+
+                        if isinstance(cache_entry, str):
+                            del calib_data
+                            gc.collect()
             else:
                 # No dequant_w available (shouldn't happen with learned rounding)
                 new_tensors[bias_key] = loader.get_tensor(bias_key)

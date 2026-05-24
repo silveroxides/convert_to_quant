@@ -65,6 +65,7 @@ LEARNED_ROUNDING_ARGS = {
     # SVD and calibration
     "full_matrix",
     "calib_samples",
+    "calib_cpu",
     # Optimizer settings
     "optimizer",
     "num_iter",
