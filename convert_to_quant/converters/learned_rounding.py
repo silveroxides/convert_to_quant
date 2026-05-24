@@ -513,70 +513,116 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         return best_tensor if best_tensor is not None else W_q_refined
 
     def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
-        W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
+        # Save original parameters to restore them after the layer finishes
+        orig_top_p = self.top_p
+        orig_max_k = self.max_k
+        orig_min_k = self.min_k
 
-        # Determine if we should optimize
-        if torch.all(W_float32 == 0):
-            verbose("  - Tensor is all zeros, skipping optimization.")
-            quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
-            dequant_scale = None
+        attempt = 1
+        max_attempts = 10
 
-            if W_float32.ndim == 2:
-                out_features, in_features = W_float32.shape
+        while True:
+            try:
+                W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
+                # Determine if we should optimize
+                if torch.all(W_float32 == 0):
+                    verbose("  - Tensor is all zeros, skipping optimization.")
+                    quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
+                    dequant_scale = None
+
+                    if W_float32.ndim == 2:
+                        out_features, in_features = W_float32.shape
+
+                        if self.target_format == "int8":
+                            # INT8 uses 2D block scaling (M//block_size, N//block_size)
+                            num_blocks_m = out_features // self.block_size
+                            num_blocks_n = in_features // self.block_size
+                            dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
+                        elif self.scaling_mode == "row":
+                            # Row-wise: one scale per row
+                            dequant_scale = torch.ones(out_features, device=self.device, dtype=SCALE_DTYPE)
+                        elif self.scaling_mode in ("block", "block2d") and out_features % self.block_size == 0 and in_features % self.block_size == 0:
+                            # 2D block-wise: (M//bs, N//bs) - 'block' is primary, 'block2d' deprecated alias
+                            num_blocks_m = out_features // self.block_size
+                            num_blocks_n = in_features // self.block_size
+                            dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
+                        elif self.scaling_mode == "block3d" and in_features > 0 and in_features % self.block_size == 0:
+                            # Per-row-group 3D: (out_features, num_blocks, 1)
+                            num_blocks = in_features // self.block_size
+                            dequant_scale = torch.ones(out_features, num_blocks, 1, device=self.device, dtype=SCALE_DTYPE)
+                        else:
+                            # Tensor-wise: single scale
+                            dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
+                    else:
+                        dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
+
+                    self.top_p = orig_top_p
+                    self.max_k = orig_max_k
+                    self.min_k = orig_min_k
+                    return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
+
+                # INT8 quantization path
                 if self.target_format == "int8":
-                    # INT8 uses 2D block scaling (M//block_size, N//block_size)
-                    num_blocks_m = out_features // self.block_size
-                    num_blocks_n = in_features // self.block_size
-                    dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode == "row":
-                    # Row-wise: one scale per row
-                    dequant_scale = torch.ones(out_features, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode in ("block", "block2d") and out_features % self.block_size == 0 and in_features % self.block_size == 0:
-                    # 2D block-wise: (M//bs, N//bs) - 'block' is primary, 'block2d' deprecated alias
-                    num_blocks_m = out_features // self.block_size
-                    num_blocks_n = in_features // self.block_size
-                    dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode == "block3d" and in_features > 0 and in_features % self.block_size == 0:
-                    # Per-row-group 3D: (out_features, num_blocks, 1)
-                    num_blocks = in_features // self.block_size
-                    dequant_scale = torch.ones(out_features, num_blocks, 1, device=self.device, dtype=SCALE_DTYPE)
+                    if self.scaling_mode in ("tensor", "row"):
+                        qdata, scale, dequantized = self._convert_int8_tensorwise(W_float32)
+                    else:
+                        qdata, scale, dequantized = self._convert_int8(W_float32)
                 else:
-                    # Tensor-wise: single scale
-                    dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
-            else:
-                dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
+                    # FP8 quantization path - route based on scaling_mode
+                    if self.scaling_mode == "row":
+                        qdata, scale, dequantized = self._convert_fp8_rowwise(W_float32)
+                    elif self.scaling_mode in ("block", "block2d"):
+                        # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
+                        qdata, scale, dequantized = self._convert_fp8_block2d(W_float32)
+                    elif self.scaling_mode == "block3d":
+                        # 3D per-row-group mode (legacy)
+                        qdata, scale, dequantized = self._convert_fp8(W_float32)
+                    else:
+                        # 'tensor' mode
+                        qdata, scale, dequantized = self._convert_fp8(W_float32)
 
-            return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
+                # Error Correction LoRA extraction
+                extra_tensors = {}
+                if self._should_extract_lora(key, W_orig.shape, depth):
+                    lora_data = self._extract_error_lora(W_float32, dequantized)
+                    if lora_data:
+                        extra_tensors.update(lora_data)
 
-        # INT8 quantization path
-        if self.target_format == "int8":
-            if self.scaling_mode in ("tensor", "row"):
-                qdata, scale, dequantized = self._convert_int8_tensorwise(W_float32)
-            else:
-                qdata, scale, dequantized = self._convert_int8(W_float32)
-        else:
-            # FP8 quantization path - route based on scaling_mode
-            if self.scaling_mode == "row":
-                qdata, scale, dequantized = self._convert_fp8_rowwise(W_float32)
-            elif self.scaling_mode in ("block", "block2d"):
-                # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
-                qdata, scale, dequantized = self._convert_fp8_block2d(W_float32)
-            elif self.scaling_mode == "block3d":
-                # 3D per-row-group mode (legacy)
-                qdata, scale, dequantized = self._convert_fp8(W_float32)
-            else:
-                # 'tensor' mode
-                qdata, scale, dequantized = self._convert_fp8(W_float32)
+                self.top_p = orig_top_p
+                self.max_k = orig_max_k
+                self.min_k = orig_min_k
+                return qdata, scale, dequantized, extra_tensors
 
-        # Error Correction LoRA extraction
-        extra_tensors = {}
-        if self._should_extract_lora(key, W_orig.shape, depth):
-            lora_data = self._extract_error_lora(W_float32, dequantized)
-            if lora_data:
-                extra_tensors.update(lora_data)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                is_oom = isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower()
+                if not is_oom:
+                    raise e
 
-        return qdata, scale, dequantized, extra_tensors
+                if 'W_float32' in locals():
+                    del W_float32
+                if 'qdata' in locals():
+                    del qdata
+                if 'scale' in locals():
+                    del scale
+                if 'dequantized' in locals():
+                    del dequantized
+                gc.collect()
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
+
+                if attempt >= max_attempts or self.max_k <= 1 or self.top_p <= 0.01:
+                    info(f"  - Fatal OOM for layer. Cannot reduce SVD parameters further after {attempt} attempts.")
+                    self.top_p = orig_top_p
+                    self.max_k = orig_max_k
+                    self.min_k = orig_min_k
+                    raise e
+
+                self.top_p = max(0.01, self.top_p * 0.7)
+                self.max_k = max(1, int(self.max_k * 0.7))
+                self.min_k = max(1, int(self.min_k * 0.7))
+                info(f"  - Caught OOM. Retrying layer (Attempt {attempt+1}) with reduced SVD params: top_p={self.top_p:.3f}, max_k={self.max_k}, min_k={self.min_k}")
+                attempt += 1
 
     def _convert_int8(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
