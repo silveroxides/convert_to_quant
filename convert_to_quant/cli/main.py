@@ -82,8 +82,8 @@ def extract_filter_flags(args) -> dict:
 from ..utils.logging import info, minimal, setup_logging, warning
 
 
-def main():
-    # Parse args to get verbosity level
+def get_parser() -> MultiHelpArgumentParser:
+    """Create and return the argument parser."""
     parser = MultiHelpArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Convert safetensors weights to Scaled FP8 format.\n\n"
@@ -245,8 +245,11 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
     # Memory-efficient loading mode
     parser.add_argument("--low-memory", "--low_memory", "-lm", action="store_true", dest="low_memory", help="Use streaming tensor loading to reduce RAM usage (recommended for models >50%% of available RAM)")
 
-    args = parser.parse_args()
+    return parser
 
+
+def run_conversion(args):
+    """Run the conversion process with the provided arguments."""
     # Apply default block_size=128 when block scaling mode is active and no explicit value given
     if args.block_size is None:
         needs_block = (args.int8 and getattr(args, "scaling_mode", "tensor") != "tensor") or getattr(args, "scaling_mode", "tensor") in ("block", "block2d", "block3d") or args.custom_type == "int8" or args.fallback == "int8"
@@ -800,6 +803,12 @@ In JSON, backslashes must be doubled (\\\\. for literal dot). See DEVELOPMENT.md
         lora_ar_threshold=args.lora_ar_threshold,
         lora_output=args.lora_output,
     )
+
+
+def main():
+    parser = get_parser()
+    args = parser.parse_args()
+    run_conversion(args)
 
 
 if __name__ == "__main__":
