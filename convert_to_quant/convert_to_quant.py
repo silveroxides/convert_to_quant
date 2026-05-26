@@ -56,7 +56,47 @@ from .formats import add_legacy_input_scale, cleanup_fp8_scaled, convert_fp8_sca
 # Re-export utils
 from .utils import create_comfy_quant_tensor, dict_to_tensor, edit_comfy_quant, fix_comfy_quant_params_structure, normalize_tensorwise_scales, parse_add_keys_string, should_skip_layer_for_performance, tensor_to_dict
 
+def quantize(input: str, output: str = None, **kwargs):
+    """
+    Programmatic entry point for quantizing a model.
+    Accepts the exact same parameters as the CLI tool.
+
+    Args:
+        input (str): Path to input safetensors file.
+        output (str, optional): Path to output safetensors file. Auto-generated if not provided.
+        **kwargs: Additional arguments matching CLI flags (e.g., int8=True, block_size=128, etc.).
+    """
+    import argparse
+    from .cli.main import get_parser, run_conversion
+
+    parser = get_parser()
+
+    # Extract defaults from parser
+    defaults = {}
+    for action in parser._actions:
+        if action.dest != "help":
+            defaults[action.dest] = action.default
+
+    # Update defaults with input/output
+    defaults["input"] = input
+    defaults["output"] = output
+
+    # Update defaults with provided kwargs
+    valid_keys = set(defaults.keys())
+    for k, v in kwargs.items():
+        if k not in valid_keys:
+            raise ValueError(f"Unknown parameter: '{k}'. Valid parameters match CLI arguments: {list(valid_keys)}")
+        defaults[k] = v
+
+    # Create namespace
+    args = argparse.Namespace(**defaults)
+
+    # Run conversion
+    run_conversion(args)
+
+
 __all__ = [
+    "quantize",
     # Constants
     "AVOID_KEY_NAMES",
     "T5XXL_REMOVE_KEY_NAMES",

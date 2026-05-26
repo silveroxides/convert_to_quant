@@ -12,6 +12,6 @@ try:
 except Exception:
     __version__ = "0.0.0"  # Fallback when not installed as package
 
-from .convert_to_quant import main
+from .convert_to_quant import main, quantize
 
-__all__ = ["main", "__version__"]
+__all__ = ["main", "quantize", "__version__"]
