@@ -70,16 +70,41 @@ pip install -U "triton-windows<3.6"
 ---
 
 ## Quick Start
+### Use the command 'ctq -hf' to view arguments for layer exclusion presets for various models
 
 ```bash
-# Basic FP8 quantization with ComfyUI metadata (recommended)
-convert_to_quant -i model.safetensors --comfy_quant
+# All examples include metadata and comfy_quant layers for ComfyUI compatible quantization.
+# Examples utilize low memory overhead argument to reduce peak RAM/VRAM usage.
 
-# INT8 Block-wise with SVD optimization
-convert_to_quant -i model.safetensors --int8 --block_size 128 --comfy_quant
+# Basic FP8 Tensorcore quantization without learned rounding
+ctq -i model.safetensors -o model-fp8mixed.safetensors --comfy_quant --save-quant-metadata --simple --low-memory
 
-# Blackwell NVFP4 (4-bit)
-convert_to_quant -i model.safetensors --nvfp4 --comfy_quant
+# INT8 Row-Wise quantization without learned rounding
+ctq -i model.safetensors -o model-int8mixedrow.safetensors --int8 --scaling_mode row --comfy_quant --save-quant-metadata --simple --low-memory
+
+# Blackwell MXFP8 quantization without learned rounding
+ctq -i model.safetensors -o model-mxfp8mixed.safetensors --mxfp8 --comfy_quant --save-quant-metadata --simple --low-memory
+```
+
+## Use In Code As Module
+
+```bash
+# Example modular usage of INT8 Row-Wise quantization of Flux2 Klein 9B
+from convert_to_quant import quantize
+
+quantize(
+    input="./flux-2-klein-9b.safetensors",
+    output="./flux-2-klein-9b-int8mixedrow.safetensors",
+    comfy_quant=True,
+    save_quant_metadata=True,
+    verbose="VERBOSE",
+    low_memory=True,
+    int8=True,
+    scaling_mode="row",
+    flux2=True,
+    simple=True,
+    calib_samples=8192
+)
 ```
 
 Load the output `.safetensors` file in ComfyUI like any other model.
