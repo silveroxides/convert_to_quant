@@ -58,6 +58,7 @@ QWEN_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "tra
 ZIMAGE_LAYER_KEYNAMES = ["x_embedder", "clip_text_pooled_proj", "final_layer", "cap_embedder.1", "adaLN_modulation", "t_embedder", "time_text_embed"]
 ZIMAGE_REFINER_LAYER_KEYNAMES = ["context_refiner", "noise_refiner"]
 ANIMA_LAYER_KEYNAMES = ["net.blocks.0.", "net.blocks.1.adaln_modulation", "final_layer", "llm_adapter", "t_embedder", "x_embedder"]
+LENS_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "img_mod.1", "txt_mod.1", "txt_in"]
 QWEN35_AVOID_KEY_NAMES = [".layers.0.", ".layers.63.", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "visual.pos_embed", "visual.patch_embed", "merger", "mtp.fc", "visual.blocks.0."]
 LTXV2_LAYER_KEYNAMES = [
     "scale_shift_table",
@@ -105,6 +106,7 @@ MODEL_FILTERS = {
     "generic_text": {"help": "Generic text encoder: skip MLP layers (down/up/gate proj)", "category": "text"},
     # Diffusion Models (Flux-style)
     "anima": {"help": "Anima diffusion model: keep first blocks, adaln_modulation, final/embedding layers high-precision", "category": "diffusion", "highprec": ANIMA_LAYER_KEYNAMES},
+    "lens": {"help": "LENS diffusion model: keep time_text_embed, img_in, norm_out, proj_out, some mod layers high-precision", "category": "diffusion", "highprec": LENS_LAYER_KEYNAMES},
     "flux2": {"help": "Flux.2: keep modulation/guidance/time/final layers high-precision", "category": "diffusion", "highprec": FLUX2_LAYER_KEYNAMES},
     "distillation_large": {"help": "Chroma/distilled (large): keep distilled_guidance, final, img/txt_in high-precision", "category": "diffusion", "highprec": DISTILL_LAYER_KEYNAMES_LARGE},
     "distillation_small": {"help": "Chroma/distilled (small): keep only distilled_guidance high-precision", "category": "diffusion", "highprec": DISTILL_LAYER_KEYNAMES_SMALL},
