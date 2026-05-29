@@ -140,15 +140,6 @@ For a deep dive into how these formats work, see **[FORMATS.md](docs/FORMATS.md)
 
 ---
 
-## Documentation
-
-- 📖 **[MANUAL.md](MANUAL.md)** - Complete usage guide with examples and troubleshooting
-- 📚 **[FORMATS.md](docs/FORMATS.md)** - Technical reference for quantization formats
-- 🧪 **[DEVELOPMENT.md](DEVELOPMENT.md)** - Changelog and research notes
-- 📋 **[AGENTS.md](AGENTS.md)** - Developer guide & registry architecture
-
----
-
 ## Key Features
 
 - **Learned Rounding**: SVD-based optimization minimizes quantization error.
@@ -160,16 +151,16 @@ For a deep dive into how these formats work, see **[FORMATS.md](docs/FORMATS.md)
 
 ## Advanced Usage
 
-### Layer Config JSON
-Define per-layer settings with regex patterns:
+### Exclude Layer Option
+Define specific excluded layers with regex patterns for models with no exclusion preset(This is just example):
 ```bash
-convert_to_quant -i model.safetensors --layer-config layers.json --comfy_quant
+ctq -i model.safetensors --exclude-layers "(double_blocks.[01]|final_layer|txt_attn.proj)" --comfy_quant
 ```
 
 ### Scaling Modes
 ```bash
 # Block-wise scaling for better accuracy
-convert_to_quant -i model.safetensors --scaling-mode block --block_size 64 --comfy_quant
+ctq -i model.safetensors --scaling-mode block --block_size 64 --comfy_quant
 ```
 
 ---
