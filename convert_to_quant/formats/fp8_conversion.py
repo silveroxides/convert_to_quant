@@ -46,6 +46,8 @@ def convert_to_fp8_scaled(
     custom_scaling_mode: Optional[str] = None,
     custom_simple: bool = False,
     custom_heur: bool = False,
+    convrot: bool = False,
+    convrot_group_size: int = 256,
     fallback_block_size: Optional[int] = None,
     fallback_simple: bool = False,
     full_precision_matrix_mult: bool = False,
@@ -134,6 +136,10 @@ def convert_to_fp8_scaled(
     converter_kwargs["target_format"] = target_format
     converter_kwargs["no_learned_rounding"] = no_learned_rounding
     converter_kwargs["device"] = device
+
+    # Add ConvRot options to converter kwargs
+    converter_kwargs["convrot"] = convrot
+    converter_kwargs["convrot_group_size"] = convrot_group_size
 
     # Add LoRA options to converter kwargs
     converter_kwargs["extract_lora"] = extract_lora
@@ -404,6 +410,14 @@ def convert_to_fp8_scaled(
         if depth_match:
             depth = int(depth_match.group(1))
 
+        # Check if convrot was effectively applied by this converter
+        convrot_applied = False
+        if hasattr(converter, 'convrot') and getattr(converter, 'convrot') and getattr(converter, 'scaling_mode', '') == "row":
+            in_features = original_tensor.shape[1]
+            convrot_group_size = getattr(converter, 'convrot_group_size', 256)
+            if in_features % convrot_group_size == 0:
+                convrot_applied = True
+
         # Call converter and unpack based on format type
         # Different converters have different return signatures
         if is_mxfp8:
@@ -468,7 +482,7 @@ def convert_to_fp8_scaled(
                     block_size_for_meta = layer_block_size
 
                 # Use correct INT8 format
-                comfy_quant_tensor = create_comfy_quant_tensor(comfy_quant_format, block_size=block_size_for_meta, full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None)
+                comfy_quant_tensor = create_comfy_quant_tensor(comfy_quant_format, block_size=block_size_for_meta, full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None, convrot=convrot_applied)
                 # Add input_scale only for block-wise INT8 (dynamic quantization for rowwise doesn't use it)
                 if comfy_quant_format == "int8_blockwise":
                     new_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32, device="cpu")
@@ -518,6 +532,8 @@ def convert_to_fp8_scaled(
                     meta_entry["group_size"] = block_size_for_meta
                 if layer_full_precision_mm:
                     meta_entry["full_precision_matrix_mult"] = True
+                if convrot_applied:
+                    meta_entry["convrot"] = True
 
                 quant_metadata_layers[base_name] = meta_entry
 

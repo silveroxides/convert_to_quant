@@ -28,7 +28,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
     Adds format-specific: target_format, scaling_mode, block_size.
     """
 
-    def __init__(self, scaling_mode: str = "tensor", block_size: int = 64, target_format: str = "fp8", lr: float = 1.0, extract_lora: bool = False, lora_rank: int = 32, lora_depth: int = 1, lora_target: Optional[str] = None, lora_ar_threshold: float = 0.0, **kwargs):
+    def __init__(self, scaling_mode: str = "tensor", block_size: int = 64, target_format: str = "fp8", lr: float = 1.0, extract_lora: bool = False, lora_rank: int = 32, lora_depth: int = 1, lora_target: Optional[str] = None, lora_ar_threshold: float = 0.0, convrot: bool = False, convrot_group_size: int = 256, **kwargs):
         """
         Initialize FP8/INT8 converter.
 
@@ -36,12 +36,16 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             scaling_mode: Scale granularity ("tensor", "row", "block")
             block_size: Block size for block-wise scaling (default 64)
             target_format: Target format ("fp8" or "int8")
+            convrot: Enable Hadamard rotation for INT8 row-wise quantization
+            convrot_group_size: Group size for ConvRot (default 256)
             **kwargs: All other args passed to BaseLearnedConverter
         """
         super().__init__(lr=lr, extract_lora=extract_lora, lora_rank=lora_rank, lora_depth=lora_depth, lora_target=lora_target, lora_ar_threshold=lora_ar_threshold, **kwargs)
 
         self.block_size = block_size
         self.target_format = target_format
+        self.convrot = convrot
+        self.convrot_group_size = convrot_group_size
 
         # INT8 defaults to block-wise scaling, but allows tensor-wise and row-wise
         if target_format == "int8" and scaling_mode not in ("tensor", "row", "block"):
@@ -50,6 +54,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         if scaling_mode == "block3d":
             scaling_mode = "block"
         self.scaling_mode = scaling_mode
+
+        # Check ConvRot validity
+        if self.convrot and not (self.target_format == "int8" and self.scaling_mode == "row"):
+            verbose("  - WARNING: ConvRot is currently only supported for INT8 row-wise quantization. It will be ignored.")
+            self.convrot = False
 
         # Set format-specific max values and dtype
         if self.target_format == "int8":
@@ -67,6 +76,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         verbose(f"  - Scaling mode: {self.scaling_mode}")
         if self.scaling_mode in ("block", "block2d", "block3d"):
             verbose(f"    - Block size: {self.block_size}")
+        if self.convrot:
+            verbose(f"  - ConvRot (Hadamard rotation) enabled: group_size={self.convrot_group_size}")
 
     def _optimize_adamw(self, W_float32: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
         """FP8 optimization using AdamW optimizer with manual LR scheduling."""
@@ -622,6 +633,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         Uses TensorWiseINT8Layout which handles both global and per-row scales.
         """
         from ..comfy.quant_ops import TensorWiseINT8Layout
+        from ..utils.convrot import build_hadamard, rotate_weight
+
+        # Apply ConvRot if enabled and we're doing row-wise quantization
+        if self.convrot and self.scaling_mode == "row":
+            M, N = W_float32.shape
+            # Only apply if in_features is divisible by the group size
+            if N % self.convrot_group_size == 0:
+                try:
+                    H = build_hadamard(self.convrot_group_size, device=self.device, dtype=COMPUTE_DTYPE)
+                    W_float32 = rotate_weight(W_float32, H, self.convrot_group_size)
+                    verbose(f"    - Applied ConvRot Hadamard rotation (group_size={self.convrot_group_size}).")
+                except Exception as e:
+                    verbose(f"    - WARNING: Failed to apply ConvRot: {e}")
+            else:
+                verbose(f"    - WARNING: Skipping ConvRot: in_features ({N}) not divisible by group_size ({self.convrot_group_size}).")
 
         # Initial quantization
         # We need to manually handle tensor-wise vs row-wise if auto-quantizing
