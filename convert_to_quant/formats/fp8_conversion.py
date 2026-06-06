@@ -477,12 +477,14 @@ def convert_to_fp8_scaled(
                 if converter.scaling_mode in ("tensor", "row"):
                     comfy_quant_format = "int8_tensorwise"
                     block_size_for_meta = None
+                    if converter.scaling_mode == "row":
+                        per_row = True
                 else:
                     comfy_quant_format = "int8_blockwise"
                     block_size_for_meta = layer_block_size
 
                 # Use correct INT8 format
-                comfy_quant_tensor = create_comfy_quant_tensor(comfy_quant_format, block_size=block_size_for_meta, full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None, convrot=convrot_applied, convrot_groupsize=convrot_group_size if convrot_applied else None)
+                comfy_quant_tensor = create_comfy_quant_tensor(comfy_quant_format, block_size=block_size_for_meta, full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None, convrot=convrot_applied, convrot_groupsize=convrot_group_size if convrot_applied else None, per_row=per_row if converter.scaling_mode == "row" else None)
                 # Add input_scale only for block-wise INT8 (dynamic quantization for rowwise doesn't use it)
                 if comfy_quant_format == "int8_blockwise":
                     new_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32, device="cpu")

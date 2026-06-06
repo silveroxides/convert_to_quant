@@ -21,7 +21,7 @@ from .tensor_utils import dict_to_tensor, normalize_tensorwise_scales, tensor_to
 BLOCK_BASED_FORMATS = ("int8_blockwise", "float8_e4m3fn_blockwise")
 
 
-def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None, convrot: Optional[bool] = None, convrot_groupsize: Optional[int] = None) -> torch.Tensor:
+def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None, convrot: Optional[bool] = None, convrot_groupsize: Optional[int] = None, per_row: Optional[bool] = None) -> torch.Tensor:
     """
     Create a .comfy_quant layer configuration tensor for ComfyUI.
 
@@ -50,6 +50,9 @@ def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None
         comfy_quant["convrot"] = True
         if convrot_groupsize is not None:
             comfy_quant["convrot_groupsize"] = convrot_groupsize
+
+    if per_row is True:
+        comfy_quant["per_row"] = True
 
     return dict_to_tensor(comfy_quant)
 
