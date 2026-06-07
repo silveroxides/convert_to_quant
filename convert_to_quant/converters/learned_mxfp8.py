@@ -483,8 +483,9 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 best_delta = delta.detach().clone()
                 best_block_scales_f32 = current_block_scales_f32.clone()
                 best_block_scales_e8m0 = current_block_scales_e8m0.clone()
-                worse_loss_counter = 0
                 plateau_counter = 0
+                if self.lr_adaptive_mode == "simple-reset":
+                    worse_loss_counter = 0
             else:
                 worse_loss_counter += 1
                 plateau_counter += 1
@@ -607,8 +608,9 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 best_delta = delta.detach().clone()
                 best_block_scales_f32 = current_block_scales_f32.clone()
                 best_block_scales_e8m0 = current_block_scales_e8m0.clone()
-                worse_loss_counter = 0
                 plateau_counter = 0
+                if self.lr_adaptive_mode == "simple-reset":
+                    worse_loss_counter = 0
             else:
                 worse_loss_counter += 1
                 plateau_counter += 1
@@ -730,8 +732,9 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 best_delta = delta.detach().clone()
                 best_block_scales_f32 = current_block_scales_f32.clone()
                 best_block_scales_e8m0 = current_block_scales_e8m0.clone()
-                worse_loss_counter = 0
                 plateau_counter = 0
+                if self.lr_adaptive_mode == "simple-reset":
+                    worse_loss_counter = 0
             else:
                 worse_loss_counter += 1
                 plateau_counter += 1
