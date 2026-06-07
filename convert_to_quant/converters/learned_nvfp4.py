@@ -417,8 +417,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 if self.scale_optimization == "joint":
                     best_block_scales = block_scales_float.clone()
                 plateau_counter = 0
-                if self.lr_adaptive_mode == "simple-reset":
-                    worse_loss_counter = 0
+                worse_loss_counter = 0
             else:
                 worse_loss_counter += 1
                 plateau_counter += 1

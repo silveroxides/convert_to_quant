@@ -458,8 +458,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 best_loss = current_loss
                 best_tensor = W_q_refined.clone()
                 plateau_counter = 0
-                if self.lr_adaptive_mode == "simple-reset":
-                    worse_loss_counter = 0
+                worse_loss_counter = 0
                 # no-reset mode: worse_loss_counter preserved for tier calculation
             else:
                 worse_loss_counter += 1
@@ -1390,8 +1389,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 best_loss = current_loss
                 best_tensor = q_refined.clone()
                 plateau_counter = 0
-                if self.lr_adaptive_mode == "simple-reset":
-                    worse_loss_counter = 0
+                worse_loss_counter = 0
                 # no-reset mode: worse_loss_counter preserved for tier calculation
             else:
                 worse_loss_counter += 1
