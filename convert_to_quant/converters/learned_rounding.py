@@ -831,17 +831,17 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # 4. Compute initial metrics for dynamic self-tuning regularization
         with torch.no_grad():
-            init_W_q_soft = W_floor + torch.sigmoid(V)
-            init_W_soft_dequant = init_W_q_soft * scale_broadcast
-            init_mse_soft = torch.nn.functional.mse_loss(X_rot @ init_W_soft_dequant.T, Y_ref)
-            init_svd_soft = torch.linalg.norm(U_k.T @ (init_W_soft_dequant - W_float32) @ Vh_k.T)
+            init_W_q_rounded = qdata.to(COMPUTE_DTYPE)
+            init_W_rounded_dequant = init_W_q_rounded * scale_broadcast
+            init_mse_rounded = torch.nn.functional.mse_loss(X_rot @ init_W_rounded_dequant.T, Y_ref)
+            init_svd_rounded = torch.linalg.norm(U_k.T @ (init_W_rounded_dequant - W_float32) @ Vh_k.T)
 
-        # Regularization balance factor: ~1% of initial MSE loss
-        lambda_reg = 0.01 * max(init_mse_soft.item(), 1e-5)
+        # Regularization balance factor: ~5% of initial rounded MSE loss
+        lambda_reg = 0.05 * max(init_mse_rounded.item(), 1e-5)
 
-        # SVD regularization balance factor: ~10% of initial MSE loss
-        if init_svd_soft.item() > 1e-8:
-            alpha_svd = 0.1 * (init_mse_soft.item() / init_svd_soft.item())
+        # SVD regularization balance factor: ~1% of initial rounded MSE loss
+        if init_svd_rounded.item() > 1e-8:
+            alpha_svd = 0.01 * (init_mse_rounded.item() / init_svd_rounded.item())
         else:
             alpha_svd = 0.0
 
