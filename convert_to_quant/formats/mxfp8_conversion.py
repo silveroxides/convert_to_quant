@@ -94,7 +94,7 @@ def convert_to_mxfp8(
     info("-" * 60)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    seed_device = device
+    seed_device = "cpu"
     seed_generator = torch.Generator(device=seed_device)
     seed_generator.manual_seed(seed)
 

@@ -107,7 +107,7 @@ def convert_to_fp8_scaled(
         warning(f"Format {target_format} requires CUDA kernels. Forcing device='cuda'.")
         device = "cuda"
 
-    seed_device = device
+    seed_device = "cpu"
     seed_generator = torch.Generator(device=seed_device)
     seed_generator.manual_seed(seed)
 
@@ -430,7 +430,25 @@ def convert_to_fp8_scaled(
             dequant_s = block_scales  # For bias correction compatibility
         else:
             # FP8/INT8: (q_tensor, scale, dequant_w, extra_tensors)
-            q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth)
+            in_features = original_tensor.shape[1]
+            cache_entry = calibration_data_cache.get(in_features)
+            calib_data_loaded = False
+            if isinstance(cache_entry, str):
+                # Load from disk cache
+                with MemoryEfficientSafeOpen(cache_entry, low_memory=True) as calib_loader:
+                    calibration_data = calib_loader.get_tensor("calib_data")
+                calib_data_loaded = True
+            else:
+                calibration_data = cache_entry
+
+            q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth, calibration_data=calibration_data)
+
+            # Cleanup calibration_data immediately if loaded from disk to prevent OOM
+            if calib_data_loaded and calibration_data is not None:
+                del calibration_data
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         new_tensors[key] = q_tensor.to(device="cpu")
         base_name = key[: key.rfind(".weight")]
@@ -554,7 +572,20 @@ def convert_to_fp8_scaled(
         # Determine if this layer uses simple mode (skip bias correction to save memory)
         layer_uses_simple = custom_simple if use_custom else (fallback_simple if use_fallback else no_learned_rounding)
 
-        if bias_key in all_keys:
+        # Check if we should initialize or adjust bias for ConvRot/Bias Correction
+        if "bias_correction" in extra_tensors:
+            with torch.no_grad():
+                bias_correction = extra_tensors["bias_correction"].cpu()
+                if bias_key in all_keys:
+                    info(f"  - Adjusting corresponding bias using ConvRot-specific calibration: {bias_key}")
+                    original_bias = loader.get_tensor(bias_key)
+                    b_new = (original_bias.to(dtype=COMPUTE_DTYPE) + bias_correction.to(dtype=COMPUTE_DTYPE)).to(dtype=original_bias.dtype)
+                    new_tensors[bias_key] = b_new
+                    print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
+                else:
+                    info(f"  - Creating new bias for biasless layer: {bias_key}")
+                    new_tensors[bias_key] = bias_correction.to(dtype=original_tensor.dtype)
+        elif bias_key in all_keys:
             # Apply bias correction even in simple mode for better accuracy
             # Only if we have dequantized weights to calculate error from
             if dequant_w is not None:

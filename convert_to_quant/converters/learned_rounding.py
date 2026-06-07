@@ -523,7 +523,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         pbar.close()
         return best_tensor if best_tensor is not None else W_q_refined
 
-    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, calibration_data: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+        self._current_extra_tensors = {}
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
         # Determine if we should optimize
@@ -563,7 +564,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         # INT8 quantization path
         if self.target_format == "int8":
             if self.scaling_mode in ("tensor", "row"):
-                qdata, scale, dequantized = self._convert_int8_tensorwise(W_float32)
+                qdata, scale, dequantized = self._convert_int8_tensorwise(W_float32, calibration_data=calibration_data)
             else:
                 qdata, scale, dequantized = self._convert_int8(W_float32)
         else:
@@ -581,7 +582,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 qdata, scale, dequantized = self._convert_fp8(W_float32)
 
         # Error Correction LoRA extraction
-        extra_tensors = {}
+        extra_tensors = self._current_extra_tensors.copy()
+        self._current_extra_tensors.clear()
         if self._should_extract_lora(key, W_orig.shape, depth):
             lora_data = self._extract_error_lora(W_float32, dequantized)
             if lora_data:
@@ -626,7 +628,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         return (qdata, scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight)
 
-    def _convert_int8_tensorwise(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _convert_int8_tensorwise(self, W_float32: torch.Tensor, calibration_data: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         INT8 tensor-wise/row-wise quantization.
 
@@ -636,6 +638,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         from ..utils.convrot import build_hadamard, rotate_weight
 
         # Apply ConvRot if enabled and we're doing row-wise quantization
+        convrot_applied = False
         if self.convrot and self.scaling_mode == "row":
             M, N = W_float32.shape
             # Only apply if in_features is divisible by the group size
@@ -644,10 +647,20 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     H = build_hadamard(self.convrot_group_size, device=self.device, dtype=COMPUTE_DTYPE)
                     W_float32 = rotate_weight(W_float32, H, self.convrot_group_size)
                     verbose(f"    - Applied ConvRot Hadamard rotation (group_size={self.convrot_group_size}).")
+                    convrot_applied = True
                 except Exception as e:
                     verbose(f"    - WARNING: Failed to apply ConvRot: {e}")
             else:
                 verbose(f"    - WARNING: Skipping ConvRot: in_features ({N}) not divisible by group_size ({self.convrot_group_size}).")
+
+        # Phase 2: Calibration Data Management
+        X_rot, Y_ref, H_mat = None, None, None
+        if self.convrot and self.scaling_mode == "row" and convrot_applied:
+            from ..utils.tensor_utils import prepare_calibration_data
+            X_rot, Y_ref, H_mat = prepare_calibration_data(
+                W_float32, calibration_data, True, self.convrot_group_size, self.device, COMPUTE_DTYPE
+            )
+            verbose("    - Executed Phase 2: Calibration Data Management (Captured X, rotated X, computed reference Y)")
 
         # Initial quantization
         # We need to manually handle tensor-wise vs row-wise if auto-quantizing
@@ -668,17 +681,26 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             verbose(f"    - Applying learned rounding optimization for INT8 ({self.scaling_mode}-wise)...")
             if self.scaling_mode == "tensor":
                 qdata, scale = self._optimize_int8_tensorwise_learned_rounding(W_float32, qdata, scale)
+            elif self.convrot and self.scaling_mode == "row" and X_rot is not None:
+                qdata, scale = self._optimize_int8_adaround(W_float32, qdata, scale, X_rot, Y_ref)
             else:
                 qdata, scale = self._optimize_int8_learned_rounding(W_float32, qdata, scale, scaling_mode="row")
 
         # Dequantize for bias correction
         dequantized_weight = TensorWiseINT8Layout.dequantize(qdata, scale, orig_dtype=COMPUTE_DTYPE)
 
+        # Phase 4: Residual Bias Calibration
+        if self.convrot and self.scaling_mode == "row" and X_rot is not None and Y_ref is not None:
+            with torch.no_grad():
+                Y_quant = X_rot @ dequantized_weight.T
+                bias_adj = (Y_ref - Y_quant).mean(dim=0)
+                self._current_extra_tensors["bias_correction"] = bias_adj.cpu()
+                verbose(f"    - Phase 4: Residual Bias Calibration (Computed mean delta of output activations, bias correction norm: {bias_adj.norm().item():.6f})")
+
         # Clean up
-        del W_float32
-        gc.collect()
-        if self.device == "cuda":
-            torch.cuda.empty_cache()
+        self._cleanup_tensors(W_float32)
+        if X_rot is not None or Y_ref is not None or H_mat is not None:
+            self._cleanup_tensors(X_rot, Y_ref, H_mat)
 
         return (qdata, scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight)
 
@@ -772,6 +794,162 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         dequantized = qdata * scale_broadcast
         return dequantized
+
+    def _optimize_int8_adaround(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, X_rot: torch.Tensor, Y_ref: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Apply SVD-guided AdaRound (learned soft rounding) optimization over the rotated parameter space
+        minimizing local activation reconstruction MSE using the cached calibration data.
+        """
+        M, N = W_float32.shape
+
+        # 1. Compute SVD components of rotated parameter matrix
+        U_k, Vh_k, k = self._compute_svd_components(W_float32, verbose=True)
+
+        # 2. Setup soft rounding parameters V
+        # W_scaled = W_rot / scale_row
+        scale_broadcast = scale.unsqueeze(1) if scale.dim() == 1 else scale
+        W_scaled = W_float32 / scale_broadcast.clamp_min(1e-12)
+        W_floor = W_scaled.floor()
+
+        # Target fraction for soft rounding
+        target = W_scaled - W_floor
+        target = torch.clamp(target, min=1e-6, max=1.0 - 1e-6)
+        V_init = -torch.log((1.0 / target) - 1.0)
+        V = V_init.clone().detach().requires_grad_(True)
+
+        # 3. Setup optimizer
+        curr_lr = self.lr
+        if self.optimizer_choice == "adamw":
+            optimizer = AdamW([V], lr=curr_lr)
+        elif self.optimizer_choice == "radam":
+            optimizer = RAdam([V], lr=curr_lr)
+        elif self.optimizer_choice == "prodigy":
+            from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree
+            optimizer = ProdigyPlusScheduleFree([V], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
+        else:
+            optimizer = None  # Will use manual SGD on V
+
+        # 4. Compute initial metrics for dynamic self-tuning regularization
+        with torch.no_grad():
+            init_W_q_soft = W_floor + torch.sigmoid(V)
+            init_W_soft_dequant = init_W_q_soft * scale_broadcast
+            init_mse_soft = torch.nn.functional.mse_loss(X_rot @ init_W_soft_dequant.T, Y_ref)
+            init_svd_soft = torch.linalg.norm(U_k.T @ (init_W_soft_dequant - W_float32) @ Vh_k.T)
+
+        # Regularization balance factor: ~1% of initial MSE loss
+        lambda_reg = 0.01 * max(init_mse_soft.item(), 1e-5)
+
+        # SVD regularization balance factor: ~10% of initial MSE loss
+        if init_svd_soft.item() > 1e-8:
+            alpha_svd = 0.1 * (init_mse_soft.item() / init_svd_soft.item())
+        else:
+            alpha_svd = 0.0
+
+        schedule_name = self.lr_schedule
+        best_loss = float("inf")
+        best_V = V.detach().clone()
+        worse_loss_counter = 0
+        plateau_counter = 0
+        cooldown_counter = 0
+
+        effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
+
+        pbar = tqdm(range(self.num_iter), desc=f"    AdaRound INT8 ({self.optimizer_choice}-{schedule_name})", leave=False, dynamic_ncols=True)
+        for i in pbar:
+            if optimizer is not None:
+                optimizer.zero_grad()
+
+            # Forward pass: soft rounding
+            h_V = torch.sigmoid(V)
+            W_q_soft = W_floor + h_V
+            W_soft_dequant = W_q_soft * scale_broadcast
+
+            # Loss 1: Output activation MSE
+            Y_pred = X_rot @ W_soft_dequant.T
+            loss_mse = torch.nn.functional.mse_loss(Y_pred, Y_ref)
+
+            # Loss 2: SVD-guided weight-space projection error
+            weight_error = W_soft_dequant - W_float32
+            projected_error = U_k.T @ weight_error @ Vh_k.T
+            loss_svd = torch.linalg.norm(projected_error)
+
+            # Loss 3: Soft rounding binary regularizer
+            loss_reg = (1.0 - (2.0 * h_V - 1.0).pow(2)).mean()
+
+            # Total Loss
+            loss = loss_mse + alpha_svd * loss_svd + lambda_reg * loss_reg
+
+            if optimizer is not None:
+                loss.backward()
+                optimizer.step()
+            else:
+                # Manual SGD
+                if V.grad is not None:
+                    V.grad.zero_()
+                loss.backward()
+                with torch.no_grad():
+                    V -= curr_lr * V.grad
+
+            current_loss_val = loss.item()
+            prev_worse_counter = worse_loss_counter
+            improved = self._check_improvement(current_loss_val, best_loss)
+
+            if improved:
+                best_loss = current_loss_val
+                best_V = V.detach().clone()
+                worse_loss_counter = 0
+                plateau_counter = 0
+            else:
+                worse_loss_counter += 1
+                plateau_counter += 1
+
+            # Schedule-based learning rate adjustments
+            if schedule_name == "exponential":
+                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                if optimizer is not None:
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
+            elif schedule_name == "plateau":
+                if cooldown_counter > 0:
+                    cooldown_counter -= 1
+                elif plateau_counter >= effective_patience:
+                    if curr_lr > self.lr_min:
+                        curr_lr = max(curr_lr * effective_factor, self.lr_min)
+                        if optimizer is not None:
+                            for param_group in optimizer.param_groups:
+                                param_group["lr"] = curr_lr
+                        cooldown_counter = effective_cooldown
+                    plateau_counter = 0
+            else:  # "adaptive"
+                counter_for_update = prev_worse_counter if improved else worse_loss_counter
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr)
+                if lr_updated:
+                    curr_lr = new_lr
+                    if optimizer is not None:
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
+                if improved and self.lr_adaptive_mode == "no-reset":
+                    worse_loss_counter = 0
+
+            pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}"})
+
+            # Early stopping
+            if best_loss <= self.early_stop_loss or curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall:
+                break
+
+        pbar.close()
+
+        # Discretize V to get final quantized integers
+        with torch.no_grad():
+            final_h_V = torch.sigmoid(best_V)
+            final_round_up = (final_h_V >= 0.5).to(COMPUTE_DTYPE)
+            final_qdata = (W_floor + final_round_up).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
+
+            converged_pct = ((final_h_V <= 0.05) | (final_h_V >= 0.95)).float().mean().item() * 100
+            verbose(f"    - Discretization audit: {converged_pct:.2f}% of parameters converged to strict boundaries.")
+
+        self._cleanup_tensors(U_k, Vh_k, V)
+        return final_qdata, scale
 
     def _optimize_int8_learned_rounding(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, scaling_mode: str = "block") -> Tuple[torch.Tensor, torch.Tensor]:
         """
