@@ -917,7 +917,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         # Target fraction for soft rounding
         target = W_scaled - W_floor
         target = torch.clamp(target, min=1e-6, max=1.0 - 1e-6)
-        V_init = -torch.log((1.0 / target) - 1.0)
+        
+        # Temperature schedule for sigmoid (AdaRound paper: start soft, sharpen over time)
+        T_start, T_end = 20.0, 2.0
+        V_init = -torch.log((1.0 / target) - 1.0) * T_start
         V = V_init.clone().detach().requires_grad_(True)
 
         # 3. Setup optimizer
@@ -963,7 +966,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 optimizer.zero_grad()
 
             # Forward pass: Optimized soft rounding (smooth AdaRound)
-            h_V = torch.sigmoid(V)
+            # Calculate current temperature (linear decay from T_start to T_end)
+            temp = T_start + (T_end - T_start) * (i / self.num_iter)
+            h_V = torch.sigmoid(V / temp)
             # Use soft weights for smooth gradient flow during optimization
             W_q = W_floor + h_V
             W_dequant = W_q * scale_broadcast
@@ -980,19 +985,35 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             # Loss 3: Soft rounding binary regularizer
             loss_reg = (1.0 - (2.0 * h_V - 1.0).pow(2)).mean()
 
-            # Total Loss
-            loss = loss_mse + alpha_svd * loss_svd + lambda_reg * loss_reg
+            # Total Loss - Normalized for numerical stability on real-world weights
+            # We scale MSE and SVD losses so they start relative to 1.0
+            loss_mse_scaled = loss_mse / max(init_mse_rounded.item(), 1e-12)
+            
+            if alpha_svd > 0 and init_svd_rounded.item() > 1e-8:
+                loss_svd_scaled = loss_svd / init_svd_rounded.item()
+            else:
+                loss_svd_scaled = 0.0
+                
+            # Combine with fixed weights: 1.0 for MSE, 0.01 for SVD, 0.1 for Reg
+            loss = loss_mse_scaled + 0.01 * loss_svd_scaled + 0.1 * loss_reg
+
+            # Scale up loss for backpropagation to prevent float32 underflow on large layers
+            scaled_loss = loss * 1e5
 
             if optimizer is not None:
-                loss.backward()
+                scaled_loss.backward()
+                if V.grad is not None:
+                    # Scale gradients back down before optimizer steps to protect scale-sensitive optimizers (e.g. Prodigy distance estimator)
+                    V.grad.div_(1e5)
                 optimizer.step()
             else:
                 # Manual SGD
                 if V.grad is not None:
                     V.grad.zero_()
-                loss.backward()
+                scaled_loss.backward()
                 with torch.no_grad():
-                    V -= curr_lr * V.grad
+                    # Divide gradient back down to match manual learning rate scale
+                    V -= curr_lr * (V.grad / 1e5)
 
             current_loss_val = loss.item()
             prev_worse_counter = worse_loss_counter
