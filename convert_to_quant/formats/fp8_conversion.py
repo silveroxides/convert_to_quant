@@ -631,6 +631,19 @@ def convert_to_fp8_scaled(
                 info(f"    - Final Dequant Scale shape: {new_scale.shape}\n    - Final Weight shape       : {q_tensor.shape}")
         info("-" * 60)
 
+        # Immediate VRAM reclamation for low_memory mode
+        q_tensor = None
+        dequant_s = None
+        dequant_w = None
+        extra_tensors = None
+        original_tensor = None
+        comfy_quant_tensor = None
+        bias_correction = None
+        if low_memory:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     # Copy remaining tensors (bias, norms, etc.)
     for key in all_keys:
         if any(n in key for n in T5XXL_REMOVE_KEY_NAMES) and filter_flags.get("t5xxl"):

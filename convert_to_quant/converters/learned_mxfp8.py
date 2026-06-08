@@ -247,6 +247,12 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
 
         # Cleanup SVD tensors
         self._cleanup_tensors(U_k, Vh_k)
+        U_k = None
+        Vh_k = None
+        W_float32 = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return qdata, block_scales_e8m0, block_scales_f32
 

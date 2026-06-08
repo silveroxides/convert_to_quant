@@ -58,7 +58,7 @@ ADVANCED_ARGS = {
     "early_stop_loss",
     "early_stop_lr",
     "early_stop_stall",
-    # NVFP4 scale optimization
+    # NVFP4/MXFP8/INT8 scale optimization
     "scale_refinement_rounds",
     "scale_optimization",
 }
@@ -358,7 +358,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
                     print(line)
 
         print()
-        print("NVFP4/MXFP8 Scale Optimization:")
+        print("NVFP4/MXFP8/INT8 Scale Optimization:")
         print("-" * 40)
 
         scale_args = ["scale_refinement_rounds", "scale_optimization"]

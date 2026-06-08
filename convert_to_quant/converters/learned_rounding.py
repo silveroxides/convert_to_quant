@@ -28,7 +28,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
     Adds format-specific: target_format, scaling_mode, block_size.
     """
 
-    def __init__(self, scaling_mode: str = "tensor", block_size: int = 64, target_format: str = "fp8", lr: float = 1.0, extract_lora: bool = False, lora_rank: int = 32, lora_depth: int = 1, lora_target: Optional[str] = None, lora_ar_threshold: float = 0.0, convrot: bool = False, convrot_group_size: int = 256, **kwargs):
+    def __init__(self, scaling_mode: str = "tensor", block_size: int = 64, target_format: str = "fp8", lr: float = 1.0, extract_lora: bool = False, lora_rank: int = 32, lora_depth: int = 1, lora_target: Optional[str] = None, lora_ar_threshold: float = 0.0, convrot: bool = False, convrot_group_size: int = 256, scale_optimization: str = "fixed", **kwargs):
         """
         Initialize FP8/INT8 converter.
 
@@ -38,6 +38,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             target_format: Target format ("fp8" or "int8")
             convrot: Enable Hadamard rotation for INT8 row-wise quantization
             convrot_group_size: Group size for ConvRot (default 256)
+            scale_optimization: Scale optimization mode (default "fixed")
             **kwargs: All other args passed to BaseLearnedConverter
         """
         super().__init__(lr=lr, extract_lora=extract_lora, lora_rank=lora_rank, lora_depth=lora_depth, lora_target=lora_target, lora_ar_threshold=lora_ar_threshold, **kwargs)
@@ -46,6 +47,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.target_format = target_format
         self.convrot = convrot
         self.convrot_group_size = convrot_group_size
+        self.scale_optimization = scale_optimization
 
         # INT8 defaults to block-wise scaling, but allows tensor-wise and row-wise
         if target_format == "int8" and scaling_mode not in ("tensor", "row", "block"):
@@ -690,7 +692,28 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             if self.scaling_mode == "tensor":
                 qdata, scale = self._optimize_int8_tensorwise_learned_rounding(W_float32, qdata, scale)
             elif self.convrot and self.scaling_mode == "row" and X_rot is not None:
-                qdata, scale = self._optimize_int8_adaround(W_float32, qdata, scale, X_rot, Y_ref)
+                if self.scale_optimization == "dualround":
+                    verbose("    - Scale Optimization: DUALROUND (Pass 1)")
+                    qdata, scale = self._optimize_int8_adaround(W_float32, qdata, scale, X_rot, Y_ref)
+
+                    # Scale Re-Estimation
+                    verbose("    - Scale Optimization: Re-estimating scales based on Pass 1 output...")
+                    dequant_opt = TensorWiseINT8Layout.dequantize(qdata, scale, orig_dtype=COMPUTE_DTYPE)
+                    row_max_opt = dequant_opt.abs().amax(dim=1, keepdim=True)
+                    scale_opt = row_max_opt.clamp_min(1e-12) / 127.0
+                    qdata, _ = TensorWiseINT8Layout.quantize(W_float32, scale=scale_opt, is_weight=True)
+                    scale = scale_opt.squeeze(1) if scale.dim() == 1 else scale_opt
+
+                    # Clean up Pass 1 intermediate tensors immediately to prevent VRAM accumulation
+                    del dequant_opt, row_max_opt, scale_opt
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    verbose("    - Scale Optimization: DUALROUND (Pass 2)")
+                    qdata, scale = self._optimize_int8_adaround(W_float32, qdata, scale, X_rot, Y_ref)
+                else:
+                    qdata, scale = self._optimize_int8_adaround(W_float32, qdata, scale, X_rot, Y_ref)
             else:
                 qdata, scale = self._optimize_int8_learned_rounding(W_float32, qdata, scale, scaling_mode="row")
 
@@ -983,6 +1006,18 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             verbose(f"    - Discretization audit: {converged_pct:.2f}% of parameters converged to strict boundaries.")
 
         self._cleanup_tensors(U_k, Vh_k, V)
+        U_k = None
+        Vh_k = None
+        V = None
+        best_V = None
+        W_scaled = None
+        W_floor = None
+        X_rot = None
+        Y_ref = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return final_qdata, scale
 
     def _optimize_int8_learned_rounding(self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, scaling_mode: str = "block") -> Tuple[torch.Tensor, torch.Tensor]:
