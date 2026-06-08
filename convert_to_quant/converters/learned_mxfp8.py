@@ -489,13 +489,19 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 worse_loss_counter += 1
                 plateau_counter += 1
 
+            # Prodigy Warm-up: Skip LR decay for first 50 iterations
+            prodigy_warmup = (self.optimizer_choice == "prodigy" and i < 50)
+
             # LR schedule update
             if schedule_name == "exponential":
-                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                for pg in optimizer.param_groups:
-                    pg["lr"] = curr_lr
+                if not prodigy_warmup:
+                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
             elif schedule_name == "plateau":
-                if cooldown_counter > 0:
+                if prodigy_warmup:
+                    plateau_counter = 0 # Keep inactive
+                elif cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= effective_patience:
@@ -614,13 +620,19 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
                 worse_loss_counter += 1
                 plateau_counter += 1
 
+            # Prodigy Warm-up: Skip LR decay for first 50 iterations
+            prodigy_warmup = (self.optimizer_choice == "prodigy" and i < 50)
+
             # LR schedule update
             if schedule_name == "exponential":
-                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                for pg in optimizer.param_groups:
-                    pg["lr"] = curr_lr
+                if not prodigy_warmup:
+                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = curr_lr
             elif schedule_name == "plateau":
-                if cooldown_counter > 0:
+                if prodigy_warmup:
+                    plateau_counter = 0 # Keep inactive
+                elif cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= effective_patience:

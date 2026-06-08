@@ -336,13 +336,19 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 worse_loss_counter += 1
                 plateau_counter += 1
 
+            # Prodigy Warm-up: Skip LR decay for first 50 iterations
+            prodigy_warmup = (self.optimizer_choice == "prodigy" and i < 50)
+
             # Manual LR update based on schedule
             if schedule_name == "exponential":
-                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = curr_lr
+                if not prodigy_warmup:
+                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
             elif schedule_name == "plateau":
-                if cooldown_counter > 0:
+                if prodigy_warmup:
+                    plateau_counter = 0 # Keep inactive
+                elif cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= effective_patience:
@@ -861,18 +867,17 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             if optimizer is not None:
                 optimizer.zero_grad()
 
-            # Forward pass: Straight-Through Estimator (STE) for hard quantization differences
+            # Forward pass: Optimized soft rounding (smooth AdaRound)
             h_V = torch.sigmoid(V)
-            W_q_hard = W_floor + (h_V >= 0.5).float()
-            # STE Trick: forward pass uses hard discretized weights, backward pass uses soft weights
-            W_q = (W_q_hard - h_V).detach() + h_V
+            # Use soft weights for smooth gradient flow during optimization
+            W_q = W_floor + h_V
             W_dequant = W_q * scale_broadcast
 
-            # Loss 1: Output activation MSE on hard-quantized weights
+            # Loss 1: Output activation MSE on soft dequantized weights
             Y_pred = X_rot @ W_dequant.T
             loss_mse = torch.nn.functional.mse_loss(Y_pred, Y_ref)
 
-            # Loss 2: SVD-guided weight-space projection error
+            # Loss 2: SVD-guided weight-space projection error (soft)
             weight_error = W_dequant - W_float32
             projected_error = U_k.T @ weight_error @ Vh_k.T
             loss_svd = torch.linalg.norm(projected_error)
@@ -909,14 +914,20 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 worse_loss_counter += 1
                 plateau_counter += 1
 
+            # Prodigy Warm-up: Skip LR decay for first 50 iterations
+            prodigy_warmup = (self.optimizer_choice == "prodigy" and i < 50)
+
             # Schedule-based learning rate adjustments
             if schedule_name == "exponential":
-                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                if optimizer is not None:
-                    for param_group in optimizer.param_groups:
-                        param_group["lr"] = curr_lr
+                if not prodigy_warmup:
+                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                    if optimizer is not None:
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = curr_lr
             elif schedule_name == "plateau":
-                if cooldown_counter > 0:
+                if prodigy_warmup:
+                    plateau_counter = 0 # Keep inactive
+                elif cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= effective_patience:
@@ -1050,13 +1061,19 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 worse_loss_counter += 1
                 plateau_counter += 1
 
+            # Prodigy Warm-up: Skip LR decay for first 50 iterations
+            prodigy_warmup = (self.optimizer_choice == "prodigy" and i < 50)
+
             # Manual LR update based on schedule (matching _optimize_int8_original)
             if schedule_name == "exponential":
-                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = curr_lr
+                if not prodigy_warmup:
+                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
             elif schedule_name == "plateau":
-                if cooldown_counter > 0:
+                if prodigy_warmup:
+                    plateau_counter = 0 # Keep inactive
+                elif cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= self.lr_patience:
@@ -1159,13 +1176,19 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 worse_loss_counter += 1
                 plateau_counter += 1
 
+            # Prodigy Warm-up: Skip LR decay for first 50 iterations
+            prodigy_warmup = (self.optimizer_choice == "prodigy" and i < 50)
+
             # Manual LR update based on schedule (matching _optimize_int8_original)
             if schedule_name == "exponential":
-                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = curr_lr
+                if not prodigy_warmup:
+                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
             elif schedule_name == "plateau":
-                if cooldown_counter > 0:
+                if prodigy_warmup:
+                    plateau_counter = 0 # Keep inactive
+                elif cooldown_counter > 0:
                     cooldown_counter -= 1
                     debug(f"      [LR] Cooldown: {cooldown_counter} left")
                 elif plateau_counter >= self.lr_patience:
@@ -1270,12 +1293,19 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 worse_loss_counter += 1
                 plateau_counter += 1
 
+            # Prodigy Warm-up: Skip LR decay for first 50 iterations
+            prodigy_warmup = (self.optimizer_choice == "prodigy" and i < 50)
+
+            # Manual LR update based on schedule
             if schedule_name == "exponential":
-                curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = curr_lr
+                if not prodigy_warmup:
+                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = curr_lr
             elif schedule_name == "plateau":
-                if cooldown_counter > 0:
+                if prodigy_warmup:
+                    plateau_counter = 0 # Keep inactive
+                elif cooldown_counter > 0:
                     cooldown_counter -= 1
                 elif plateau_counter >= self.lr_patience:
                     if curr_lr > self.lr_min:
