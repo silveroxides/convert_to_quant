@@ -45,3 +45,20 @@ def test_prepare_calibration_data():
     # Check that Y_ref is mathematically correct. Since weight wasn't rotated, Y_ref is X_rot @ W.T
     assert torch.allclose(Y_ref, X_rot @ W.T, atol=1e-5)
 
+    # Test with dynamic calib_scale < 1.0
+    calib_scale = 0.5
+    X_rot_scaled, Y_ref_scaled, H_scaled = prepare_calibration_data(
+        W, X, convrot=True, convrot_group_size=4, device="cpu", calib_scale=calib_scale
+    )
+    # 10 * 0.5 = 5 samples
+    assert X_rot_scaled.shape == (5, 16)
+    assert Y_ref_scaled.shape == (5, 8)
+    assert torch.allclose(X_rot_scaled, X_rot[:5])
+    assert torch.allclose(Y_ref_scaled, Y_ref[:5])
+
+    # Test dynamic calib_scale where result is at least 1 sample (e.g., 0.01)
+    X_rot_scaled_min, _, _ = prepare_calibration_data(
+        W, X, convrot=False, convrot_group_size=4, device="cpu", calib_scale=0.01
+    )
+    assert X_rot_scaled_min.shape == (1, 16)
+

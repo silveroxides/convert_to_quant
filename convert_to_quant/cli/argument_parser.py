@@ -67,6 +67,7 @@ LEARNED_ROUNDING_ARGS = {
     # SVD and calibration
     "full_matrix",
     "calib_samples",
+    "calib_cpu",
     # Optimizer settings
     "optimizer",
     "num_iter",
@@ -194,7 +195,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("SVD & Calibration:")
         print("-" * 40)
 
-        svd_args = ["full_matrix", "calib_samples"]
+        svd_args = ["full_matrix", "calib_samples", "calib_cpu"]
         for action in self._all_actions:
             if self._get_dest_name(action) in svd_args:
                 line = self._format_action_help(action)

@@ -81,6 +81,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         if self.convrot:
             verbose(f"  - ConvRot (Hadamard rotation) enabled: group_size={self.convrot_group_size}")
 
+        self.calib_scale = 1.0
+
     def _optimize_adamw(self, W_float32: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor) -> torch.Tensor:
         """FP8 optimization using AdamW optimizer with manual LR scheduling."""
         M, N = W_float32.shape
@@ -535,71 +537,141 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
     def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, calibration_data: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         self._current_extra_tensors = {}
-        W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
-        # Determine if we should optimize
-        if torch.all(W_float32 == 0):
-            verbose("  - Tensor is all zeros, skipping optimization.")
-            quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
-            dequant_scale = None
+        # 1. Initialize State
+        attempt = 1
+        max_attempts = 10
+        orig_top_p = self.top_p
+        orig_max_k = self.max_k
+        orig_min_k = self.min_k
+        self.calib_scale = 1.0
 
-            if W_float32.ndim == 2:
-                out_features, in_features = W_float32.shape
+        try:
+            while True:
+                try:
+                    # Clear current extra tensors at start of attempt
+                    self._current_extra_tensors = {}
 
-                if self.target_format == "int8":
-                    # INT8 uses 2D block scaling (M//block_size, N//block_size)
-                    num_blocks_m = out_features // self.block_size
-                    num_blocks_n = in_features // self.block_size
-                    dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode == "row":
-                    # Row-wise: one scale per row
-                    dequant_scale = torch.ones(out_features, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode in ("block", "block2d") and out_features % self.block_size == 0 and in_features % self.block_size == 0:
-                    # 2D block-wise: (M//bs, N//bs) - 'block' is primary, 'block2d' deprecated alias
-                    num_blocks_m = out_features // self.block_size
-                    num_blocks_n = in_features // self.block_size
-                    dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
-                elif self.scaling_mode == "block3d" and in_features > 0 and in_features % self.block_size == 0:
-                    # Per-row-group 3D: (out_features, num_blocks, 1)
-                    num_blocks = in_features // self.block_size
-                    dequant_scale = torch.ones(out_features, num_blocks, 1, device=self.device, dtype=SCALE_DTYPE)
-                else:
-                    # Tensor-wise: single scale
-                    dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
-            else:
-                dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
+                    W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
-            return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
+                    # Determine if we should optimize
+                    if torch.all(W_float32 == 0):
+                        verbose("  - Tensor is all zeros, skipping optimization.")
+                        quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
+                        dequant_scale = None
 
-        # INT8 quantization path
-        if self.target_format == "int8":
-            if self.scaling_mode in ("tensor", "row"):
-                qdata, scale, dequantized = self._convert_int8_tensorwise(W_float32, calibration_data=calibration_data)
-            else:
-                qdata, scale, dequantized = self._convert_int8(W_float32)
-        else:
-            # FP8 quantization path - route based on scaling_mode
-            if self.scaling_mode == "row":
-                qdata, scale, dequantized = self._convert_fp8_rowwise(W_float32)
-            elif self.scaling_mode in ("block", "block2d"):
-                # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
-                qdata, scale, dequantized = self._convert_fp8_block2d(W_float32)
-            elif self.scaling_mode == "block3d":
-                # 3D per-row-group mode (legacy)
-                qdata, scale, dequantized = self._convert_fp8(W_float32)
-            else:
-                # 'tensor' mode
-                qdata, scale, dequantized = self._convert_fp8(W_float32)
+                        if W_float32.ndim == 2:
+                            out_features, in_features = W_float32.shape
 
-        # Error Correction LoRA extraction
-        extra_tensors = self._current_extra_tensors.copy()
-        self._current_extra_tensors.clear()
-        if self._should_extract_lora(key, W_orig.shape, depth):
-            lora_data = self._extract_error_lora(W_float32, dequantized)
-            if lora_data:
-                extra_tensors.update(lora_data)
+                            if self.target_format == "int8":
+                                # INT8 uses 2D block scaling (M//block_size, N//block_size)
+                                num_blocks_m = out_features // self.block_size
+                                num_blocks_n = in_features // self.block_size
+                                dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
+                            elif self.scaling_mode == "row":
+                                # Row-wise: one scale per row
+                                dequant_scale = torch.ones(out_features, device=self.device, dtype=SCALE_DTYPE)
+                            elif self.scaling_mode in ("block", "block2d") and out_features % self.block_size == 0 and in_features % self.block_size == 0:
+                                # 2D block-wise: (M//bs, N//bs) - 'block' is primary, 'block2d' deprecated alias
+                                num_blocks_m = out_features // self.block_size
+                                num_blocks_n = in_features // self.block_size
+                                dequant_scale = torch.ones(num_blocks_m, num_blocks_n, device=self.device, dtype=SCALE_DTYPE)
+                            elif self.scaling_mode == "block3d" and in_features > 0 and in_features % self.block_size == 0:
+                                # Per-row-group 3D: (out_features, num_blocks, 1)
+                                num_blocks = in_features // self.block_size
+                                dequant_scale = torch.ones(out_features, num_blocks, 1, device=self.device, dtype=SCALE_DTYPE)
+                            else:
+                                # Tensor-wise: single scale
+                                dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
+                        else:
+                            dequant_scale = torch.ones(1, device=self.device, dtype=SCALE_DTYPE)
 
-        return qdata, scale, dequantized, extra_tensors
+                        return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
+
+                    # INT8 quantization path
+                    if self.target_format == "int8":
+                        if self.scaling_mode in ("tensor", "row"):
+                            qdata, scale, dequantized = self._convert_int8_tensorwise(W_float32, calibration_data=calibration_data)
+                        else:
+                            qdata, scale, dequantized = self._convert_int8(W_float32)
+                    else:
+                        # FP8 quantization path - route based on scaling_mode
+                        if self.scaling_mode == "row":
+                            qdata, scale, dequantized = self._convert_fp8_rowwise(W_float32)
+                        elif self.scaling_mode in ("block", "block2d"):
+                            # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
+                            qdata, scale, dequantized = self._convert_fp8_block2d(W_float32)
+                        elif self.scaling_mode == "block3d":
+                            # 3D per-row-group mode (legacy)
+                            qdata, scale, dequantized = self._convert_fp8(W_float32)
+                        else:
+                            # 'tensor' mode
+                            qdata, scale, dequantized = self._convert_fp8(W_float32)
+
+                    # Error Correction LoRA extraction
+                    extra_tensors = self._current_extra_tensors.copy()
+                    self._current_extra_tensors.clear()
+                    if self._should_extract_lora(key, W_orig.shape, depth):
+                        lora_data = self._extract_error_lora(W_float32, dequantized)
+                        if lora_data:
+                            extra_tensors.update(lora_data)
+
+                    return qdata, scale, dequantized, extra_tensors
+
+                except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                    is_oom = isinstance(e, torch.cuda.OutOfMemoryError) or (
+                        isinstance(e, RuntimeError) and any(
+                            msg in str(e).lower() for msg in ["out of memory", "cuda out of memory", "oom"]
+                        )
+                    )
+                    if not is_oom:
+                        raise e
+
+                    verbose(f"    - [OOM Warning] Out of memory during layer conversion (attempt {attempt}/{max_attempts}).")
+
+                    # Perform aggressive cleanup
+                    try:
+                        del W_float32
+                    except NameError:
+                        pass
+                    try:
+                        del qdata
+                    except NameError:
+                        pass
+                    try:
+                        del scale
+                    except NameError:
+                        pass
+                    try:
+                        del dequantized
+                    except NameError:
+                        pass
+
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    # Shrink Parameters
+                    self.top_p *= 0.7
+                    self.max_k = int(self.max_k * 0.7)
+                    self.min_k = int(self.min_k * 0.7)
+                    self.calib_scale *= 0.5
+
+                    verbose(f"    - [OOM Warning] Reduced parameters: top_p={self.top_p:.4f}, max_k={self.max_k}, min_k={self.min_k}, calib_scale={self.calib_scale:.4f}")
+
+                    # Check for fatal failure (too many attempts or params reached floor)
+                    if attempt >= max_attempts or (self.max_k < 1 and self.min_k < 1 and self.top_p < 1e-4):
+                        verbose(f"    - [OOM Error] OOM mitigation failed (attempt {attempt}/{max_attempts}, max_k: {self.max_k}). Re-raising OOM.")
+                        raise e
+
+                    attempt += 1
+
+        finally:
+            # Restore State
+            self.top_p = orig_top_p
+            self.max_k = orig_max_k
+            self.min_k = orig_min_k
+            self.calib_scale = 1.0
 
     def _convert_int8(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -668,7 +740,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         if self.convrot and self.scaling_mode == "row" and convrot_applied:
             from ..utils.tensor_utils import prepare_calibration_data
             X_rot, Y_ref, H_mat = prepare_calibration_data(
-                W_float32, calibration_data, True, self.convrot_group_size, self.device, COMPUTE_DTYPE
+                W_float32, calibration_data, True, self.convrot_group_size, self.device, COMPUTE_DTYPE, calib_scale=self.calib_scale
             )
             verbose("    - Executed Phase 2: Calibration Data Management (Captured X, rotated X, computed reference Y)")
 

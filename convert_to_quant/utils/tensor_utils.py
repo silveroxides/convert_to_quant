@@ -152,6 +152,7 @@ def prepare_calibration_data(
     convrot_group_size: int,
     device: str,
     compute_dtype: torch.dtype = torch.float32,
+    calib_scale: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """
     Prepare calibration data for ConvRot + AdaRound.
@@ -162,7 +163,7 @@ def prepare_calibration_data(
     - Computation of reference Y = X_rot @ W_rot.T (or X @ W.T if not rotated)
 
     Returns:
-        Tuple of (X_rot, Y_ref, H_matrix)
+    - Tuple of (X_rot, Y_ref, H_matrix)
     """
     M, N = W_float32.shape
     if calibration_data is None:
@@ -171,6 +172,10 @@ def prepare_calibration_data(
         X_orig = torch.randn(256, N, dtype=compute_dtype, device=device)
     else:
         X_orig = calibration_data.to(device=device, dtype=compute_dtype)
+
+    if calib_scale < 1.0:
+        num_samples = max(1, int(X_orig.shape[0] * calib_scale))
+        X_orig = X_orig[:num_samples]
 
     X_rot = X_orig
     H = None

@@ -9,6 +9,8 @@ import gc
 import json
 import os
 import re
+import shutil
+import tempfile
 from typing import Any, Dict, Optional
 
 import torch
@@ -36,6 +38,7 @@ def convert_to_fp8_scaled(
     filter_flags: Dict[str, bool],
     calib_samples: int,
     seed: int,
+    calib_cpu: bool = False,
     int8: bool = False,
     primary_format: Optional[str] = None,  # Override: "nvfp4", "mxfp8", or None (use int8 flag)
     fallback: Optional[str] = None,
@@ -107,7 +110,17 @@ def convert_to_fp8_scaled(
         warning(f"Format {target_format} requires CUDA kernels. Forcing device='cuda'.")
         device = "cuda"
 
-    seed_device = "cpu"
+    # Calibration cache configuration
+    calib_cache_dir = None
+    if low_memory and not calib_cpu:
+        out_dir = os.path.dirname(os.path.abspath(output_file)) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        calib_cache_dir = tempfile.mkdtemp(prefix="ctq_calib_", dir=out_dir)
+        info(f"Using disk-based calibration cache: {calib_cache_dir}")
+        seed_device = "cpu"
+    else:
+        seed_device = "cpu"  # Always use CPU for generation to avoid VRAM leak
+
     seed_generator = torch.Generator(device=seed_device)
     seed_generator.manual_seed(seed)
 
@@ -122,6 +135,8 @@ def convert_to_fp8_scaled(
         loader = MemoryEfficientSafeOpen(input_file, low_memory=low_memory)
     except Exception as e:
         error(f"FATAL: Error loading '{input_file}': {e}")
+        if calib_cache_dir and os.path.exists(calib_cache_dir):
+            shutil.rmtree(calib_cache_dir)
         return
 
     all_keys = loader.keys()
@@ -228,6 +243,8 @@ def convert_to_fp8_scaled(
             custom_pattern = re.compile(custom_layers)
         except re.error as e:
             error(f"ERROR: Invalid regex pattern '{custom_layers}': {e}")
+            if calib_cache_dir and os.path.exists(calib_cache_dir):
+                shutil.rmtree(calib_cache_dir)
             return
 
     # Compile exclude_layers regex pattern
@@ -238,6 +255,8 @@ def convert_to_fp8_scaled(
             info(f"Layer exclusion enabled: pattern '{exclude_layers}'")
         except re.error as e:
             error(f"ERROR: Invalid regex pattern '{exclude_layers}': {e}")
+            if calib_cache_dir and os.path.exists(calib_cache_dir):
+                shutil.rmtree(calib_cache_dir)
             return
 
     calibration_data_cache = {}
@@ -250,7 +269,17 @@ def convert_to_fp8_scaled(
                 in_features = shape[1]
                 if in_features not in calibration_data_cache:
                     verbose(f"  - Found new input dimension: {in_features}.")
-                    calibration_data_cache[in_features] = torch.randn(calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device)
+                    calib_tensor = torch.randn(calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device)
+
+                    if calib_cache_dir:
+                        # Save to disk as safetensors
+                        cache_path = os.path.join(calib_cache_dir, f"calib_{in_features}.safetensors")
+                        save_file({"calib_data": calib_tensor}, cache_path)
+                        calibration_data_cache[in_features] = cache_path
+                        del calib_tensor
+                    else:
+                        # Store in CPU memory
+                        calibration_data_cache[in_features] = calib_tensor
     info("Simulated calibration data generated.\n")
 
     new_tensors: Dict[str, torch.Tensor] = {}
@@ -453,14 +482,6 @@ def convert_to_fp8_scaled(
         new_tensors[key] = q_tensor.to(device="cpu")
         base_name = key[: key.rfind(".weight")]
 
-        # Store extracted LoRA tensors
-        if extra_tensors:
-            for lora_key, lora_tensor in extra_tensors.items():
-                # lora_up -> base.lora_up.weight, lora_down -> base.lora_down.weight
-                # Add diffusion_model prefix for ComfyUI compatibility
-                full_lora_key = f"diffusion_model.{base_name}.{lora_key}.weight"
-                lora_tensors[full_lora_key] = lora_tensor.cpu()
-
         bias_key = f"{base_name}.bias"
 
         if comfy_quant is True:
@@ -572,19 +593,16 @@ def convert_to_fp8_scaled(
         # Determine if this layer uses simple mode (skip bias correction to save memory)
         layer_uses_simple = custom_simple if use_custom else (fallback_simple if use_fallback else no_learned_rounding)
 
-        # Check if we should initialize or adjust bias for ConvRot/Bias Correction
+        # Check if we should adjust bias for ConvRot/Bias Correction
         if "bias_correction" in extra_tensors:
-            with torch.no_grad():
-                bias_correction = extra_tensors["bias_correction"].cpu()
-                if bias_key in all_keys:
+            if bias_key in all_keys:
+                with torch.no_grad():
+                    bias_correction = extra_tensors["bias_correction"].cpu()
                     info(f"  - Adjusting corresponding bias using ConvRot-specific calibration: {bias_key}")
                     original_bias = loader.get_tensor(bias_key)
                     b_new = (original_bias.to(dtype=COMPUTE_DTYPE) + bias_correction.to(dtype=COMPUTE_DTYPE)).to(dtype=original_bias.dtype)
                     new_tensors[bias_key] = b_new
                     print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
-                else:
-                    info(f"  - Creating new bias for biasless layer: {bias_key}")
-                    new_tensors[bias_key] = bias_correction.to(dtype=original_tensor.dtype)
         elif bias_key in all_keys:
             # Apply bias correction even in simple mode for better accuracy
             # Only if we have dequantized weights to calculate error from
@@ -597,19 +615,63 @@ def convert_to_fp8_scaled(
                         warning(f"  - WARNING: No calibration data for bias correction of {bias_key}.")
                         new_tensors[bias_key] = original_bias
                     else:
-                        X_calib_dev = calibration_data_cache[in_features].to(device=device)
-                        W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
-                        W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
-                        b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
-                        weight_error = W_orig_dev - W_dequant_dev
-                        output_error = X_calib_dev @ weight_error.T
-                        bias_correction = output_error.mean(dim=0)
-                        b_new = b_orig_dev - bias_correction
-                        new_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
-                        print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
-                        del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
-                        if device == "cuda":
-                            torch.cuda.empty_cache()
+                        cache_entry = calibration_data_cache[in_features]
+                        if isinstance(cache_entry, str):
+                            # Disk cache: load using MemoryEfficientSafeOpen
+                            with MemoryEfficientSafeOpen(cache_entry, low_memory=True) as calib_loader:
+                                calib_data = calib_loader.get_tensor("calib_data")
+                        else:
+                            # CPU cache
+                            calib_data = cache_entry
+
+                        total_samples = calib_data.shape[0]
+                        current_samples = total_samples
+                        min_samples = max(1, int(total_samples * 0.1))
+                        retry_count = 0
+                        max_retries = 10
+
+                        while True:
+                            try:
+                                X_calib_dev = calib_data[:current_samples].to(device=device)
+                                W_orig_dev = original_tensor.to(device=device, dtype=COMPUTE_DTYPE)
+                                W_dequant_dev = dequant_w.to(device=device, dtype=COMPUTE_DTYPE)
+                                b_orig_dev = original_bias.to(device=device, dtype=COMPUTE_DTYPE)
+                                weight_error = W_orig_dev - W_dequant_dev
+                                output_error = X_calib_dev @ weight_error.T
+                                bias_correction = output_error.mean(dim=0)
+                                b_new = b_orig_dev - bias_correction
+                                new_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
+                                print(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {new_tensors[bias_key].mean().item():.6f}")
+                                del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
+                                if device == "cuda":
+                                    torch.cuda.empty_cache()
+                                break
+                            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                                is_oom = isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower()
+                                if not is_oom:
+                                    raise
+
+                                for var in ['X_calib_dev', 'W_orig_dev', 'W_dequant_dev', 'b_orig_dev', 'weight_error', 'output_error', 'bias_correction', 'b_new']:
+                                    if var in locals():
+                                        try:
+                                            del locals()[var]
+                                        except KeyError:
+                                            pass
+                                gc.collect()
+                                if device == "cuda":
+                                    torch.cuda.empty_cache()
+
+                                retry_count += 1
+                                if retry_count > max_retries or current_samples <= min_samples:
+                                    warning(f"  - WARNING: OOM during bias correction even after reducing samples. Giving up.")
+                                    raise
+
+                                current_samples = max(min_samples, int(current_samples * 0.7))
+                                warning(f"  - WARNING: OOM during bias correction. Retrying with {current_samples} samples (attempt {retry_count}).")
+
+                        if isinstance(cache_entry, str):
+                            del calib_data
+                            gc.collect()
             else:
                 # No dequant_w available (shouldn't happen with learned rounding)
                 new_tensors[bias_key] = loader.get_tensor(bias_key)
@@ -695,7 +757,13 @@ def convert_to_fp8_scaled(
         info("Conversion complete!")
     except Exception as e:
         error(f"FATAL: Error saving file '{output_file}': {e}")
+        if calib_cache_dir and os.path.exists(calib_cache_dir):
+            shutil.rmtree(calib_cache_dir)
         return
+
+    if calib_cache_dir and os.path.exists(calib_cache_dir):
+        shutil.rmtree(calib_cache_dir)
+        verbose(f"Cleaned up calibration cache: {calib_cache_dir}")
 
     info("-" * 60)
     info("Summary:")
