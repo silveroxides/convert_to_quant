@@ -71,11 +71,6 @@ def extract_filter_flags(args) -> dict:
         if getattr(args, name):
             flags[name] = True
 
-    # Text model aliases: these flags imply generic_text input_scale behavior
-    TEXT_MODEL_ALIASES = {"qwen35"}
-    if any(flags.get(alias) for alias in TEXT_MODEL_ALIASES):
-        flags["generic_text"] = True
-
     return flags
 
 

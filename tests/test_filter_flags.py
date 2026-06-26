@@ -9,7 +9,7 @@ filter_flags combinations and checks that:
   - Excluded layers (via filter "exclude", "highprec", or "remove") are handled correctly
   - 1D/3D/4D tensors are never quantized regardless of layer name
   - AVOID_KEY_NAMES (norm, bias, embed_tokens…) are skipped in nvfp4/mxfp8 paths
-  - TEXT_MODEL_ALIASES (qwen35 -> generic_text) propagate correctly
+  - filter extraction uses only explicitly enabled filter flags
   - Quantized layers produce .weight_scale and .comfy_quant
   - Skipped layers do NOT produce .weight_scale / .comfy_quant / .input_scale
   - "remove" key deletes layers entirely from output (t5xxl decoder removal)
@@ -385,11 +385,11 @@ class TestFilterFlags(unittest.TestCase):
             self.assertIn(f"{base}.weight", out)
 
     # ------------------------------------------------------------------
-    # 6. TEXT_MODEL_ALIASES: qwen35 via extract_filter_flags injects generic_text
+    # 6. extract_filter_flags preserves only explicit filter flags
     # ------------------------------------------------------------------
 
-    def test_extract_filter_flags_qwen35_injects_generic_text(self):
-        """extract_filter_flags must set generic_text=True when qwen35 is set."""
+    def test_extract_filter_flags_qwen35_does_not_inject_generic_text(self):
+        """extract_filter_flags must not add generic_text when only qwen35 is set."""
         # Build a fake args namespace with all MODEL_FILTERS keys set to False
         # except qwen35
         import types
@@ -404,10 +404,10 @@ class TestFilterFlags(unittest.TestCase):
         flags = extract_filter_flags(ns)
 
         self.assertTrue(flags.get("qwen35"), "qwen35 must be True in flags")
-        self.assertTrue(flags.get("generic_text"), "generic_text must be auto-injected when qwen35 is set")
+        self.assertNotIn("generic_text", flags, "generic_text must not be auto-injected when qwen35 is set")
 
-    def test_extract_filter_flags_no_alias_without_qwen35(self):
-        """generic_text must NOT be injected when qwen35 is not set."""
+    def test_extract_filter_flags_keeps_explicit_generic_text(self):
+        """generic_text must be present only when explicitly enabled."""
         import types
 
         from convert_to_quant.constants import MODEL_FILTERS
@@ -415,13 +415,14 @@ class TestFilterFlags(unittest.TestCase):
         ns = types.SimpleNamespace()
         for name in MODEL_FILTERS.keys():
             setattr(ns, name, False)
+        setattr(ns, "generic_text", True)
 
         flags = extract_filter_flags(ns)
 
-        self.assertNotIn("generic_text", flags, "generic_text must not appear when no alias is active")
+        self.assertTrue(flags.get("generic_text"), "generic_text must be kept when explicitly active")
 
     # ------------------------------------------------------------------
-    # 7. --qwen35 input_scale behavior via generic_text injection (FP8)
+    # 7. Explicit qwen35 + generic_text input_scale behavior (FP8)
     # ------------------------------------------------------------------
 
     def test_fp8_qwen35_generic_text_produces_input_scale(self):
