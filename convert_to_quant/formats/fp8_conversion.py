@@ -49,6 +49,9 @@ def convert_to_fp8_scaled(
     custom_scaling_mode: Optional[str] = None,
     custom_simple: bool = False,
     custom_heur: bool = False,
+    custom_full_precision_mm: bool = False,
+    custom_convrot: bool = False,
+    custom_convrot_group_size: int = 256,
     convrot: bool = False,
     convrot_group_size: int = 256,
     fallback_block_size: Optional[int] = None,
@@ -230,6 +233,9 @@ def convert_to_fp8_scaled(
             custom_overrides["scaling_mode"] = custom_scaling_mode
         if custom_simple:
             custom_overrides["no_learned_rounding"] = True
+        if custom_convrot:
+            custom_overrides["convrot"] = True
+            custom_overrides["convrot_group_size"] = custom_convrot_group_size
         converters["custom"] = create_converter_for_format(custom_type, custom_overrides if custom_overrides else None, is_primary=False)
         override_note = f" (block_size={custom_block_size})" if custom_block_size else ""
         override_note += f" (scaling_mode={custom_scaling_mode})" if custom_scaling_mode else ""
@@ -447,15 +453,19 @@ def convert_to_fp8_scaled(
             if in_features % convrot_group_size == 0:
                 convrot_applied = True
 
+        # Check if the layer actually has a bias in the original model
+        temp_base_name = key[: key.rfind(".weight")]
+        has_bias = f"{temp_base_name}.bias" in all_keys
+
         # Call converter and unpack based on format type
         # Different converters have different return signatures
         if is_mxfp8:
             # MXFP8: (qdata_fp8, block_scales_e8m0, dequant_w, extra_tensors)
-            q_tensor, block_scales, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth)
+            q_tensor, block_scales, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth, has_bias=has_bias)
             dequant_s = block_scales  # For bias correction compatibility
         elif is_nvfp4:
             # NVFP4: (packed_qdata, block_scales_fp8, per_tensor_scale, dequant_w, extra_tensors)
-            q_tensor, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth)
+            q_tensor, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth, has_bias=has_bias)
             dequant_s = block_scales  # For bias correction compatibility
         else:
             # FP8/INT8: (q_tensor, scale, dequant_w, extra_tensors)
@@ -470,7 +480,7 @@ def convert_to_fp8_scaled(
             else:
                 calibration_data = cache_entry
 
-            q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth, calibration_data=calibration_data)
+            q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(original_tensor, key=key, depth=depth, calibration_data=calibration_data, has_bias=has_bias)
 
             # Cleanup calibration_data immediately if loaded from disk to prevent OOM
             if calib_data_loaded and calibration_data is not None:
@@ -488,10 +498,12 @@ def convert_to_fp8_scaled(
             # Use the converter's block_size (respects custom/fallback overrides)
             layer_block_size = converter.block_size
 
-            # Determine full_precision_matrix_mult: per-layer config takes priority over global
+            # Determine full_precision_matrix_mult: per-layer config takes priority over global, then custom layers
             layer_full_precision_mm = full_precision_matrix_mult
             if use_layer_config and "full_precision_matrix_mult" in layer_settings:
                 layer_full_precision_mm = layer_settings["full_precision_matrix_mult"]
+            elif use_custom and custom_full_precision_mm:
+                layer_full_precision_mm = True
 
             # Variables for metadata collection
             comfy_quant_format = None

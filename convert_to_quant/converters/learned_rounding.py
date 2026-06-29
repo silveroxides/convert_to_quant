@@ -48,6 +48,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.convrot = convrot
         self.convrot_group_size = convrot_group_size
         self.scale_optimization = scale_optimization
+        self.has_bias = True
 
         # INT8 defaults to block-wise scaling, but allows tensor-wise and row-wise
         if target_format == "int8" and scaling_mode not in ("tensor", "row", "block"):
@@ -535,7 +536,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         pbar.close()
         return best_tensor if best_tensor is not None else W_q_refined
 
-    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, calibration_data: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, calibration_data: Optional[torch.Tensor] = None, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+        has_bias = kwargs.get("has_bias", True)
+        self.has_bias = has_bias
         self._current_extra_tensors = {}
 
         # 1. Initialize State
@@ -793,7 +796,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         dequantized_weight = TensorWiseINT8Layout.dequantize(qdata, scale, orig_dtype=COMPUTE_DTYPE)
 
         # Phase 4: Residual Bias Calibration
-        if self.convrot and self.scaling_mode == "row" and X_rot is not None and Y_ref is not None:
+        if self.has_bias and self.convrot and self.scaling_mode == "row" and X_rot is not None and Y_ref is not None:
             with torch.no_grad():
                 Y_quant = X_rot @ dequantized_weight.T
                 bias_adj = (Y_ref - Y_quant).mean(dim=0)

@@ -26,6 +26,9 @@ EXPERIMENTAL_ARGS = {
     "custom_scaling_mode",
     "custom_simple",
     "custom_heur",
+    "custom_full_precision_mm",
+    "custom_convrot",
+    "custom_convrot_group_size",
     "fallback_block_size",
     "fallback_simple",
     "convrot",
@@ -248,7 +251,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Custom Layer Quantization:")
         print("-" * 40)
 
-        custom_args = ["custom_layers", "custom_type", "custom_block_size", "custom_scaling_mode", "custom_simple", "custom_heur"]
+        custom_args = ["custom_layers", "custom_type", "custom_block_size", "custom_scaling_mode", "custom_simple", "custom_heur", "custom_full_precision_mm", "custom_convrot", "custom_convrot_group_size"]
         for action in self._all_actions:
             if self._get_dest_name(action) in custom_args:
                 line = self._format_action_help(action)

@@ -426,7 +426,7 @@ class BaseLearnedConverter(ABC):
             torch.cuda.empty_cache()
 
     @abstractmethod
-    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1) -> Tuple:
+    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, **kwargs) -> Tuple:
         """
         Convert tensor to quantized format.
 

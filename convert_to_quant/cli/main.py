@@ -119,6 +119,9 @@ def get_parser() -> MultiHelpArgumentParser:
     parser.add_argument("--custom-scaling-mode", "--custom_scaling_mode", type=str, default=None, dest="custom_scaling_mode", choices=["tensor", "row", "block", "block3d", "block2d"], help="FP8 scaling mode for custom-type layers (default: inherit --scaling_mode). 'block2d' is deprecated alias for 'block'.")
     parser.add_argument("--custom-simple", "--custom_simple", action="store_true", dest="custom_simple", help="Use simple quantization for custom-type layers")
     parser.add_argument("--custom-heur", "--custom_heur", action="store_true", dest="custom_heur", help="Apply performance heuristics to custom-type layers")
+    parser.add_argument("--custom-full-precision-mm", "--custom-fpmm", action="store_true", dest="custom_full_precision_mm", help="Enable full_precision_matrix_mult=True in .comfy_quant metadata specifically for custom layers.")
+    parser.add_argument("--custom-convrot", action="store_true", dest="custom_convrot", help="Enable group-wise Hadamard rotation (ConvRot) specifically for custom layers.")
+    parser.add_argument("--custom-convrot-group-size", type=int, default=256, dest="custom_convrot_group_size", help="Group size for custom layer ConvRot (must be power of 4). Default: 256")
     # Fallback-type parameter overrides
     parser.add_argument("--fallback-block-size", "--fallback_block_size", type=int, default=None, dest="fallback_block_size", help="Block size for fallback-type layers (default: inherit --block_size)")
     parser.add_argument("--fallback-simple", "--fallback_simple", action="store_true", dest="fallback_simple", help="Use simple quantization for fallback-type layers")
@@ -757,6 +760,9 @@ def run_conversion(args):
         custom_scaling_mode=args.custom_scaling_mode,
         custom_simple=args.custom_simple,
         custom_heur=args.custom_heur,
+        custom_full_precision_mm=args.custom_full_precision_mm,
+        custom_convrot=args.custom_convrot,
+        custom_convrot_group_size=args.custom_convrot_group_size,
         convrot=args.convrot,
         convrot_group_size=args.convrot_group_size,
         # Fallback options

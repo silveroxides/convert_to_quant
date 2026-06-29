@@ -252,22 +252,29 @@ def convert_to_nvfp4(
         if depth_match:
             depth = int(depth_match.group(1))
 
+        # Check if corresponding bias exists
+        bias_key = f"{base_key}.bias"
+        has_bias = bias_key in all_keys
+
         # Quantize to NVFP4
         if use_learned:
             # LearnedNVFP4Converter returns (qdata, block_scales, per_tensor_scale, dequantized, extra_tensors)
-            qdata, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(tensor, key=key, depth=depth)
+            qdata, block_scales, per_tensor_scale, dequant_w, extra_tensors = converter.convert(tensor, key=key, depth=depth, has_bias=has_bias)
             # Crop dequant_w back to original shape if it was padded
-            if dequant_w.shape != tensor.shape:
+            if dequant_w is not None and dequant_w.shape != tensor.shape:
                 dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
         else:
             # Transfer to GPU for simple quantization
             tensor_gpu = tensor.to(device=device, dtype=torch.float32)
             qdata, block_scales, per_tensor_scale = converter.quantize(tensor_gpu)
-            # For simple mode, we need to dequantize for bias correction
-            dequant_w = converter.dequantize(qdata, per_tensor_scale, block_scales, output_dtype=torch.float32)
-            # Crop dequant_w back to original shape if it was padded
-            if dequant_w.shape != tensor.shape:
-                dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
+            if has_bias:
+                # For simple mode, we need to dequantize for bias correction
+                dequant_w = converter.dequantize(qdata, per_tensor_scale, block_scales, output_dtype=torch.float32)
+                # Crop dequant_w back to original shape if it was padded
+                if dequant_w.shape != tensor.shape:
+                    dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
+            else:
+                dequant_w = None
             del tensor_gpu
             extra_tensors = {}
 
@@ -294,7 +301,7 @@ def convert_to_nvfp4(
 
         # Bias correction (matching FP8 logic)
         bias_key = f"{base_key}.bias"
-        if bias_key in all_keys:
+        if has_bias and bias_key in all_keys:
             # Apply bias correction even in simple mode for better accuracy
             verbose(f"  - Adjusting corresponding bias: {bias_key}")
             with torch.no_grad():

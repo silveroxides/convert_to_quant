@@ -79,7 +79,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         if self.optimizer_choice == "original":
             verbose(f"  - LR schedule: {self.lr_schedule}")
 
-    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         """
         Convert tensor to NVFP4 format with learned rounding optimization.
 
