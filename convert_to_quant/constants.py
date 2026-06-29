@@ -43,8 +43,15 @@ AVOID_KEY_NAMES = [
 T5XXL_REMOVE_KEY_NAMES = ["decoder", "lm_head"]
 VISUAL_AVOID_KEY_NAMES = ["mlp.down_proj", "mlp.up_proj", "mlp.gate_proj"]
 QWEN_AVOID_KEY_NAMES = ["norm_added_k", "norm_added_q", "norm_k", "norm_q", "txt_norm"]
-HUNYUAN_AVOID_KEY_NAMES = ["layernorm", "img_attn_k_norm", "img_attn_q_norm", "txt_attn_k_norm", "txt_attn_q_norm", "norm1", "norm2", "vision_in.proj.0", "vision_in.proj.4", "img_in.proj", "cond_type_embedding"]
-ZIMAGE_AVOID_KEY_NAMES = ["cap_embedder.0", "cap_pad_token", "attention_norm1", "attention_norm2", "ffn_norm1", "ffn_norm2", "k_norm", "q_norm", "x_pad_token"]
+HUNYUAN_AVOID_KEY_NAMES = [
+    "layernorm", "img_attn_k_norm", "img_attn_q_norm", "txt_attn_k_norm", "txt_attn_q_norm", "norm1", "norm2",
+    "vision_in.proj.0", "vision_in.proj.4", "img_in.proj", "cond_type_embedding"
+]
+ZIMAGE_AVOID_KEY_NAMES = [
+    "cap_embedder.0", "cap_pad_token", "attention_norm1", "attention_norm2", "ffn_norm1", "ffn_norm2", "k_norm", "q_norm",
+    "x_pad_token"
+]
+GEMMA4_AVOID_KEY_NAMES = ["audio", "per_layer_input_gate", "per_layer_projection", "vision", "multi_modal_projector"]
 
 # --- Layer key names for specific models (layers to include as high-precision) ---
 FLUX2_LAYER_KEYNAMES = ["stream_modulation", "guidance_in", "time_in", "final_layer", "img_in", "txt_in"]
@@ -53,13 +60,24 @@ DISTILL_LAYER_KEYNAMES_SMALL = ["distilled_guidance_layer"]
 NERF_LAYER_KEYNAMES_LARGE = ["distilled_guidance_layer", "nerf_blocks", "nerf_image_embedder", "txt_in", "_attn.proj"]
 NERF_LAYER_KEYNAMES_SMALL = ["distilled_guidance_layer", "nerf_blocks", "nerf_image_embedder"]
 RADIANCE_LAYER_KEYNAMES = ["img_in_patch", "nerf_final_layer_conv", "__x0__"]
-WAN_LAYER_KEYNAMES = ["text_embedding", "time_embedding", "audio_model.text_embedding", "casual_audio_encoder", "frame_packer", "trainable_cond_mask", "cond_encoder", "audio_model.time_embedding", "time_projection", "video_model.time_projection", "head.head", "face_encoder.out_proj", "face_adapter", "audio_injector"]
+WAN_LAYER_KEYNAMES = [
+    "text_embedding", "time_embedding", "audio_model.text_embedding", "casual_audio_encoder", "frame_packer",
+    "trainable_cond_mask", "cond_encoder", "audio_model.time_embedding", "time_projection", "video_model.time_projection",
+    "head.head", "face_encoder.out_proj", "face_adapter", "audio_injector"
+]
 QWEN_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "transformer_blocks.0.img_mod.1", "txt_in"]
-ZIMAGE_LAYER_KEYNAMES = ["x_embedder", "clip_text_pooled_proj", "final_layer", "cap_embedder.1", "adaLN_modulation", "t_embedder", "time_text_embed"]
+ZIMAGE_LAYER_KEYNAMES = [
+    "x_embedder", "clip_text_pooled_proj", "final_layer", "cap_embedder.1", "adaLN_modulation", "t_embedder", "time_text_embed"
+]
 ZIMAGE_REFINER_LAYER_KEYNAMES = ["context_refiner", "noise_refiner"]
-ANIMA_LAYER_KEYNAMES = ["net.blocks.0.", "net.blocks.1.adaln_modulation", "final_layer", "llm_adapter", "t_embedder", "x_embedder"]
+ANIMA_LAYER_KEYNAMES = [
+    "net.blocks.0.", "net.blocks.1.adaln_modulation", "final_layer", "llm_adapter", "t_embedder", "x_embedder"
+]
 LENS_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "img_mod.1", "txt_mod.1", "txt_in"]
-QWEN35_AVOID_KEY_NAMES = [".layers.0.", ".layers.63.", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "visual.pos_embed", "visual.patch_embed", "merger", "mtp.fc", "visual.blocks.0."]
+QWEN35_AVOID_KEY_NAMES = [
+    ".layers.0.", ".layers.63.", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "visual.pos_embed", "visual.patch_embed",
+    "merger", "mtp.fc", "visual.blocks.0."
+]
 LTXV2_LAYER_KEYNAMES = [
     "scale_shift_table",
     "text_embedding_projection",
@@ -88,6 +106,13 @@ LTXV2_LAYER_KEYNAMES = [
     "to_gate_logits",
 ]
 
+KREA2_LAYER_KEYNAMES = ["firs", "las", "tml", "txtfusion", "last.modulatio", "tpro"]
+BOOGU_LAYER_KEYNAMES = [
+    "image_index_embedding", "ref_image_patch_embedder", "time_caption_embed", "x_embedder", "norm_out.linear_1",
+    "norm_out.linear_2"
+]
+IDEOGRAM4_LAYER_KEYNAMES = ["embed_image_indicator", "t_embedding", "llm_cond_proj", "adaln_proj", "final_layer", "input_proj"]
+
 # --- Model Filter Registry ---
 # Each entry maps a CLI flag (--radiance, --flux2, etc.) to its layer patterns.
 # Keys:
@@ -99,28 +124,129 @@ LTXV2_LAYER_KEYNAMES = [
 
 MODEL_FILTERS = {
     # Text Encoders
-    "qwen35": {"help": "Qwen2.5 text/multimodal model: skip first/last layers, embeddings, visual components", "category": "text", "exclude": QWEN35_AVOID_KEY_NAMES},
-    "t5xxl": {"help": "T5-XXL text encoder: skip norms/biases, remove decoder layers", "category": "text", "exclude": AVOID_KEY_NAMES, "remove": T5XXL_REMOVE_KEY_NAMES},
-    "mistral": {"help": "Mistral text encoder exclusions", "category": "text", "exclude": AVOID_KEY_NAMES},
-    "visual": {"help": "Visual encoder: skip MLP layers (down/up/gate proj)", "category": "text", "exclude": VISUAL_AVOID_KEY_NAMES},
-    "generic_text": {"help": "Generic text encoder: skip MLP layers (down/up/gate proj)", "category": "text"},
+    "gemma4": {
+        "help":
+        "Gemma4 text/multimodal model: skip audio, per_layer_input_gate, per_layer_projection, vision, multi_modal_projector",
+        "category": "text",
+        "exclude": GEMMA4_AVOID_KEY_NAMES
+    },
+    "qwen35": {
+        "help": "Qwen2.5 text/multimodal model: skip first/last layers, embeddings, visual components",
+        "category": "text",
+        "exclude": QWEN35_AVOID_KEY_NAMES
+    },
+    "t5xxl": {
+        "help": "T5-XXL text encoder: skip norms/biases, remove decoder layers",
+        "category": "text",
+        "exclude": AVOID_KEY_NAMES,
+        "remove": T5XXL_REMOVE_KEY_NAMES
+    },
+    "mistral": {
+        "help": "Mistral text encoder exclusions",
+        "category": "text",
+        "exclude": AVOID_KEY_NAMES
+    },
+    "visual": {
+        "help": "Visual encoder: skip MLP layers (down/up/gate proj)",
+        "category": "text",
+        "exclude": VISUAL_AVOID_KEY_NAMES
+    },
+    "generic_text": {
+        "help": "Generic text encoder: skip MLP layers (down/up/gate proj)",
+        "category": "text"
+    },
     # Diffusion Models (Flux-style)
-    "anima": {"help": "Anima diffusion model: keep first blocks, adaln_modulation, final/embedding layers high-precision", "category": "diffusion", "highprec": ANIMA_LAYER_KEYNAMES},
-    "lens": {"help": "LENS diffusion model: keep time_text_embed, img_in, norm_out, proj_out, some mod layers high-precision", "category": "diffusion", "highprec": LENS_LAYER_KEYNAMES},
-    "flux2": {"help": "Flux.2: keep modulation/guidance/time/final layers high-precision", "category": "diffusion", "highprec": FLUX2_LAYER_KEYNAMES},
-    "distillation_large": {"help": "Chroma/distilled (large): keep distilled_guidance, final, img/txt_in high-precision", "category": "diffusion", "highprec": DISTILL_LAYER_KEYNAMES_LARGE},
-    "distillation_small": {"help": "Chroma/distilled (small): keep only distilled_guidance high-precision", "category": "diffusion", "highprec": DISTILL_LAYER_KEYNAMES_SMALL},
-    "nerf_large": {"help": "NeRF (large): keep nerf_blocks, distilled_guidance, txt_in high-precision", "category": "diffusion", "highprec": NERF_LAYER_KEYNAMES_LARGE},
-    "nerf_small": {"help": "NeRF (small): keep nerf_blocks, distilled_guidance high-precision", "category": "diffusion", "highprec": NERF_LAYER_KEYNAMES_SMALL},
-    "radiance": {"help": "Radiance model: keep img_in_patch, nerf_final_layer high-precision", "category": "diffusion", "highprec": RADIANCE_LAYER_KEYNAMES},
+    "anima": {
+        "help": "Anima diffusion model: keep first blocks, adaln_modulation, final/embedding layers high-precision",
+        "category": "diffusion",
+        "highprec": ANIMA_LAYER_KEYNAMES
+    },
+    "lens": {
+        "help": "LENS diffusion model: keep time_text_embed, img_in, norm_out, proj_out, some mod layers high-precision",
+        "category": "diffusion",
+        "highprec": LENS_LAYER_KEYNAMES
+    },
+    "flux2": {
+        "help": "Flux.2: keep modulation/guidance/time/final layers high-precision",
+        "category": "diffusion",
+        "highprec": FLUX2_LAYER_KEYNAMES
+    },
+    "distillation_large": {
+        "help": "Chroma/distilled (large): keep distilled_guidance, final, img/txt_in high-precision",
+        "category": "diffusion",
+        "highprec": DISTILL_LAYER_KEYNAMES_LARGE
+    },
+    "distillation_small": {
+        "help": "Chroma/distilled (small): keep only distilled_guidance high-precision",
+        "category": "diffusion",
+        "highprec": DISTILL_LAYER_KEYNAMES_SMALL
+    },
+    "nerf_large": {
+        "help": "NeRF (large): keep nerf_blocks, distilled_guidance, txt_in high-precision",
+        "category": "diffusion",
+        "highprec": NERF_LAYER_KEYNAMES_LARGE
+    },
+    "nerf_small": {
+        "help": "NeRF (small): keep nerf_blocks, distilled_guidance high-precision",
+        "category": "diffusion",
+        "highprec": NERF_LAYER_KEYNAMES_SMALL
+    },
+    "radiance": {
+        "help": "Radiance model: keep img_in_patch, nerf_final_layer high-precision",
+        "category": "diffusion",
+        "highprec": RADIANCE_LAYER_KEYNAMES
+    },
+    "krea2": {
+        "help": "Krea2: keep firs, las, tml, txtfusion, last.modulation, tpro layers high-precision",
+        "category": "diffusion",
+        "highprec": KREA2_LAYER_KEYNAMES
+    },
+    "ideogram4": {
+        "help": "Ideogram4: keep embed_image_indicator, t_embedding, adaln_proj, final_layer, input_proj layers high-precision",
+        "category": "diffusion",
+        "highprec": IDEOGRAM4_LAYER_KEYNAMES
+    },
     # Video Models
-    "wan": {"help": "WAN video model: skip embeddings, encoders, head", "category": "video", "exclude": AVOID_KEY_NAMES, "highprec": WAN_LAYER_KEYNAMES},
-    "hunyuan": {"help": "Hunyuan Video 1.5: skip layernorm, attn norms, vision_in", "category": "video", "exclude": HUNYUAN_AVOID_KEY_NAMES},
+    "wan": {
+        "help": "WAN video model: skip embeddings, encoders, head",
+        "category": "video",
+        "exclude": AVOID_KEY_NAMES,
+        "highprec": WAN_LAYER_KEYNAMES
+    },
+    "hunyuan": {
+        "help": "Hunyuan Video 1.5: skip layernorm, attn norms, vision_in",
+        "category": "video",
+        "exclude": HUNYUAN_AVOID_KEY_NAMES
+    },
     # Image Models
-    "qwen": {"help": "Qwen Image: skip added norms, keep time_text_embed high-precision", "category": "image", "exclude": QWEN_AVOID_KEY_NAMES, "highprec": QWEN_LAYER_KEYNAMES},
-    "zimage": {"help": "Z-Image: skip cap_embedder/norms, keep x_embedder/final high-precision", "category": "image", "exclude": ZIMAGE_AVOID_KEY_NAMES, "highprec": ZIMAGE_LAYER_KEYNAMES},
-    "zimage_refiner": {"help": "Z-Image Refiner: keep context/noise refiner high-precision", "category": "image", "exclude": ZIMAGE_AVOID_KEY_NAMES, "highprec": ZIMAGE_REFINER_LAYER_KEYNAMES},
-    "ltxv2": {"help": "LTXv2: keep some transformer blocks high-precision and exclude vae and vocoder", "category": "video", "highprec": LTXV2_LAYER_KEYNAMES},
+    "qwen": {
+        "help": "Qwen Image: skip added norms, keep time_text_embed high-precision",
+        "category": "image",
+        "exclude": QWEN_AVOID_KEY_NAMES,
+        "highprec": QWEN_LAYER_KEYNAMES
+    },
+    "zimage": {
+        "help": "Z-Image: skip cap_embedder/norms, keep x_embedder/final high-precision",
+        "category": "image",
+        "exclude": ZIMAGE_AVOID_KEY_NAMES,
+        "highprec": ZIMAGE_LAYER_KEYNAMES
+    },
+    "zimage_refiner": {
+        "help": "Z-Image Refiner: keep context/noise refiner high-precision",
+        "category": "image",
+        "exclude": ZIMAGE_AVOID_KEY_NAMES,
+        "highprec": ZIMAGE_REFINER_LAYER_KEYNAMES
+    },
+    "boogu": {
+        "help": "Boogu: keep image_index_embedding, ref_image_patch_embedder, time_caption_embed, x_embedder high-precision",
+        "category": "image",
+        "highprec": BOOGU_LAYER_KEYNAMES
+    },
+    "ltxv2": {
+        "help": "LTXv2: keep some transformer blocks high-precision and exclude vae and vocoder",
+        "category": "video",
+        "highprec": LTXV2_LAYER_KEYNAMES
+    },
 }
 
 

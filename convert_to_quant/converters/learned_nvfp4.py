@@ -11,16 +11,40 @@ Requires SM >= 10.0 (datacenter Blackwell) or SM >= 12.0 (consumer RTX 50 series
 
 import gc
 import math
-from typing import Dict, Optional, Tuple
+from typing import (
+    Dict,
+    Optional,
+    Tuple,
+)
 
 import torch
-from torch.optim import AdamW, RAdam
+from torch.optim import (
+    AdamW,
+    RAdam,
+)
 from tqdm import tqdm
 
-from ..constants import COMPUTE_DTYPE, FP4_BLOCK_SIZE, FP4_E2M1_MAX, SCALE_DTYPE
+from ..constants import (
+    COMPUTE_DTYPE,
+    FP4_E2M1_MAX,
+    SCALE_DTYPE,
+)
 from ..pinned_transfer import transfer_to_gpu_pinned
-from ..utils.float_utils import F4_E2M1_EBITS, F4_E2M1_MBITS, F8_E4M3_MAX, _f32_to_floatx_unpacked, _float8_round, _floatx_unpacked_to_f32, from_blocked, pack_uint4, roundup, to_blocked, unpack_uint4
-from ..utils.logging import debug, info, minimal, verbose
+from ..utils.float_utils import (
+    F4_E2M1_EBITS,
+    F4_E2M1_MBITS,
+    F8_E4M3_MAX,
+    _f32_to_floatx_unpacked,
+    _float8_round,
+    _floatx_unpacked_to_f32,
+    pack_uint4,
+    roundup,
+    to_blocked,
+)
+from ..utils.logging import (
+    info,
+    verbose,
+)
 from .base_converter import BaseLearnedConverter
 
 # Check for comfy-kitchen availability
@@ -40,7 +64,11 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
     Adds NVFP4-specific: block_size=16 validation, pad_to_16x padding.
     """
 
-    def __init__(self, block_size: int = 16, pad_to_16x: bool = True, scale_refinement_rounds: int = 1, scale_optimization: str = "fixed", lr: float = 1.0, extract_lora: bool = False, lora_rank: int = 32, lora_depth: int = 1, lora_target: Optional[str] = None, lora_ar_threshold: float = 0.0, **kwargs):
+    def __init__(
+        self, block_size: int = 16, pad_to_16x: bool = True, scale_refinement_rounds: int = 1,
+        scale_optimization: str = "fixed", lr: float = 1.0, extract_lora: bool = False, lora_rank: int = 32,
+        lora_depth: int = 1, lora_target: Optional[str] = None, lora_ar_threshold: float = 0.0, **kwargs
+    ):
         """
         Initialize NVFP4 converter.
 
@@ -61,7 +89,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         if scale_optimization not in valid_scale_modes:
             raise ValueError(f"scale_optimization must be one of {valid_scale_modes}, got '{scale_optimization}'")
 
-        super().__init__(lr=lr, extract_lora=extract_lora, lora_rank=lora_rank, lora_depth=lora_depth, lora_target=lora_target, lora_ar_threshold=lora_ar_threshold, **kwargs)
+        super().__init__(
+            lr=lr, extract_lora=extract_lora, lora_rank=lora_rank, lora_depth=lora_depth, lora_target=lora_target,
+            lora_ar_threshold=lora_ar_threshold, **kwargs
+        )
 
         self.block_size = block_size
         self.pad_to_16x = pad_to_16x
@@ -70,16 +101,20 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         self.scale_refinement_rounds = max(1, scale_refinement_rounds) if scale_optimization == "iterative" else 1
 
         verbose(f"LearnedNVFP4Converter initialized on device: {self.device}")
-        verbose(f"  - Format: NVFP4 (FP4 E2M1)")
+        verbose("  - Format: NVFP4 (FP4 E2M1)")
         verbose(f"  - Block size: {self.block_size}")
         verbose(f"  - Scale optimization: {self.scale_optimization}")
         if self.scale_optimization == "iterative" and self.scale_refinement_rounds > 1:
             verbose(f"  - Scale refinement rounds: {self.scale_refinement_rounds}")
-        verbose(f"  - Using optimizer: '{self.optimizer_choice}'" + (" (disabled - simple quant)" if self.no_learned_rounding else ""))
+        verbose(
+            f"  - Using optimizer: '{self.optimizer_choice}'" +
+            (" (disabled - simple quant)" if self.no_learned_rounding else "")
+        )
         if self.optimizer_choice == "original":
             verbose(f"  - LR schedule: {self.lr_schedule}")
 
-    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1,
+                **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         """
         Convert tensor to NVFP4 format with learned rounding optimization.
 
@@ -111,7 +146,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         # Validate dimensions
         M, N = W_float32.shape
         if M % self.block_size != 0 or N % self.block_size != 0:
-            raise ValueError(f"NVFP4 requires dimensions divisible by {self.block_size}. Got shape ({M}, {N}). Enable --pad_to_16x or use --heur to skip.")
+            raise ValueError(
+                f"NVFP4 requires dimensions divisible by {self.block_size}. Got shape ({M}, {N}). Enable --pad_to_16x or use --heur to skip."
+            )
 
         # Compute per-tensor scale (fixed)
         amax = torch.amax(torch.abs(W_float32))
@@ -160,7 +197,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         return data_packed, blocked_scales, per_tensor_scale, dequantized, extra_tensors
 
-    def _compute_block_scales(self, W: torch.Tensor, per_tensor_scale: torch.Tensor, M: int, N: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _compute_block_scales(self, W: torch.Tensor, per_tensor_scale: torch.Tensor, M: int,
+                              N: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute block scales for NVFP4 quantization.
 
@@ -211,7 +249,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         return qdata, block_scales, per_tensor_scale, dequantized, {}
 
-    def _simple_quantize(self, W_float32: torch.Tensor, total_scale: torch.Tensor, zero_scale_mask: torch.Tensor) -> torch.Tensor:
+    def _simple_quantize(
+        self, W_float32: torch.Tensor, total_scale: torch.Tensor, zero_scale_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Simple quantization without learned rounding (matches comfy-kitchen)."""
         M, N = W_float32.shape
         tensor_blocks = W_float32.reshape(M, -1, self.block_size)
@@ -239,7 +279,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         return dequantized.view(M, N).to(COMPUTE_DTYPE)
 
-    def _optimize_nvfp4(self, W_float32: torch.Tensor, total_scale: torch.Tensor, zero_scale_mask: torch.Tensor, per_tensor_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _optimize_nvfp4(
+        self, W_float32: torch.Tensor, total_scale: torch.Tensor, zero_scale_mask: torch.Tensor, per_tensor_scale: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply learned rounding optimization for NVFP4.
 
         Returns:
@@ -299,7 +341,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         dequantized = data_blocks * total_scale.unsqueeze(-1)
         return dequantized.view(M, N)
 
-    def _optimize_original(self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor, per_tensor_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _optimize_original(
+        self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor,
+        per_tensor_scale: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """NVFP4 optimization using original gradient descent with tier-based LR.
 
         Supports three scale_optimization modes:
@@ -373,7 +418,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             scale_update_interval = self.num_iter + 1  # Never update for fixed/joint
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing NVFP4 (Original-{schedule_name}{mode_suffix})", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter), desc=f"    Optimizing NVFP4 (Original-{schedule_name}{mode_suffix})", leave=False,
+            dynamic_ncols=True
+        )
 
         for i in pbar:
             # Iterative scale refinement: recompute scales periodically (iterative mode only)
@@ -381,7 +429,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 # Dequantize current state
                 current_dq = self._nvfp4_dequantize_blockwise(W_q_refined, current_total_scale, M, N)
                 # Recompute scales from current dequantized weights
-                new_block_scales, new_total_scale, _ = self._compute_block_scales_from_tensor(current_dq, per_tensor_scale, M, N)
+                new_block_scales, new_total_scale, _ = self._compute_block_scales_from_tensor(
+                    current_dq, per_tensor_scale, M, N
+                )
                 current_total_scale = new_total_scale
                 # Re-normalize W_q to new scale
                 tensor_blocks_new = current_dq.reshape(M, -1, self.block_size)
@@ -444,7 +494,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             else:  # 'adaptive' - tier-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
-                new_lr, lr_updated = self._adaptive_lr_update_cosine(curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr)
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr
+                )
                 if lr_updated:
                     curr_lr = new_lr
 
@@ -452,7 +504,14 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                 if improved and self.lr_adaptive_mode == "no-reset":
                     worse_loss_counter = 0
 
-            pbar.set_postfix({"loss": f"{current_loss:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
+            pbar.set_postfix(
+                {
+                    "loss": f"{current_loss:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "worse_count": f"{worse_loss_counter}"
+                }
+            )
 
             # Early stopping
             if self._check_early_stop(current_loss, curr_lr, worse_loss_counter):
@@ -488,7 +547,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         qdata = _f32_to_floatx_unpacked(best_qdata.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
         return qdata, best_total_scale
 
-    def _optimize_adamw(self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor, per_tensor_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _optimize_adamw(
+        self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor,
+        per_tensor_scale: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """NVFP4 optimization using AdamW optimizer.
 
         Supports scale_optimization modes: fixed, iterative (not implemented), joint (STE).
@@ -530,7 +592,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing NVFP4 (AdamW-{schedule_name}{mode_suffix})", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter), desc=f"    Optimizing NVFP4 (AdamW-{schedule_name}{mode_suffix})", leave=False,
+            dynamic_ncols=True
+        )
 
         for i in pbar:
             optimizer.zero_grad()
@@ -590,7 +655,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
-                new_lr, lr_updated = self._adaptive_lr_update_cosine(curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr)
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr
+                )
                 if lr_updated:
                     curr_lr = new_lr
                     for pg in optimizer.param_groups:
@@ -601,9 +668,23 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     worse_loss_counter = 0
 
             if schedule_name == "plateau":
-                pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "plateau": f"{plateau_counter}/{effective_patience}"})
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "plateau": f"{plateau_counter}/{effective_patience}"
+                    }
+                )
             else:
-                pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "worse_count": f"{worse_loss_counter}"
+                    }
+                )
 
             if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
                 break
@@ -615,7 +696,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         qdata = _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
         return qdata, best_total_scale
 
-    def _optimize_radam(self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor, per_tensor_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _optimize_radam(
+        self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor,
+        per_tensor_scale: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """NVFP4 optimization using RAdam optimizer.
 
         Supports scale_optimization modes: fixed, iterative (not implemented), joint (STE).
@@ -657,7 +741,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing NVFP4 (RAdam-{schedule_name}{mode_suffix})", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter), desc=f"    Optimizing NVFP4 (RAdam-{schedule_name}{mode_suffix})", leave=False,
+            dynamic_ncols=True
+        )
 
         for i in pbar:
             optimizer.zero_grad()
@@ -717,7 +804,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
             else:  # 'adaptive' - cosine-based schedule
                 # Use counter before reset for boost calculation to prevent compounding
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
-                new_lr, lr_updated = self._adaptive_lr_update_cosine(curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr)
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr
+                )
                 if lr_updated:
                     curr_lr = new_lr
                     for pg in optimizer.param_groups:
@@ -728,9 +817,23 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     worse_loss_counter = 0
 
             if schedule_name == "plateau":
-                pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "plateau": f"{plateau_counter}/{effective_patience}"})
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "plateau": f"{plateau_counter}/{effective_patience}"
+                    }
+                )
             else:
-                pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "worse_count": f"{worse_loss_counter}"
+                    }
+                )
 
             if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
                 break
@@ -742,9 +845,14 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         qdata = _f32_to_floatx_unpacked(final_q.float(), F4_E2M1_EBITS, F4_E2M1_MBITS)
         return qdata, best_total_scale
 
-    def _optimize_prodigy(self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor, per_tensor_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _optimize_prodigy(
+        self, W_float32: torch.Tensor, total_scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor,
+        per_tensor_scale: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """NVFP4 optimization using ProdigyPlusScheduleFree optimizer."""
-        from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree
+        from prodigyplus.prodigy_plus_schedulefree import (
+            ProdigyPlusScheduleFree,
+        )
 
         M, N = W_float32.shape
 
@@ -761,7 +869,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         current_total_scale = total_scale.clone()
         if self.scale_optimization == "joint":
             block_scales_float = (total_scale / per_tensor_scale).clone().requires_grad_(True)
-            optimizer = ProdigyPlusScheduleFree([delta, block_scales_float], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed)
+            optimizer = ProdigyPlusScheduleFree(
+                [delta, block_scales_float], lr=curr_lr, use_schedulefree=False, use_speed=self.use_speed
+            )
             best_block_scales = block_scales_float.detach().clone()
         else:
             block_scales_float = None
@@ -779,7 +889,10 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
 
         mode_suffix = f"-{self.scale_optimization}" if self.scale_optimization != "fixed" else ""
-        pbar = tqdm(range(self.num_iter), desc=f"    Optimizing NVFP4 (Prodigy-{schedule_name}{mode_suffix})", leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            range(self.num_iter), desc=f"    Optimizing NVFP4 (Prodigy-{schedule_name}{mode_suffix})", leave=False,
+            dynamic_ncols=True
+        )
 
         for i in pbar:
             optimizer.zero_grad()
@@ -835,7 +948,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     plateau_counter = 0
             else:  # 'adaptive'
                 counter_for_update = prev_worse_counter if improved else worse_loss_counter
-                new_lr, lr_updated = self._adaptive_lr_update_cosine(curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr)
+                new_lr, lr_updated = self._adaptive_lr_update_cosine(
+                    curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr
+                )
                 if lr_updated:
                     curr_lr = new_lr
                     for pg in optimizer.param_groups:
@@ -845,9 +960,23 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
                     worse_loss_counter = 0
 
             if schedule_name == "plateau":
-                pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "plateau": f"{plateau_counter}/{effective_patience}"})
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "plateau": f"{plateau_counter}/{effective_patience}"
+                    }
+                )
             else:
-                pbar.set_postfix({"loss": f"{current_loss_val:.3e}", "best": f"{best_loss:.3e}", "lr": f"{curr_lr:.2e}", "worse_count": f"{worse_loss_counter}"})
+                pbar.set_postfix(
+                    {
+                        "loss": f"{current_loss_val:.3e}",
+                        "best": f"{best_loss:.3e}",
+                        "lr": f"{curr_lr:.2e}",
+                        "worse_count": f"{worse_loss_counter}"
+                    }
+                )
 
             if self._check_early_stop(best_loss, curr_lr, worse_loss_counter):
                 break

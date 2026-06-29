@@ -10,19 +10,41 @@ Use --simple to switch to raw MXFP8Converter.
 
 import gc
 import os
-from typing import Dict, Optional
+from typing import (
+    Dict,
+    Optional,
+)
 
 import torch
-from safetensors import safe_open
 from safetensors.torch import save_file
 
-from ..constants import AVOID_KEY_NAMES, COMPUTE_DTYPE, MODEL_FILTERS, MXFP8_BLOCK_SIZE, MXFP8_DTYPE, NORMALIZE_SCALES_ENABLED
+from ..constants import (
+    AVOID_KEY_NAMES,
+    COMPUTE_DTYPE,
+    MODEL_FILTERS,
+    MXFP8_BLOCK_SIZE,
+    NORMALIZE_SCALES_ENABLED,
+)
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..converters.mxfp8_converter import MXFP8Converter
-from ..utils.comfy_quant import should_skip_layer_for_performance
-from ..utils.logging import debug, error, info, log_debug, minimal, verbose, warning
-from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
-from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
+from ..utils.comfy_quant import (
+    should_skip_layer_for_performance,
+)
+from ..utils.logging import (
+    error,
+    info,
+    log_debug,
+    minimal,
+    verbose,
+    warning,
+)
+from ..utils.memory_efficient_loader import (
+    UnifiedSafetensorsLoader,
+)
+from ..utils.tensor_utils import (
+    dict_to_tensor,
+    normalize_tensorwise_scales,
+)
 
 
 @log_debug
@@ -197,7 +219,9 @@ def convert_to_mxfp8(
             in_features = shape[1]
             if in_features not in calibration_data_cache:
                 verbose(f"  - Found new input dimension: {in_features}.")
-                calibration_data_cache[in_features] = torch.randn(calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device)
+                calibration_data_cache[in_features] = torch.randn(
+                    calib_samples, in_features, dtype=COMPUTE_DTYPE, generator=seed_generator, device=seed_device
+                )
     info("Simulated calibration data generated.\n")
 
     info(f"Found {total_weights} weight tensors to potentially process.")
@@ -250,22 +274,29 @@ def convert_to_mxfp8(
         if depth_match:
             depth = int(depth_match.group(1))
 
+        # Check if corresponding bias exists
+        bias_key = f"{base_key}.bias"
+        has_bias = bias_key in all_keys
+
         # Quantize to MXFP8
         if use_learned:
             # LearnedMXFP8Converter returns (qdata, block_scales, dequantized, extra_tensors)
-            qdata, block_scales, dequant_w, extra_tensors = converter.convert(tensor, key=key, depth=depth)
+            qdata, block_scales, dequant_w, extra_tensors = converter.convert(tensor, key=key, depth=depth, has_bias=has_bias)
             # Crop dequant_w back to original shape if it was padded
-            if dequant_w.shape != tensor.shape:
-                dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
+            if dequant_w is not None and dequant_w.shape != tensor.shape:
+                dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
         else:
             # Transfer to GPU for simple quantization
             tensor_gpu = tensor.to(device=device, dtype=torch.float32)
             qdata, block_scales = converter.quantize(tensor_gpu)
-            # For simple mode, we need to dequantize for bias correction
-            dequant_w = converter.dequantize(qdata, block_scales, output_dtype=torch.float32)
-            # Crop dequant_w back to original shape if it was padded
-            if dequant_w.shape != tensor.shape:
-                dequant_w = dequant_w[: tensor.shape[0], : tensor.shape[1]]
+            if has_bias:
+                # For simple mode, we need to dequantize for bias correction
+                dequant_w = converter.dequantize(qdata, block_scales, output_dtype=torch.float32)
+                # Crop dequant_w back to original shape if it was padded
+                if dequant_w.shape != tensor.shape:
+                    dequant_w = dequant_w[:tensor.shape[0], :tensor.shape[1]]
+            else:
+                dequant_w = None
             del tensor_gpu
             extra_tensors = {}
 
@@ -288,7 +319,7 @@ def convert_to_mxfp8(
 
         # Bias correction (matching FP8 logic)
         bias_key = f"{base_key}.bias"
-        if bias_key in all_keys:
+        if has_bias and bias_key in all_keys:
             # Apply bias correction even in simple mode for better accuracy
             verbose(f"  - Adjusting corresponding bias: {bias_key}")
             with torch.no_grad():
@@ -307,13 +338,20 @@ def convert_to_mxfp8(
                     bias_correction = output_error.mean(dim=0)
                     b_new = b_orig_dev - bias_correction
                     output_tensors[bias_key] = b_new.to(device="cpu", dtype=original_bias.dtype)
-                    verbose(f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {output_tensors[bias_key].mean().item():.6f}")
+                    verbose(
+                        f"    - Original bias mean : {original_bias.mean().item():.6f}\n    - Corrected bias mean: {output_tensors[bias_key].mean().item():.6f}"
+                    )
                     del (W_orig_dev, W_dequant_dev, X_calib_dev, b_orig_dev, weight_error, output_error, bias_correction, b_new)
                     if device == "cuda":
                         torch.cuda.empty_cache()
 
         # Always create .comfy_quant metadata tensor (required for MXFP8)
-        metadata = {"format": "mxfp8", "group_size": MXFP8_BLOCK_SIZE, "orig_dtype": str(tensor.dtype), "orig_shape": list(tensor.shape)}
+        metadata = {
+            "format": "mxfp8",
+            "group_size": MXFP8_BLOCK_SIZE,
+            "orig_dtype": str(tensor.dtype),
+            "orig_shape": list(tensor.shape)
+        }
         output_tensors[f"{base_key}.comfy_quant"] = dict_to_tensor(metadata)
         quant_metadata[base_key] = metadata
 
