@@ -8,14 +8,17 @@ SVD computation, LR scheduling, and early stopping logic.
 
 import gc
 import math
-import re
-from abc import ABC, abstractmethod
-from typing import Dict, Optional, Tuple
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from typing import (
+    Dict,
+    Optional,
+    Tuple,
+)
 
 import torch
-
-from ..constants import COMPUTE_DTYPE, SCALE_DTYPE
-from ..pinned_transfer import transfer_to_gpu_pinned
 
 
 class BaseLearnedConverter(ABC):
@@ -243,7 +246,10 @@ class BaseLearnedConverter(ABC):
                 # LoRA Up = U * diag(S)
                 # LoRA Down = V^T
                 # Return as float16 CPU tensors for storage efficiency
-                return {"lora_up": (U @ torch.diag(S)).to(torch.float32).cpu().contiguous(), "lora_down": V.t().to(torch.float32).cpu().contiguous()}
+                return {
+                    "lora_up": (U @ torch.diag(S)).to(torch.float32).cpu().contiguous(),
+                    "lora_down": V.t().to(torch.float32).cpu().contiguous()
+                }
             except Exception as e:
                 from ..utils.logging import warning
 
@@ -286,7 +292,10 @@ class BaseLearnedConverter(ABC):
 
         return U[:, :k], Vh[:k, :], k
 
-    def _adaptive_lr_update_cosine(self, curr_lr: float, improved: bool, worse_loss_counter: int, iteration: int, tensor_shape: Tuple[int, int], min_lr: float = 1e-10, small_mult: float = 1.0) -> Tuple[float, bool]:
+    def _adaptive_lr_update_cosine(
+        self, curr_lr: float, improved: bool, worse_loss_counter: int, iteration: int, tensor_shape: Tuple[int, int],
+        min_lr: float = 1e-10, small_mult: float = 1.0
+    ) -> Tuple[float, bool]:
         """
         Cosine-based adaptive LR update with shape-awareness.
 
