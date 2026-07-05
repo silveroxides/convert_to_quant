@@ -59,6 +59,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         lora_ar_threshold: float = 0.0,
         convrot: bool = False,
         convrot_group_size: int = 256,
+        dynamic_convrot: bool = False,
         scale_optimization: str = "fixed",
         **kwargs,
     ):
@@ -83,6 +84,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.target_format = target_format
         self.convrot = convrot
         self.convrot_group_size = convrot_group_size
+        self.dynamic_convrot = dynamic_convrot
+        if self.dynamic_convrot:
+            self.convrot = True
         self.scale_optimization = scale_optimization
         self.has_bias = True
 
@@ -98,6 +102,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         if self.convrot and not (self.target_format == "int8" and self.scaling_mode == "row"):
             verbose("  - WARNING: ConvRot is currently only supported for INT8 row-wise quantization. It will be ignored.")
             self.convrot = False
+            self.dynamic_convrot = False
 
         # Set format-specific max values and dtype
         if self.target_format == "int8":
@@ -862,20 +867,25 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # Apply ConvRot if enabled and we're doing row-wise quantization
         convrot_applied = False
+        layer_group_size = self.convrot_group_size
         if self.convrot and self.scaling_mode == "row":
             M, N = W_float32.shape
+            if self.dynamic_convrot:
+                from ..utils.convrot import find_max_compatible_group_size
+                layer_group_size = find_max_compatible_group_size(N, min_group_size=self.convrot_group_size)
+
             # Only apply if in_features is divisible by the group size
-            if N % self.convrot_group_size == 0:
+            if layer_group_size is not None and N % layer_group_size == 0:
                 try:
-                    H = build_hadamard(self.convrot_group_size, device=self.device, dtype=COMPUTE_DTYPE)
-                    W_float32 = rotate_weight(W_float32, H, self.convrot_group_size)
-                    verbose(f"    - Applied ConvRot Hadamard rotation (group_size={self.convrot_group_size}).")
+                    H = build_hadamard(layer_group_size, device=self.device, dtype=COMPUTE_DTYPE)
+                    W_float32 = rotate_weight(W_float32, H, layer_group_size)
+                    verbose(f"    - Applied ConvRot Hadamard rotation (group_size={layer_group_size}).")
                     convrot_applied = True
                 except Exception as e:
                     verbose(f"    - WARNING: Failed to apply ConvRot: {e}")
             else:
                 verbose(
-                    f"    - WARNING: Skipping ConvRot: in_features ({N}) not divisible by group_size ({self.convrot_group_size})."
+                    f"    - WARNING: Skipping ConvRot: in_features ({N}) not divisible by group_size ({layer_group_size})."
                 )
 
         # Phase 2: Calibration Data Management
@@ -886,7 +896,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             )
 
             X_rot, Y_ref, H_mat = prepare_calibration_data(
-                W_float32, calibration_data, True, self.convrot_group_size, self.device, COMPUTE_DTYPE,
+                W_float32, calibration_data, True, layer_group_size, self.device, COMPUTE_DTYPE,
                 calib_scale=self.calib_scale
             )
             verbose("    - Executed Phase 2: Calibration Data Management (Captured X, rotated X, computed reference Y)")
@@ -1111,12 +1121,17 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_V = V.detach().clone()
+        best_converged_ratio = 0.0
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
 
-        effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
+        # Only compute shape-aware plateau parameters if the plateau schedule is active
+        effective_patience, effective_factor, effective_cooldown = None, None, None
+        if schedule_name == "plateau":
+            effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
 
+        loss_history = []
         pbar = tqdm(
             range(self.num_iter), desc=f"    Optimizing (AdaRound-{self.optimizer_choice}-{schedule_name})", leave=False,
             dynamic_ncols=True
@@ -1132,6 +1147,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             # Use soft weights for smooth gradient flow during optimization
             W_q = W_floor + h_V
             W_dequant = W_q * scale_broadcast
+
+            # --- Discretization and Convergence early stopping check ---
+            # Track the true physical percentage of parameters converged to strict integer boundaries (temp=1.0)
+            converged_ratio = ((torch.sigmoid(V) < 0.05) | (torch.sigmoid(V) > 0.95)).float().mean().item()
 
             # Loss 1: Output activation MSE on soft dequantized weights
             Y_pred = X_rot @ W_dequant.T
@@ -1179,9 +1198,25 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             prev_worse_counter = worse_loss_counter
             improved = self._check_improvement(current_loss_val, best_loss)
 
+            # Track loss over a rolling window of 50 iterations
+            loss_history.append(current_loss_val)
+            if len(loss_history) > 50:
+                loss_history.pop(0)
+
+            # Saturated Flatline Trigger:
+            # If >= 90% of parameters are frozen at hard boundaries, and the loss has flatlined
+            # (absolute span of loss over last 50 iterations is under 1e-5), stop early to prevent
+            # wasting valuable GPU compute on zero-gradient saturated weights.
+            if converged_ratio >= 0.90 and len(loss_history) == 50:
+                loss_span = max(loss_history) - min(loss_history)
+                if loss_span < 1e-5:
+                    verbose(f"\n      - Discretization early stop: {converged_ratio*100:.2f}% parameters converged. Loss span: {loss_span:.2e}. Stopping.")
+                    break
+
             if improved:
                 best_loss = current_loss_val
                 best_V = V.detach().clone()
+                best_converged_ratio = converged_ratio
                 plateau_counter = 0
                 if self.lr_adaptive_mode == "simple-reset":
                     worse_loss_counter = 0
@@ -1272,8 +1307,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             final_qdata = (W_floor + final_round_up).clamp(-INT8_SYMMETRIC_MAX,
                                                            INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
 
-            converged_pct = ((final_h_V <= 0.05) | (final_h_V >= 0.95)).float().mean().item() * 100
-            verbose(f"    - Discretization audit: {converged_pct:.2f}% of parameters converged to strict boundaries.")
+            verbose(f"    - Discretization audit: {best_converged_ratio * 100:.2f}% of parameters converged to strict boundaries.")
 
         self._cleanup_tensors(U_k, Vh_k, V)
         U_k = None

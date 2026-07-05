@@ -32,8 +32,16 @@ def build_hadamard(
     if cache_key in _HADAMARD_CACHE:
         return _HADAMARD_CACHE[cache_key]
 
-    if size < 4 or (size & (size - 1)) != 0 or math.log(size, 4) % 1 != 0:
-        raise ValueError(f"Regular Hadamard size must be a power of 4, got {size}")
+    if size < 4 or (size & (size - 1)) != 0:
+        raise ValueError(f"Hadamard size must be a power of 2, got {size}")
+
+    # Standard Sylvester Hadamard fallback for non-power-of-4 sizes (e.g. 512)
+    is_power_of_4 = (math.log(size, 4) % 1 == 0)
+    if not is_power_of_4:
+        H_np = scipy_hadamard(size)
+        H_normalized = torch.from_numpy(H_np).to(device=device, dtype=dtype) / (size**0.5)
+        _HADAMARD_CACHE[cache_key] = H_normalized
+        return H_normalized
 
     # Base H4 from Theorem 3.3 (Eq 9 in the paper)
     # Notice how every row and column sums to exactly 2
@@ -116,3 +124,19 @@ def rotate_activation(
     H_dev = H.to(dtype=x.dtype, device=x.device)
     x_rot = torch.matmul(x_grouped, H_dev)
     return x_rot.view(orig_shape)
+
+
+def find_max_compatible_group_size(in_features: int, min_group_size: int = 256) -> int | None:
+    """Find the largest power of 4 group size >= min_group_size that divides in_features."""
+    if in_features < min_group_size:
+        return None
+
+    import math
+    max_k = int(math.log(in_features, 4))
+    group_size = 4 ** max_k
+
+    while group_size >= min_group_size:
+        if in_features % group_size == 0:
+            return group_size
+        group_size //= 4
+    return None

@@ -141,6 +141,10 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Group size for ConvRot (must be power of 4: 4, 16, 64, 256, 1024). Default: 256"
     )
     parser.add_argument(
+        "--dynamic-convrot", "--dynamic_convrot", action="store_true", dest="dynamic_convrot",
+        help="Enable dynamic group-wise Hadamard rotation (ConvRot) for INT8 row-wise scaling (minimum 256 group size) based on each layer's max compatible group size."
+    )
+    parser.add_argument(
         "--nvfp4", action="store_true",
         help="Use NVFP4 (FP4 E2M1) block quantization. Requires Blackwell GPU (SM >= 10.0/12.0) for inference."
     )
@@ -1050,6 +1054,7 @@ def run_conversion(args):
         custom_convrot_group_size=args.custom_convrot_group_size,
         convrot=args.convrot,
         convrot_group_size=args.convrot_group_size,
+        dynamic_convrot=args.dynamic_convrot,
         # Fallback options
         fallback_block_size=args.fallback_block_size,
         fallback_simple=args.fallback_simple,

@@ -80,6 +80,7 @@ def convert_to_fp8_scaled(
     custom_convrot_group_size: int = 256,
     convrot: bool = False,
     convrot_group_size: int = 256,
+    dynamic_convrot: bool = False,
     fallback_block_size: Optional[int] = None,
     fallback_simple: bool = False,
     full_precision_matrix_mult: bool = False,
@@ -184,6 +185,7 @@ def convert_to_fp8_scaled(
     # Add ConvRot options to converter kwargs
     converter_kwargs["convrot"] = convrot
     converter_kwargs["convrot_group_size"] = convrot_group_size
+    converter_kwargs["dynamic_convrot"] = dynamic_convrot
 
     # Add LoRA options to converter kwargs
     converter_kwargs["extract_lora"] = extract_lora
@@ -498,11 +500,21 @@ def convert_to_fp8_scaled(
 
         # Check if convrot was effectively applied by this converter
         convrot_applied = False
+        convrot_group_size = 256
         if hasattr(converter, "convrot") and getattr(converter, "convrot") and getattr(converter, "scaling_mode", "") == "row":
             in_features = original_tensor.shape[1]
-            convrot_group_size = getattr(converter, "convrot_group_size", 256)
-            if in_features % convrot_group_size == 0:
-                convrot_applied = True
+            dynamic_convrot = getattr(converter, "dynamic_convrot", False)
+            if dynamic_convrot:
+                from ..utils.convrot import find_max_compatible_group_size
+                min_gs = getattr(converter, "convrot_group_size", 256)
+                layer_gs = find_max_compatible_group_size(in_features, min_group_size=min_gs)
+                if layer_gs is not None:
+                    convrot_group_size = layer_gs
+                    convrot_applied = True
+            else:
+                convrot_group_size = getattr(converter, "convrot_group_size", 256)
+                if in_features % convrot_group_size == 0:
+                    convrot_applied = True
 
         # Check if the layer actually has a bias in the original model
         temp_base_name = key[:key.rfind(".weight")]

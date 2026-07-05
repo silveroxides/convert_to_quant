@@ -128,3 +128,42 @@ def test_triton_fused_kernel_compatibility(setup_data):
     dequant_ref = qdata.float() * scale
 
     assert torch.allclose(dequant_w, dequant_ref, atol=1e-6)
+
+
+def test_dynamic_convrot_resolution():
+    from convert_to_quant.utils.convrot import find_max_compatible_group_size
+
+    assert find_max_compatible_group_size(4096, 256) == 4096
+    assert find_max_compatible_group_size(1024, 256) == 1024
+    assert find_max_compatible_group_size(1152, 256) is None  # Not divisible by any power of 4 >= 256
+    assert find_max_compatible_group_size(3072, 256) == 1024  # 3072 is divisible by 1024
+    assert find_max_compatible_group_size(512, 256) == 256    # 512 is divisible by 256
+    assert find_max_compatible_group_size(384, 256) is None   # 384 is divisible by 64 (which is < 256)
+
+
+def test_dynamic_convrot_pipeline():
+    torch.manual_seed(42)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # W with in_features = 512 (divisible by 256, but not 1024)
+    W_orig = torch.randn(128, 512, device=device, dtype=torch.float32)
+    X = torch.randn(64, 512, device=device, dtype=torch.float32)
+
+    converter = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        dynamic_convrot=True,
+        convrot_group_size=256,  # min group size
+        num_iter=10,
+        device=device
+    )
+
+    assert converter.dynamic_convrot is True
+    assert converter.convrot is True
+
+    qdata, scale, dequant_w, extra_tensors = converter.convert(W_orig, calibration_data=X)
+
+    assert qdata.shape == W_orig.shape
+    assert qdata.dtype == torch.int8
+    assert scale.shape == (128, 1)
+
