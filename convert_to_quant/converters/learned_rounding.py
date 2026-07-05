@@ -1131,6 +1131,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         if schedule_name == "plateau":
             effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
 
+        # Dynamically derive early stop parameters from existing schedule config
+        decay_factor = self.lr_factor if self.lr_factor is not None else 0.95
+        if decay_factor >= 1.0:
+            decay_factor = 0.95
+
+        window_size = max(5, int(2.5 / (1.0 - decay_factor)))
+        loss_span_threshold = self.early_stop_loss / (1.0 - decay_factor)
+        target_converged_ratio = 0.90
+
         loss_history = []
         pbar = tqdm(
             range(self.num_iter), desc=f"    Optimizing (AdaRound-{self.optimizer_choice}-{schedule_name})", leave=False,
@@ -1198,19 +1207,18 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             prev_worse_counter = worse_loss_counter
             improved = self._check_improvement(current_loss_val, best_loss)
 
-            # Track loss over a rolling window of 50 iterations
+            # Track loss over a rolling window of iterations
             loss_history.append(current_loss_val)
-            if len(loss_history) > 50:
+            if len(loss_history) > window_size:
                 loss_history.pop(0)
 
-            # Saturated Flatline Trigger:
-            # If >= 90% of parameters are frozen at hard boundaries, and the loss has flatlined
-            # (absolute span of loss over last 50 iterations is under 1e-5), stop early to prevent
-            # wasting valuable GPU compute on zero-gradient saturated weights.
-            if converged_ratio >= 0.90 and len(loss_history) == 50:
+            # Saturated Flatline Trigger using derived parameters:
+            # If >= target ratio of parameters are frozen at hard boundaries, and the loss has flatlined
+            # below the mathematically derived infinite sum limit, stop early.
+            if converged_ratio >= target_converged_ratio and len(loss_history) == window_size:
                 loss_span = max(loss_history) - min(loss_history)
-                if loss_span < 1e-5:
-                    verbose(f"\n      - Discretization early stop: {converged_ratio*100:.2f}% parameters converged. Loss span: {loss_span:.2e}. Stopping.")
+                if loss_span < loss_span_threshold:
+                    verbose(f"\n      - Discretization early stop: {converged_ratio*100:.2f}% parameters converged. Loss span: {loss_span:.2e} (< {loss_span_threshold:.2e}). Stopping.")
                     break
 
             if improved:
