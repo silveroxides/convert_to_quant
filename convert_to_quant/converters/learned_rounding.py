@@ -1125,8 +1125,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         plateau_counter = 0
         cooldown_counter = 0
 
-        effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
+        # Only compute shape-aware plateau parameters if the plateau schedule is active
+        effective_patience, effective_factor, effective_cooldown = None, None, None
+        if schedule_name == "plateau":
+            effective_patience, effective_factor, effective_cooldown = self._compute_shape_aware_plateau_params(M, N)
 
+        loss_history = []
         pbar = tqdm(
             range(self.num_iter), desc=f"    Optimizing (AdaRound-{self.optimizer_choice}-{schedule_name})", leave=False,
             dynamic_ncols=True
@@ -1142,6 +1146,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             # Use soft weights for smooth gradient flow during optimization
             W_q = W_floor + h_V
             W_dequant = W_q * scale_broadcast
+
+            # --- Discretization and Convergence early stopping check ---
+            # Track the percentage of parameters converged to strict integer boundaries
+            converged_ratio = ((h_V < 0.05) | (h_V > 0.95)).float().mean().item()
 
             # Loss 1: Output activation MSE on soft dequantized weights
             Y_pred = X_rot @ W_dequant.T
@@ -1188,6 +1196,21 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             current_loss_val = loss.item()
             prev_worse_counter = worse_loss_counter
             improved = self._check_improvement(current_loss_val, best_loss)
+
+            # Track loss over a rolling window of 50 iterations
+            loss_history.append(current_loss_val)
+            if len(loss_history) > 50:
+                loss_history.pop(0)
+
+            # Saturated Flatline Trigger:
+            # If >= 90% of parameters are frozen at hard boundaries, and the loss has flatlined
+            # (absolute span of loss over last 50 iterations is under 1e-5), stop early to prevent
+            # wasting valuable GPU compute on zero-gradient saturated weights.
+            if converged_ratio >= 0.90 and len(loss_history) == 50:
+                loss_span = max(loss_history) - min(loss_history)
+                if loss_span < 1e-5:
+                    verbose(f"\n      - Discretization early stop: {converged_ratio*100:.2f}% parameters converged. Loss span: {loss_span:.2e}. Stopping.")
+                    break
 
             if improved:
                 best_loss = current_loss_val
