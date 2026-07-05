@@ -175,10 +175,7 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
         v2 = metrics_b[metric]
         v3 = metrics_c[metric]
         v4 = metrics_d[metric]
-        if "Similarity" in metric:
-            print(f"{label:<25} | {v1:.6f}                 | {v2:.6f}                  | {v3:.6f}                  | {v4:.6f}")
-        else:
-            print(f"{label:<25} | {v1:.6e}             | {v2:.6e}             | {v3:.6e}             | {v4:.6e}")
+        print(f"{label:<25} | {v1:.6e}             | {v2:.6e}             | {v3:.6e}             | {v4:.6e}")
     print("-" * 140)
 
     # Mathematical Proof - Rotation Invariance Assertions
@@ -201,6 +198,142 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
     print("\n")
     return metrics_a, metrics_b, metrics_c, metrics_d
 
+def evaluate_attention_special_case(out_features=512, in_features=2048, num_samples=128):
+    print("=" * 80)
+    print(f"SPECIAL CASE: Attention Block Group-Size Comparison (Shape: [{out_features}, {in_features}])")
+    print("=" * 80)
+
+    torch.manual_seed(1337)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Synthesize weights with structured outliers to simulate sensitive diffusion channels
+    W_orig = torch.randn(out_features, in_features, device=device) * 0.1
+    # Add strong outlier channels to simulate real-world outlier clustering
+    W_orig[:, 5] *= 50.0
+    W_orig[:, 12] *= 50.0
+
+    X = torch.randn(num_samples, in_features, device=device)
+    bias = torch.randn(out_features, device=device)
+
+    # Reference high-precision output
+    Y_ref = X @ W_orig.T + bias
+
+    # 1. System A: Standard Symmetric Row-wise Quantization (No ConvRot, No AdaRound)
+    print("  Running System A: Standard Row-wise Quantization...")
+    conv_standard = LearnedRoundingConverter(
+        target_format="int8", scaling_mode="row", no_learned_rounding=True, device=device
+    )
+    qdata_a, scale_a, dequant_w_a, extra_a = conv_standard.convert(W_orig, calibration_data=X)
+    Y_a = X @ dequant_w_a.T + bias
+    metrics_a = compute_detailed_errors(Y_ref, Y_a)
+
+    # 2. System B: Static ConvRot (group_size=256) + Simple Rounding
+    print("  Running System B: Static ConvRot (group_size=256) + Simple Rounding...")
+    conv_256 = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        convrot=True,
+        convrot_group_size=256,
+        no_learned_rounding=True,
+        device=device
+    )
+    qdata_256, scale_256, dequant_w_256, extra_256 = conv_256.convert(W_orig, calibration_data=X)
+    H_256 = build_hadamard(256, device=device, dtype=torch.float32)
+    X_rot_256 = rotate_activation(X, H_256, 256)
+    Y_256 = X_rot_256 @ dequant_w_256.T + bias
+    if "bias_correction" in extra_256:
+        Y_256 += extra_256["bias_correction"].to(device=device)
+    metrics_256 = compute_detailed_errors(Y_ref, Y_256)
+
+    # 3. System C: Static ConvRot (group_size=512) + Simple Rounding
+    print("  Running System C: Static ConvRot (group_size=512) + Simple Rounding...")
+    conv_512 = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        convrot=True,
+        convrot_group_size=512,
+        no_learned_rounding=True,
+        device=device
+    )
+    qdata_512, scale_512, dequant_w_512, extra_512 = conv_512.convert(W_orig, calibration_data=X)
+    H_512 = build_hadamard(512, device=device, dtype=torch.float32)
+    X_rot_512 = rotate_activation(X, H_512, 512)
+    Y_512 = X_rot_512 @ dequant_w_512.T + bias
+    if "bias_correction" in extra_512:
+        Y_512 += extra_512["bias_correction"].to(device=device)
+    metrics_512 = compute_detailed_errors(Y_ref, Y_512)
+
+    # 4. System D: Static ConvRot (group_size=1024) + Simple Rounding
+    print("  Running System D: Static ConvRot (group_size=1024) + Simple Rounding...")
+    conv_1024 = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        convrot=True,
+        convrot_group_size=1024,
+        no_learned_rounding=True,
+        device=device
+    )
+    qdata_1024, scale_1024, dequant_w_1024, extra_1024 = conv_1024.convert(W_orig, calibration_data=X)
+    H_1024 = build_hadamard(1024, device=device, dtype=torch.float32)
+    X_rot_1024 = rotate_activation(X, H_1024, 1024)
+    Y_1024 = X_rot_1024 @ dequant_w_1024.T + bias
+    if "bias_correction" in extra_1024:
+        Y_1024 += extra_1024["bias_correction"].to(device=device)
+    metrics_1024 = compute_detailed_errors(Y_ref, Y_1024)
+
+    # 5. System E: Static ConvRot (group_size=256) + AdaRound + Bias Calibration
+    print("  Running System E: Static ConvRot (group_size=256) + AdaRound + Bias Calibration...")
+    conv_pipeline = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        convrot=True,
+        convrot_group_size=256,
+        num_iter=2000,
+        optimizer="prodigy",
+        lr_schedule="adaptive",
+        lr_factor=0.965,
+        lr_cooldown=1,
+        lr=1.0,
+        device=device
+    )
+    qdata_ada, scale_ada, dequant_w_ada, extra_ada = conv_pipeline.convert(W_orig, calibration_data=X)
+    Y_ada = X_rot_256 @ dequant_w_ada.T + bias
+    if "bias_correction" in extra_ada:
+        Y_ada += extra_ada["bias_correction"].to(device=device)
+    metrics_ada = compute_detailed_errors(Y_ref, Y_ada)
+
+    # Print Comparative Results Table
+    print("\n" + "COMPARISON REPORT FOR Standard Attention Projection Block:")
+    print("-" * 170)
+    print(f"{'Metric':<25} | {'System A (Standard Row)':<23} | {'System B (Rot-256)':<18} | {'System C (Rot-512)':<18} | {'System D (Rot-1024)':<19} | {'System E (Rot-256 + AdaRound)':<28}")
+    print("-" * 170)
+
+    metric_labels = {
+        "MAE": "MAE (↓)",
+        "MSE": "MSE (↓)",
+        "RMSE": "RMSE (↓)",
+        "SNR (dB)": "SNR (dB) (↑)",
+        "Cosine Similarity": "Cosine Similarity (↑)"
+    }
+
+    for metric in ["MAE", "MSE", "RMSE", "SNR (dB)", "Cosine Similarity"]:
+        label = metric_labels[metric]
+        v1 = metrics_a[metric]
+        v2 = metrics_256[metric]
+        v3 = metrics_512[metric]
+        v4 = metrics_1024[metric]
+        v5 = metrics_ada[metric]
+        print(f"{label:<25} | {v1:.6e}             | {v2:.6e}       | {v3:.6e}       | {v4:.6e}        | {v5:.6e}")
+    print("-" * 170)
+
+    # Verification assertions
+    assert metrics_ada["SNR (dB)"] > metrics_1024["SNR (dB)"], "AdaRound on group size 256 failed to beat simple rounded larger group sizes!"
+    assert metrics_1024["SNR (dB)"] >= metrics_512["SNR (dB)"], "Larger group size 1024 failed to beat 512!"
+    assert metrics_512["SNR (dB)"] >= metrics_256["SNR (dB)"], "Larger group size 512 failed to beat 256!"
+
+    print("\n")
+    return metrics_a, metrics_256, metrics_512, metrics_1024, metrics_ada
+
 def run_production_comparison():
     print("=" * 80)
     print("PRODUCTION QUANTIZATION ERROR COMPARISON & VALIDATION SUITE")
@@ -219,8 +352,8 @@ def run_production_comparison():
     # Case 3: 1152 (non-divisible by any power of 4 >= 256, safely skips)
     evaluate_case("Low-rank or Odd Projection Block", out_features=512, in_features=1152)
 
-    # Case 4: 1536 (divisible by 256, but not 1024; resolves to exactly 256)
-    evaluate_case("Standard Attention Projection Block", out_features=512, in_features=1536)
+    # Case 4: 2048 Special Attention Block Group Size comparison
+    evaluate_attention_special_case(out_features=512, in_features=2048)
 
     print("=" * 80)
     print("All production validation test cases completed successfully with zero regressions!")

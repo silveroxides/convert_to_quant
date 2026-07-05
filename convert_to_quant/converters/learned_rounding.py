@@ -1121,6 +1121,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         schedule_name = self.lr_schedule
         best_loss = float("inf")
         best_V = V.detach().clone()
+        best_converged_ratio = 0.0
         worse_loss_counter = 0
         plateau_counter = 0
         cooldown_counter = 0
@@ -1148,8 +1149,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             W_dequant = W_q * scale_broadcast
 
             # --- Discretization and Convergence early stopping check ---
-            # Track the percentage of parameters converged to strict integer boundaries
-            converged_ratio = ((h_V < 0.05) | (h_V > 0.95)).float().mean().item()
+            # Track the true physical percentage of parameters converged to strict integer boundaries (temp=1.0)
+            converged_ratio = ((torch.sigmoid(V) < 0.05) | (torch.sigmoid(V) > 0.95)).float().mean().item()
 
             # Loss 1: Output activation MSE on soft dequantized weights
             Y_pred = X_rot @ W_dequant.T
@@ -1215,6 +1216,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             if improved:
                 best_loss = current_loss_val
                 best_V = V.detach().clone()
+                best_converged_ratio = converged_ratio
                 plateau_counter = 0
                 if self.lr_adaptive_mode == "simple-reset":
                     worse_loss_counter = 0
@@ -1305,8 +1307,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             final_qdata = (W_floor + final_round_up).clamp(-INT8_SYMMETRIC_MAX,
                                                            INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
 
-            converged_pct = ((final_h_V <= 0.05) | (final_h_V >= 0.95)).float().mean().item() * 100
-            verbose(f"    - Discretization audit: {converged_pct:.2f}% of parameters converged to strict boundaries.")
+            verbose(f"    - Discretization audit: {best_converged_ratio * 100:.2f}% of parameters converged to strict boundaries.")
 
         self._cleanup_tensors(U_k, Vh_k, V)
         U_k = None
