@@ -132,8 +132,11 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
         scaling_mode="row",
         dynamic_convrot=True,
         convrot_group_size=256, # min group size
-        num_iter=150,           # Fast but robust optimization
-        optimizer="adamw",
+        num_iter=2000,           # Fast but robust optimization
+        optimizer="prodigy",
+        lr_schedule="adaptive",
+        lr_factor=0.965,
+        lr_cooldown=1,
         lr=1.0,
         device=device
     )
@@ -215,6 +218,9 @@ def run_production_comparison():
 
     # Case 3: 1152 (non-divisible by any power of 4 >= 256, safely skips)
     evaluate_case("Low-rank or Odd Projection Block", out_features=512, in_features=1152)
+
+    # Case 4: 1536 (divisible by 256, but not 1024; resolves to exactly 256)
+    evaluate_case("Standard Attention Projection Block", out_features=512, in_features=1536)
 
     print("=" * 80)
     print("All production validation test cases completed successfully with zero regressions!")
