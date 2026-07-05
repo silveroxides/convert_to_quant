@@ -59,6 +59,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         lora_ar_threshold: float = 0.0,
         convrot: bool = False,
         convrot_group_size: int = 256,
+        dynamic_convrot: bool = False,
         scale_optimization: str = "fixed",
         **kwargs,
     ):
@@ -83,6 +84,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.target_format = target_format
         self.convrot = convrot
         self.convrot_group_size = convrot_group_size
+        self.dynamic_convrot = dynamic_convrot
+        if self.dynamic_convrot:
+            self.convrot = True
         self.scale_optimization = scale_optimization
         self.has_bias = True
 
@@ -98,6 +102,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         if self.convrot and not (self.target_format == "int8" and self.scaling_mode == "row"):
             verbose("  - WARNING: ConvRot is currently only supported for INT8 row-wise quantization. It will be ignored.")
             self.convrot = False
+            self.dynamic_convrot = False
 
         # Set format-specific max values and dtype
         if self.target_format == "int8":
@@ -862,20 +867,25 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # Apply ConvRot if enabled and we're doing row-wise quantization
         convrot_applied = False
+        layer_group_size = self.convrot_group_size
         if self.convrot and self.scaling_mode == "row":
             M, N = W_float32.shape
+            if self.dynamic_convrot:
+                from ..utils.convrot import find_max_compatible_group_size
+                layer_group_size = find_max_compatible_group_size(N, min_group_size=self.convrot_group_size)
+
             # Only apply if in_features is divisible by the group size
-            if N % self.convrot_group_size == 0:
+            if layer_group_size is not None and N % layer_group_size == 0:
                 try:
-                    H = build_hadamard(self.convrot_group_size, device=self.device, dtype=COMPUTE_DTYPE)
-                    W_float32 = rotate_weight(W_float32, H, self.convrot_group_size)
-                    verbose(f"    - Applied ConvRot Hadamard rotation (group_size={self.convrot_group_size}).")
+                    H = build_hadamard(layer_group_size, device=self.device, dtype=COMPUTE_DTYPE)
+                    W_float32 = rotate_weight(W_float32, H, layer_group_size)
+                    verbose(f"    - Applied ConvRot Hadamard rotation (group_size={layer_group_size}).")
                     convrot_applied = True
                 except Exception as e:
                     verbose(f"    - WARNING: Failed to apply ConvRot: {e}")
             else:
                 verbose(
-                    f"    - WARNING: Skipping ConvRot: in_features ({N}) not divisible by group_size ({self.convrot_group_size})."
+                    f"    - WARNING: Skipping ConvRot: in_features ({N}) not divisible by group_size ({layer_group_size})."
                 )
 
         # Phase 2: Calibration Data Management
@@ -886,7 +896,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             )
 
             X_rot, Y_ref, H_mat = prepare_calibration_data(
-                W_float32, calibration_data, True, self.convrot_group_size, self.device, COMPUTE_DTYPE,
+                W_float32, calibration_data, True, layer_group_size, self.device, COMPUTE_DTYPE,
                 calib_scale=self.calib_scale
             )
             verbose("    - Executed Phase 2: Calibration Data Management (Captured X, rotated X, computed reference Y)")

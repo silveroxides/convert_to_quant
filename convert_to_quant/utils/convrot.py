@@ -116,3 +116,19 @@ def rotate_activation(
     H_dev = H.to(dtype=x.dtype, device=x.device)
     x_rot = torch.matmul(x_grouped, H_dev)
     return x_rot.view(orig_shape)
+
+
+def find_max_compatible_group_size(in_features: int, min_group_size: int = 256) -> int | None:
+    """Find the largest power of 4 group size >= min_group_size that divides in_features."""
+    if in_features < min_group_size:
+        return None
+
+    import math
+    max_k = int(math.log(in_features, 4))
+    group_size = 4 ** max_k
+
+    while group_size >= min_group_size:
+        if in_features % group_size == 0:
+            return group_size
+        group_size //= 4
+    return None
