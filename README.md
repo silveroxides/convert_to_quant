@@ -32,6 +32,7 @@ pip install -e .
 | **Minimum (FP8/INT8)** | Python 3.10+, PyTorch 2.8+, CUDA 12.8+ |
 | **Full (NVFP4/MXFP8)** | Python 3.12+, PyTorch 2.10+, CUDA 13.0+, **[comfy-kitchen](https://github.com/silveroxides/comfy-kitchen)** |
 | **INT8 Kernels** | Triton (Linux native, Windows via `triton-windows`) |
+| **ConvRot** | SciPy (installed automatically) |
 
 > [!IMPORTANT]
 > **PyTorch must be installed manually** with the correct CUDA version for your GPU.
