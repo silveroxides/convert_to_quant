@@ -80,10 +80,12 @@ def _build_model() -> dict:
     t["x_embedder.proj.weight"] = torch.randn(64, 64)
 
     # ---- 2D weights that match qwen35 exclude patterns ----
-    # ".layers.0."  ".layers.63."  "lm_head"  "embed_tokens"
+    # Boundary layers for the 2B/4B/9B/27B variants, plus all visual layers.
     # "in_proj_a"   "in_proj_b"    "merger"   "mtp.fc"
     # "visual.pos_embed"  "visual.patch_embed"  "visual.blocks.0."
     t["model.layers.0.attn.weight"] = torch.randn(64, 64)
+    t["model.layers.23.attn.weight"] = torch.randn(64, 64)
+    t["model.layers.31.attn.weight"] = torch.randn(64, 64)
     t["model.layers.63.attn.weight"] = torch.randn(64, 64)
     t["lm_head.weight"] = torch.randn(64, 64)
     t["embed_tokens.weight"] = torch.randn(64, 64)
@@ -94,6 +96,7 @@ def _build_model() -> dict:
     t["visual.pos_embed.weight"] = torch.randn(64, 64)
     t["visual.patch_embed.proj.weight"] = torch.randn(64, 64)
     t["visual.blocks.0.attn.weight"] = torch.randn(64, 64)
+    t["visual.blocks.5.attn.weight"] = torch.randn(64, 64)
 
     # ---- 2D weights matching t5xxl "remove" pattern (decoder) ----
     t["decoder.block.0.attn.weight"] = torch.randn(64, 64)
@@ -357,7 +360,22 @@ class TestFilterFlags(unittest.TestCase):
     # 5. --qwen35 filter (exclude) — all paths
     # ------------------------------------------------------------------
 
-    QWEN35_SKIPPED = ["model.layers.0.attn", "model.layers.63.attn", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "merger.dense", "mtp.fc", "visual.pos_embed", "visual.patch_embed.proj", "visual.blocks.0.attn"]
+    QWEN35_SKIPPED = [
+        "model.layers.0.attn",
+        "model.layers.23.attn",
+        "model.layers.31.attn",
+        "model.layers.63.attn",
+        "lm_head",
+        "embed_tokens",
+        "in_proj_a",
+        "in_proj_b",
+        "merger.dense",
+        "mtp.fc",
+        "visual.pos_embed",
+        "visual.patch_embed.proj",
+        "visual.blocks.0.attn",
+        "visual.blocks.5.attn",
+    ]
     QWEN35_KEPT = ["transformer.blocks.2.attn.qkv", "net.blocks.2.attn"]
 
     def test_fp8_qwen35_flag_skips_excluded_layers(self):

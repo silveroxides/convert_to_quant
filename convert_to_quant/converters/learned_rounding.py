@@ -1310,10 +1310,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # Discretize V to get final quantized integers
         with torch.no_grad():
-            final_h_V = torch.sigmoid(best_V)
-            final_round_up = (final_h_V >= 0.5).to(COMPUTE_DTYPE)
-            final_qdata = (W_floor + final_round_up).clamp(-INT8_SYMMETRIC_MAX,
-                                                           INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
+            best_V.sigmoid_().ge_(0.5)
+            W_floor.add_(best_V)
+            del best_V
+            final_qdata = self._finalize_int8_qdata(W_floor)
 
             verbose(f"    - Discretization audit: {best_converged_ratio * 100:.2f}% of parameters converged to strict boundaries.")
 
@@ -1321,7 +1321,6 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         U_k = None
         Vh_k = None
         V = None
-        best_V = None
         W_scaled = None
         W_floor = None
         X_rot = None
@@ -1357,6 +1356,18 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self._cleanup_tensors(U_k, Vh_k)
 
         return final_qdata, scale
+
+    def _finalize_int8_qdata(self, qdata_float: torch.Tensor) -> torch.Tensor:
+        """Convert the working INT8 tensor in place to minimize peak memory."""
+        with torch.no_grad():
+            qdata_float.clamp_(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX)
+            qdata_float.round_()
+            final_qdata = qdata_float.to(TARGET_INT8_DTYPE)
+        del qdata_float
+        gc.collect()
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+        return final_qdata
 
     def _optimize_int8_adamw(
         self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, U_k: torch.Tensor, Vh_k: torch.Tensor,
@@ -1488,8 +1499,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         pbar.close()
 
-        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        del qdata_float, delta
+        with torch.no_grad():
+            qdata_float.add_(best_delta)
+        del best_delta, delta
+        final_qdata = self._finalize_int8_qdata(qdata_float)
         return final_qdata
 
     def _optimize_int8_radam(
@@ -1622,8 +1635,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         pbar.close()
 
-        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        del qdata_float, delta
+        with torch.no_grad():
+            qdata_float.add_(best_delta)
+        del best_delta, delta
+        final_qdata = self._finalize_int8_qdata(qdata_float)
         return final_qdata
 
     def _optimize_int8_prodigy(
@@ -1734,8 +1749,10 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         pbar.close()
 
-        final_qdata = (qdata_float + best_delta).clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        del qdata_float, delta
+        with torch.no_grad():
+            qdata_float.add_(best_delta)
+        del best_delta, delta
+        final_qdata = self._finalize_int8_qdata(qdata_float)
         return final_qdata
 
     def _optimize_int8_original(
@@ -1886,8 +1903,13 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         pbar.close()
 
         final_tensor = best_tensor if best_tensor is not None else q_refined
-        final_qdata = final_tensor.clamp(-INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
-        del qdata_float, q_refined
+        if best_tensor is not None:
+            del q_refined
+        del qdata_float
+        gc.collect()
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+        final_qdata = self._finalize_int8_qdata(final_tensor)
         return final_qdata
 
     def _convert_fp8(self, W_float32: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

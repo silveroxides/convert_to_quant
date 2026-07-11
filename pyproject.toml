@@ -25,12 +25,13 @@ dependencies = ["prodigy-plus-schedule-free", "scipy"]
 
 [project.optional-dependencies]
 # Triton version must match installed torch version.
-# torch>=2.12 -> triton<3.7 (or triton-windows<3.7)
+# torch>=2.12 -> triton<3.8 (or triton-windows<3.8)
 # torch>=2.11 -> triton<3.6 (or triton-windows<3.6)
 # torch>=2.10 -> triton<3.5 (or triton-windows<3.5)
-# Install with: pip install -U "triton<3.7" or pip install -U "triton-windows<3.7"
-triton = ["triton>=2.1.0"]
-triton-windows = ["triton-windows>=3.3"]
+# Install with: pip install -U "triton<3.8" or pip install -U "triton-windows<3.8"
+triton = ["triton>=2.1.0,<3.8"]
+triton-windows = ["triton-windows>=3.3,<3.8"]
+blackwell = ["comfy-kitchen>=0.2.18,<0.3"]
 prodigy = ["prodigy-plus-schedule-free"]
 dev = ["pytest"]
 
