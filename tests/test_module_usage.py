@@ -1,35 +1,45 @@
-import os
+"""Tests for the public ``quantize`` module entry point."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import torch
+from safetensors import safe_open
+from safetensors.torch import save_file
+
 from convert_to_quant import quantize
 
-def main():
-    # Make sure we have a dummy input safetensors
-    import torch
-    from safetensors.torch import save_file
 
-    input_path = "dummy_model.safetensors"
-    output_path = "dummy_model_out.safetensors"
+@pytest.mark.integration
+def test_quantize_module_creates_a_loadable_model():
+    input_path = Path("test_module_usage_input.safetensors")
+    output_path = Path("test_module_usage_output.safetensors")
+    try:
+        generator = torch.Generator(device="cpu").manual_seed(1234)
+        save_file({"layer.weight": torch.randn(16, 16, generator=generator)}, input_path)
 
-    # Create a dummy model
-    tensors = {
-        "layer1.weight": torch.randn(128, 128)
-    }
-    save_file(tensors, input_path)
+        quantize(
+            input=str(input_path),
+            output=str(output_path),
+            int8=True,
+            scaling_mode="tensor",
+            simple=True,
+            device="cpu",
+            calib_samples=8,
+            manual_seed=42,
+            save_quant_metadata=True,
+        )
 
-    # Try calling quantize programmatically
-    quantize(
-        input=input_path,
-        output=output_path,
-        int8=True,
-        block_size=64,
-        simple=True
-    )
-
-    print("Quantize successful!")
-
-    if os.path.exists(input_path):
-        os.remove(input_path)
-    if os.path.exists(output_path):
-        os.remove(output_path)
-
-if __name__ == "__main__":
-    main()
+        assert output_path.exists()
+        with safe_open(output_path, framework="pt", device="cpu") as handle:
+            assert set(handle.keys()) == {
+                "layer.comfy_quant",
+                "layer.weight",
+                "layer.weight_scale",
+            }
+            assert "_quantization_metadata" in (handle.metadata() or {})
+    finally:
+        input_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)

@@ -58,6 +58,15 @@ split-on-trailing-comma = false
 [tool.ruff.format]
 skip-magic-trailing-comma = true
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: fast tests without model conversion or accelerator requirements",
+    "integration: tests that exercise conversion or safetensors round trips",
+    "gpu: tests that require a CUDA-capable GPU",
+    "slow: tests that execute optimization loops or larger conversions",
+]
+
 [tool.isort]
 line_length = 64
 profile = "black"

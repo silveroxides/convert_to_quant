@@ -1,99 +1,178 @@
-import ast
-import os
-import sys
+"""Contract tests keeping the CLI and programmatic API in sync."""
+
+from __future__ import annotations
+
+import importlib
+import re
+from pathlib import Path
+
+import pytest
+
+from convert_to_quant import quantize
+from convert_to_quant.cli.main import extract_filter_flags, get_parser, run_conversion
+from convert_to_quant.constants import MODEL_FILTERS
 
 
-def get_arg_dests(parser_path):
-    with open(parser_path, "r", encoding="utf-8") as f:
-        tree = ast.parse(f.read())
+@pytest.mark.unit
+def test_every_args_access_has_a_parser_definition():
+    main_path = Path(__file__).parents[1] / "convert_to_quant" / "cli" / "main.py"
+    accesses = set(re.findall(r"args\.([A-Za-z0-9_]+)", main_path.read_text(encoding="utf-8")))
+    parser_dests = {action.dest for action in get_parser()._actions}
 
-    dests = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            # rudimentary check for add_argument calls
-            if hasattr(node.func, "attr") and node.func.attr == "add_argument":
-                # iterate keywords to find dest
-                for kw in node.keywords:
-                    if kw.arg == "dest":
-                        if isinstance(kw.value, ast.Constant):
-                            dests.add(kw.value.value)
-
-    # Also manual list of args typically found in ADD_ARGUMENT calls manually
-    # ideally we import the module, but that's risky if it has side effects.
-    # Let's try basic AST regex-ish approach first or just "dest="
-
-    return dests
+    assert accesses <= parser_dests, f"args used but not defined by the parser: {sorted(accesses - parser_dests)}"
 
 
-def get_arg_accesses(main_path):
-    with open(main_path, "r", encoding="utf-8") as f:
-        content = f.read()
+@pytest.mark.unit
+def test_parser_option_strings_and_destinations_are_unique():
+    parser = get_parser()
+    option_owners: dict[str, str] = {}
+    duplicate_options: dict[str, set[str]] = {}
 
-    # regex for args.NAME
-    import re
+    for action in parser._actions:
+        for option in action.option_strings:
+            previous = option_owners.setdefault(option, action.dest)
+            if previous != action.dest:
+                duplicate_options.setdefault(option, {previous}).add(action.dest)
 
-    accesses = set(re.findall(r"args\.([a-zA-Z0-9_]+)", content))
-    return accesses
-
-
-def check_constants_filters():
-    # Load constants to get MODEL_FILTERS keys
-    # Load constants to get MODEL_FILTERS keys
-    sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__))))
-    from convert_to_quant.constants import MODEL_FILTERS
-
-    return set(MODEL_FILTERS.keys())
+    assert not duplicate_options
+    assert len([action.dest for action in parser._actions]) == len({action.dest for action in parser._actions})
 
 
-def analyze():
-    # Base dir is ../convert_to_quant relative to this script
-    base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "convert_to_quant")
-    parser_path = os.path.join(base_dir, "cli", "argument_parser.py")
-    main_path = os.path.join(base_dir, "cli", "main.py")
+@pytest.mark.unit
+def test_programmatic_api_uses_parser_defaults(monkeypatch):
+    captured = {}
 
-    # 1. Parse argument_parser.py to find definitions
-    # Since it's complex, we might just grep for dest= or strings?
-    # Actually, let's use a simpler heuristic: read the file content and look for 'dest='
+    def capture(namespace):
+        captured.update(vars(namespace))
 
-    with open(parser_path, "r") as f:
-        parser_content = f.read()
+    cli_main = importlib.import_module("convert_to_quant.cli.main")
+    monkeypatch.setattr(cli_main, "run_conversion", capture)
+    quantize("input.safetensors", output="output.safetensors", int8=True, simple=True)
 
-    import re
+    expected = {
+        action.dest: action.default
+        for action in get_parser()._actions
+        if action.dest != "help"
+    }
+    expected.update(input="input.safetensors", output="output.safetensors", int8=True, simple=True)
+    assert captured == expected
 
-    defined_args = set(re.findall(r'dest="([^"]+)"', parser_content))
-    defined_args.update(re.findall(r"dest='([^']+)'", parser_content))
 
-    # Add manual ones that might be missed (like implicit dest from flags)
-    # This is a limitation of static analysis without full import
+@pytest.mark.unit
+def test_programmatic_api_rejects_unknown_arguments():
+    with pytest.raises(ValueError, match="Unknown parameter"):
+        quantize("input.safetensors", definitely_not_an_argument=True)
 
-    # 2. Add filter args from constants
+
+@pytest.mark.unit
+def test_every_model_filter_is_exposed_and_extractable():
+    args = get_parser().parse_args(["--input", "input.safetensors"])
+    for name in MODEL_FILTERS:
+        assert hasattr(args, name)
+        setattr(args, name, True)
+
+    extracted = extract_filter_flags(args)
+    assert set(MODEL_FILTERS) <= set(extracted)
+
+
+@pytest.mark.unit
+def test_run_conversion_forwards_the_complete_unified_contract(monkeypatch):
+    input_path = Path("test_cli_forwarding_input.safetensors")
+    output_path = Path("test_cli_forwarding_output.safetensors")
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    cli_main = importlib.import_module("convert_to_quant.cli.main")
+    monkeypatch.setattr(cli_main, "convert_to_fp8_scaled", capture)
+    input_path.write_bytes(b"existence check only")
     try:
-        filters = check_constants_filters()
-        defined_args.update(filters)
-        print(f"Found {len(filters)} dynamic filter arguments.")
-    except Exception as e:
-        print(f"Warning: Could not load constants: {e}")
+        namespace = get_parser().parse_args(
+            [
+                "--input",
+                str(input_path),
+                "--output",
+                str(output_path),
+                "--int8",
+                "--scaling-mode",
+                "tensor",
+                "--simple",
+                "--manual-seed",
+                "123",
+            ]
+        )
+        run_conversion(namespace)
+    finally:
+        input_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
 
-    # 3. Find usages in main.py
-    accessed_args = get_arg_accesses(main_path)
-
-    print(f"Defined Arguments (Approx {len(defined_args)}): {sorted(list(defined_args))}")
-    print(f"Accessed Arguments (Approx {len(accessed_args)}): {sorted(list(accessed_args))}")
-
-    # 4. Check for unused
-    unused = defined_args - accessed_args
-    # Filter out known false positives
-    unused = {u for u in unused if u not in ["help", "version"]}
-
-    print("\n" + "=" * 50)
-    print("POTENTIALLY UNUSED ARGUMENTS (Defined but not accessed in main.py):")
-    print("=" * 50)
-    if unused:
-        for u in sorted(list(unused)):
-            print(f" - {u}")
-    else:
-        print("None found!")
-
-
-if __name__ == "__main__":
-    analyze()
+    assert captured["args"] == (str(input_path), str(output_path), False)
+    assert set(captured["kwargs"]) == {
+        "block_size",
+        "calib_cpu",
+        "calib_samples",
+        "convrot",
+        "convrot_group_size",
+        "custom_block_size",
+        "custom_convrot",
+        "custom_convrot_group_size",
+        "custom_full_precision_mm",
+        "custom_heur",
+        "custom_layers",
+        "custom_scaling_mode",
+        "custom_simple",
+        "custom_type",
+        "device",
+        "dynamic_convrot",
+        "early_stop_loss",
+        "early_stop_lr",
+        "early_stop_stall",
+        "exclude_layers",
+        "extract_lora",
+        "fallback",
+        "fallback_block_size",
+        "fallback_simple",
+        "filter_flags",
+        "full_matrix",
+        "full_precision_matrix_mult",
+        "include_input_scale",
+        "int8",
+        "layer_config",
+        "layer_config_fullmatch",
+        "lora_ar_threshold",
+        "lora_depth",
+        "lora_output",
+        "lora_rank",
+        "lora_target",
+        "low_memory",
+        "lr",
+        "lr_adaptive_mode",
+        "lr_cooldown",
+        "lr_factor",
+        "lr_gamma",
+        "lr_min",
+        "lr_patience",
+        "lr_schedule",
+        "lr_shape_influence",
+        "lr_threshold",
+        "lr_threshold_mode",
+        "max_k",
+        "min_k",
+        "no_learned_rounding",
+        "num_iter",
+        "optimizer",
+        "primary_format",
+        "save_quant_metadata",
+        "scale_optimization",
+        "scaling_mode",
+        "seed",
+        "skip_inefficient_layers",
+        "top_p",
+        "use_speed",
+    }
+    assert captured["kwargs"]["seed"] == 123
+    assert captured["kwargs"]["int8"] is True
+    assert captured["kwargs"]["no_learned_rounding"] is True
+    assert captured["kwargs"]["scaling_mode"] == "tensor"
