@@ -271,25 +271,9 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
         # Use inherited SVD computation
         U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
-        # Route to appropriate optimizer
-        if self.optimizer_choice == "original":
-            qdata, block_scales_e8m0, block_scales_f32 = self._optimize_original(
-                W_float32, block_scales_f32, U_k, Vh_k, block_scales_e8m0, zero_mask
-            )
-        elif self.optimizer_choice == "adamw":
-            qdata, block_scales_e8m0, block_scales_f32 = self._optimize_adamw(
-                W_float32, block_scales_f32, U_k, Vh_k, block_scales_e8m0, zero_mask
-            )
-        elif self.optimizer_choice == "radam":
-            qdata, block_scales_e8m0, block_scales_f32 = self._optimize_radam(
-                W_float32, block_scales_f32, U_k, Vh_k, block_scales_e8m0, zero_mask
-            )
-        elif self.optimizer_choice == "prodigy":
-            qdata, block_scales_e8m0, block_scales_f32 = self._optimize_prodigy(
-                W_float32, block_scales_f32, U_k, Vh_k, block_scales_e8m0, zero_mask
-            )
-        else:
-            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        qdata, block_scales_e8m0, block_scales_f32 = self._run_selected_optimizer(
+            W_float32, block_scales_f32, U_k, Vh_k, block_scales_e8m0, zero_mask
+        )
 
         # Cleanup SVD tensors
         self._cleanup_tensors(U_k, Vh_k)

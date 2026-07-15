@@ -176,3 +176,56 @@ def test_run_conversion_forwards_the_complete_unified_contract(monkeypatch):
     assert captured["kwargs"]["int8"] is True
     assert captured["kwargs"]["no_learned_rounding"] is True
     assert captured["kwargs"]["scaling_mode"] == "tensor"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("extra_args", "suffix"),
+    (
+        (["--simple"], "_simple_fp8_tensor.safetensors"),
+        (["--int8", "--scaling-mode", "tensor"], "_learned_int8_tensorwise.safetensors"),
+        (["--int8", "--scaling-mode", "row"], "_learned_int8_rowwise.safetensors"),
+    ),
+)
+def test_automatic_output_filenames_remain_stable(monkeypatch, extra_args, suffix):
+    input_path = Path("test_cli_filename_input.safetensors")
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured["output"] = args[1]
+
+    cli_main = importlib.import_module("convert_to_quant.cli.main")
+    monkeypatch.setattr(cli_main, "convert_to_fp8_scaled", capture)
+    input_path.write_bytes(b"existence check only")
+    try:
+        namespace = get_parser().parse_args(
+            ["--input", str(input_path), "--manual-seed", "123", *extra_args]
+        )
+        run_conversion(namespace)
+    finally:
+        input_path.unlink(missing_ok=True)
+
+    assert captured["output"] == f"{input_path.with_suffix('')}{suffix}"
+
+
+@pytest.mark.unit
+def test_hyphenated_aliases_share_destinations_and_values():
+    args = get_parser().parse_args(
+        [
+            "--input",
+            "input.safetensors",
+            "--comfy-quant",
+            "--scaling-mode",
+            "row",
+            "--block-size",
+            "64",
+            "--full-precision-matrix-mult",
+            "--low-memory",
+        ]
+    )
+
+    assert args.comfy_quant is True
+    assert args.scaling_mode == "row"
+    assert args.block_size == 64
+    assert args.full_precision_matrix_mult is True
+    assert args.low_memory is True

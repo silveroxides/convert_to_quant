@@ -155,6 +155,13 @@ class BaseLearnedConverter(ABC):
 
                 warning(f"      [LoRA] Invalid target regex '{lora_target}', ignoring.")
 
+    def _run_selected_optimizer(self, *args, method_prefix: str = "_optimize_", **kwargs):
+        """Dispatch to the configured learned optimizer implementation."""
+        if self.optimizer_choice not in {"original", "adamw", "radam", "prodigy"}:
+            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        method_name = f"{method_prefix}{self.optimizer_choice}"
+        return getattr(self, method_name)(*args, **kwargs)
+
     def _should_extract_lora(self, key: str, shape: torch.Size, depth: int = -1) -> bool:
         """
         Determine if LoRA should be extracted for the given layer.

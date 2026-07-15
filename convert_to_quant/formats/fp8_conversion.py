@@ -20,24 +20,22 @@ from typing import (
 import torch
 from safetensors.torch import save_file
 
-from ..config.layer_config import get_layer_settings
 from ..constants import (
     COMPUTE_DTYPE,
     FP8_MAX,
     FP8_MIN,
     INT8_SYMMETRIC_MAX,
-    MODEL_FILTERS,
     NORMALIZE_SCALES_ENABLED,
     SCALE_DTYPE,
     T5XXL_REMOVE_KEY_NAMES,
     TARGET_FP8_DTYPE,
-    TARGET_INT8_DTYPE,
 )
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..converters.learned_rounding import (
     LearnedRoundingConverter,
 )
+from ..routing import resolve_layer_route
 from ..utils.comfy_quant import (
     create_comfy_quant_tensor,
     should_skip_layer_for_performance,
@@ -231,29 +229,6 @@ def convert_to_fp8_scaled(
         else:
             return LearnedRoundingConverter(**kwargs)
 
-    # Helper function to get format metadata
-    def get_format_info(fmt: str) -> dict:
-        """Returns dtype and format name for a quantization format."""
-        format_map = {
-            "int8": {
-                "dtype": TARGET_INT8_DTYPE,
-                "name": "INT8"
-            },
-            "fp8": {
-                "dtype": TARGET_FP8_DTYPE,
-                "name": "FP8"
-            },
-            "mxfp8": {
-                "dtype": torch.uint8,
-                "name": "MXFP8"
-            },
-            "nvfp4": {
-                "dtype": torch.uint8,
-                "name": "NVFP4"
-            }
-        }
-        return format_map.get(fmt, format_map["fp8"])
-
     # Create converters for each format type used
     converters = {"primary": create_converter_for_format(target_format)}
 
@@ -353,85 +328,51 @@ def convert_to_fp8_scaled(
     info("-" * 60)
 
     for i, key in enumerate(weight_keys):
-        exclusion_reason = ""
-        use_custom = False
-        use_fallback = False
-        use_layer_config = False
-        layer_format = target_format  # default to primary
-        layer_settings = None  # Per-layer settings from config
-
         # Pre-compute text encoder filter for input scale handling
         text_encoder_filter = filter_flags.get("t5xxl") or filter_flags.get("mistral") or filter_flags.get(
             "visual"
         ) or filter_flags.get("generic_text")
 
-        # T5XXL decoder tensors are always removed (not quantized, not kept)
-        if filter_flags.get("t5xxl") and any(n in key for n in T5XXL_REMOVE_KEY_NAMES):
+        route = resolve_layer_route(
+            key,
+            target_format=target_format,
+            optimizer=converter_kwargs.get("optimizer", "prodigy"),
+            primary_simple=no_learned_rounding,
+            filter_flags=filter_flags,
+            layer_config=layer_config,
+            layer_config_fullmatch=layer_config_fullmatch,
+            custom_pattern=custom_pattern,
+            custom_type=custom_type,
+            custom_simple=custom_simple,
+            exclude_pattern=exclude_pattern,
+            fallback=fallback,
+            fallback_simple=fallback_simple,
+        )
+        use_layer_config = route.uses_layer_config
+        use_custom = route.uses_custom
+        use_fallback = route.uses_fallback
+        layer_format = route.target_format
+        layer_settings = route.layer_settings
+        exclusion_reason = route.exclusion_reason
+
+        if route.action == "remove":
             info(f"({i + 1}/{total_weights}) Removing T5XXL decoder tensor: {key}")
             skipped_count += 1
             continue
 
-        # Check layer_config FIRST (highest priority)
-        if layer_config:
-            layer_settings = get_layer_settings(key, layer_config, fullmatch=layer_config_fullmatch)
-            if layer_settings:
-                if layer_settings.get("skip", False):
-                    info(f"({i + 1}/{total_weights}) Skipping (layer-config): {key}")
-                    original_tensor = loader.get_tensor(key)
-                    new_tensors[key] = original_tensor.to(device="cpu", dtype=original_tensor.dtype)
-                    loader.mark_processed(key)
-                    skipped_count += 1
-                    continue
-                use_layer_config = True
-                # Map format to layer_format type
-                fmt = layer_settings["format"]
-                if fmt.startswith("float8"):
-                    layer_format = "fp8"
-                elif fmt.startswith("int8"):
-                    layer_format = "int8"
-                else:
-                    layer_format = "fp8"  # fallback
-
-        # Check for custom pattern match (second priority, only if no layer_config match)
-        if not use_layer_config and custom_pattern and custom_pattern.search(key):
-            use_custom = True
-            layer_format = custom_type
-
-        # Check --exclude-layers regex pattern (third priority, only if not custom/layer_config matched)
-        if not use_custom and not use_layer_config and exclude_pattern and exclude_pattern.search(key):
-            exclusion_reason = "regex exclusion (--exclude-layers)"
-
-        # Check exclusion filters (only matters if not custom matched and not layer_config matched)
-        # Uses MODEL_FILTERS registry for centralized filter definitions
-        if not use_custom and not use_layer_config:
-            # Use filter_flags dict passed from CLI
-            active_filters = filter_flags
-
-            # Check each active filter against the key
-            for filter_name, is_active in active_filters.items():
-                if not is_active:
-                    continue
-                cfg = MODEL_FILTERS[filter_name]
-
-                # Both "exclude" and "highprec" mean the same thing: skip quantization
-                skip_patterns = cfg.get("exclude", []) + cfg.get("highprec", [])
-                if skip_patterns and any(n in key for n in skip_patterns):
-                    exclusion_reason = f"{filter_name} skip"
-                    break
-
-        # Handle excluded layers: use fallback if available, otherwise skip
-        if exclusion_reason and not use_custom and not use_layer_config:
-            if fallback:
-                use_fallback = True
-                layer_format = fallback
-                info(f"({i + 1}/{total_weights}) Processing (fallback {fallback.upper()}): {key} (was: {exclusion_reason})")
+        if route.action == "skip":
+            if use_layer_config:
+                info(f"({i + 1}/{total_weights}) Skipping (layer-config): {key}")
             else:
                 info(f"({i + 1}/{total_weights}) Skipping tensor: {key} (Reason: {exclusion_reason})")
-                original_tensor = loader.get_tensor(key)
-                new_tensors[key] = original_tensor.to(device="cpu", dtype=original_tensor.dtype)
-                loader.mark_processed(key)
-                skipped_count += 1
-                continue
+            original_tensor = loader.get_tensor(key)
+            new_tensors[key] = original_tensor.to(device="cpu", dtype=original_tensor.dtype)
+            loader.mark_processed(key)
+            skipped_count += 1
+            continue
+
+        if use_fallback:
+            info(f"({i + 1}/{total_weights}) Processing (fallback {fallback.upper()}): {key} (was: {exclusion_reason})")
 
         # Log what we're doing - User requested NORMAL (DEFAULT) be detailed per-tensor
         if use_layer_config:
@@ -472,13 +413,11 @@ def convert_to_fp8_scaled(
             cfg_overrides = {}
             cfg_block_size = layer_settings.get("block_size")
             cfg_scaling_mode = layer_settings.get("scaling_mode")
-            cfg_simple = layer_settings.get("simple", False)
             if cfg_block_size is not None:
                 cfg_overrides["block_size"] = cfg_block_size
             if cfg_scaling_mode is not None:
                 cfg_overrides["scaling_mode"] = cfg_scaling_mode
-            if cfg_simple:
-                cfg_overrides["no_learned_rounding"] = True
+            cfg_overrides["no_learned_rounding"] = route.mode == "simple"
             converter = create_converter_for_format(layer_format, cfg_overrides if cfg_overrides else None)
         elif use_custom:
             converter = converters["custom"]
@@ -684,9 +623,6 @@ def convert_to_fp8_scaled(
                 else:
                     # Shape matches scale_weight, filled with 1.0
                     new_tensors[f"{base_name}.scale_input"] = torch.ones_like(dequant_s, dtype=SCALE_DTYPE, device="cpu")
-
-        # Determine if this layer uses simple mode (skip bias correction to save memory)
-        layer_uses_simple = custom_simple if use_custom else (fallback_simple if use_fallback else no_learned_rounding)
 
         # Check if we should adjust bias for ConvRot/Bias Correction
         if "bias_correction" in extra_tensors:

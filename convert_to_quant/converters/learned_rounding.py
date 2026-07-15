@@ -30,6 +30,7 @@ from ..constants import (
     TARGET_INT8_DTYPE,
 )
 from ..pinned_transfer import transfer_to_gpu_pinned
+from ..routing import resolve_conversion_route
 from ..utils.logging import (
     debug,
     info,
@@ -720,27 +721,17 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
                         return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
 
-                    # INT8 quantization path
-                    if self.target_format == "int8":
-                        if self.scaling_mode in ("tensor", "row"):
-                            qdata, scale, dequantized = self._convert_int8_tensorwise(
-                                W_float32, calibration_data=calibration_data
-                            )
-                        else:
-                            qdata, scale, dequantized = self._convert_int8(W_float32)
+                    route = resolve_conversion_route(
+                        self.target_format,
+                        self.scaling_mode,
+                        no_learned_rounding=self.no_learned_rounding,
+                        optimizer=self.optimizer_choice,
+                    )
+                    conversion_method = getattr(self, route.method_name)
+                    if route.method_name == "_convert_int8_tensorwise":
+                        qdata, scale, dequantized = conversion_method(W_float32, calibration_data=calibration_data)
                     else:
-                        # FP8 quantization path - route based on scaling_mode
-                        if self.scaling_mode == "row":
-                            qdata, scale, dequantized = self._convert_fp8_rowwise(W_float32)
-                        elif self.scaling_mode in ("block", "block2d"):
-                            # 2D block-wise - 'block' is primary, 'block2d' is deprecated alias
-                            qdata, scale, dequantized = self._convert_fp8_block2d(W_float32)
-                        elif self.scaling_mode == "block3d":
-                            # 3D per-row-group mode (legacy)
-                            qdata, scale, dequantized = self._convert_fp8(W_float32)
-                        else:
-                            # 'tensor' mode
-                            qdata, scale, dequantized = self._convert_fp8(W_float32)
+                        qdata, scale, dequantized = conversion_method(W_float32)
 
                     # Error Correction LoRA extraction
                     extra_tensors = self._current_extra_tensors.copy()
@@ -988,16 +979,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.target_dtype = TARGET_INT8_DTYPE
         self.f8_max_val = float(INT8_SYMMETRIC_MAX)
 
-        if self.optimizer_choice == "original":
-            final_tensor_scaled = self._optimize_original(W_float32, scale_fp8_style, U_k, Vh_k)
-        elif self.optimizer_choice == "adamw":
-            final_tensor_scaled = self._optimize_adamw(W_float32, scale_fp8_style, U_k, Vh_k)
-        elif self.optimizer_choice == "radam":
-            final_tensor_scaled = self._optimize_radam(W_float32, scale_fp8_style, U_k, Vh_k)
-        elif self.optimizer_choice == "prodigy":
-            final_tensor_scaled = self._optimize_prodigy(W_float32, scale_fp8_style, U_k, Vh_k)
-        else:
-            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        final_tensor_scaled = self._run_selected_optimizer(W_float32, scale_fp8_style, U_k, Vh_k)
 
         # Restore original state
         self.target_dtype = orig_dtype
@@ -1343,16 +1325,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
         # Route to appropriate optimizer
-        if self.optimizer_choice == "original":
-            final_qdata = self._optimize_int8_original(W_float32, qdata, scale, U_k, Vh_k, scaling_mode)
-        elif self.optimizer_choice == "adamw":
-            final_qdata = self._optimize_int8_adamw(W_float32, qdata, scale, U_k, Vh_k, scaling_mode)
-        elif self.optimizer_choice == "radam":
-            final_qdata = self._optimize_int8_radam(W_float32, qdata, scale, U_k, Vh_k, scaling_mode)
-        elif self.optimizer_choice == "prodigy":
-            final_qdata = self._optimize_int8_prodigy(W_float32, qdata, scale, U_k, Vh_k, scaling_mode)
-        else:
-            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        final_qdata = self._run_selected_optimizer(
+            W_float32, qdata, scale, U_k, Vh_k, scaling_mode, method_prefix="_optimize_int8_"
+        )
 
         self._cleanup_tensors(U_k, Vh_k)
 
@@ -1945,16 +1920,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         # Use inherited SVD computation
         U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
-        if self.optimizer_choice == "adamw":
-            final_tensor_scaled = self._optimize_adamw(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == "radam":
-            final_tensor_scaled = self._optimize_radam(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == "prodigy":
-            final_tensor_scaled = self._optimize_prodigy(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == "original":
-            final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
-        else:
-            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        final_tensor_scaled = self._run_selected_optimizer(W_float32, scale, U_k, Vh_k)
 
         with torch.no_grad():
             W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
@@ -2009,16 +1975,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # Use the appropriate optimizer with row-wise scale
         scale = quant_scale  # (M, 1) for broadcast
-        if self.optimizer_choice == "adamw":
-            final_tensor_scaled = self._optimize_adamw(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == "radam":
-            final_tensor_scaled = self._optimize_radam(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == "prodigy":
-            final_tensor_scaled = self._optimize_prodigy(W_float32, scale, U_k, Vh_k)
-        elif self.optimizer_choice == "original":
-            final_tensor_scaled = self._optimize_original(W_float32, scale, U_k, Vh_k)
-        else:
-            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        final_tensor_scaled = self._run_selected_optimizer(W_float32, scale, U_k, Vh_k)
 
         with torch.no_grad():
             W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)
@@ -2085,16 +2042,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
         # Use the optimizer with the expanded scale
-        if self.optimizer_choice == "adamw":
-            final_tensor_scaled = self._optimize_adamw(W_float32, scale_full, U_k, Vh_k)
-        elif self.optimizer_choice == "radam":
-            final_tensor_scaled = self._optimize_radam(W_float32, scale_full, U_k, Vh_k)
-        elif self.optimizer_choice == "prodigy":
-            final_tensor_scaled = self._optimize_prodigy(W_float32, scale_full, U_k, Vh_k)
-        elif self.optimizer_choice == "original":
-            final_tensor_scaled = self._optimize_original(W_float32, scale_full, U_k, Vh_k)
-        else:
-            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        final_tensor_scaled = self._run_selected_optimizer(W_float32, scale_full, U_k, Vh_k)
 
         with torch.no_grad():
             W_f8 = final_tensor_scaled.clamp(-self.f8_max_val, self.f8_max_val).to(TARGET_FP8_DTYPE)

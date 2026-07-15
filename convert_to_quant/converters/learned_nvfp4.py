@@ -292,17 +292,9 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         # Use inherited SVD computation
         U_k, Vh_k, k = self._compute_svd_components(W_float32)
 
-        # Route to appropriate optimizer - all now support scale_optimization modes
-        if self.optimizer_choice == "original":
-            qdata, final_total_scale = self._optimize_original(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
-        elif self.optimizer_choice == "adamw":
-            qdata, final_total_scale = self._optimize_adamw(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
-        elif self.optimizer_choice == "radam":
-            qdata, final_total_scale = self._optimize_radam(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
-        elif self.optimizer_choice == "prodigy":
-            qdata, final_total_scale = self._optimize_prodigy(W_float32, total_scale, U_k, Vh_k, per_tensor_scale)
-        else:
-            raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
+        qdata, final_total_scale = self._run_selected_optimizer(
+            W_float32, total_scale, U_k, Vh_k, per_tensor_scale
+        )
 
         # Cleanup SVD tensors
         self._cleanup_tensors(U_k, Vh_k)
