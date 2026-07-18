@@ -41,7 +41,16 @@ AVOID_KEY_NAMES = [
     "mm_input_projection_weight",
 ]
 T5XXL_REMOVE_KEY_NAMES = ["decoder", "lm_head"]
-VISUAL_AVOID_KEY_NAMES = ["mlp.down_proj", "mlp.up_proj", "mlp.gate_proj"]
+VISUAL_AVOID_KEY_NAMES = [
+    "mlp.down_proj",
+    "mlp.up_proj",
+    "mlp.gate_proj",
+    "mlp.linear_fc1",
+    "mlp.linear_fc2",
+    "patch_embed",
+    "pos_embed",
+    "merger",
+]
 QWEN_AVOID_KEY_NAMES = ["norm_added_k", "norm_added_q", "norm_k", "norm_q", "txt_norm"]
 HUNYUAN_AVOID_KEY_NAMES = [
     "layernorm", "img_attn_k_norm", "img_attn_q_norm", "txt_attn_k_norm", "txt_attn_q_norm", "norm1", "norm2",
@@ -51,10 +60,24 @@ ZIMAGE_AVOID_KEY_NAMES = [
     "cap_embedder.0", "cap_pad_token", "attention_norm1", "attention_norm2", "ffn_norm1", "ffn_norm2", "k_norm", "q_norm",
     "x_pad_token"
 ]
-GEMMA4_AVOID_KEY_NAMES = ["audio", "per_layer_input_gate", "per_layer_projection", "vision", "multi_modal_projector"]
+GEMMA4_AVOID_KEY_NAMES = [
+    "audio",
+    "audio_projector",
+    "embed_tokens",
+    "per_layer_input_gate",
+    "per_layer_projection",
+    "per_layer_model_projection",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "vision",
+    "multi_modal_projector",
+]
 
 # --- Layer key names for specific models (layers to include as high-precision) ---
-FLUX2_LAYER_KEYNAMES = ["stream_modulation", "guidance_in", "time_in", "final_layer", "img_in", "txt_in"]
+FLUX_STYLE_LAYER_KEYNAMES = ["stream_modulation", "guidance_in", "time_in", "final_layer", "img_in", "txt_in"]
+FLUX1_LAYER_KEYNAMES = FLUX_STYLE_LAYER_KEYNAMES
+FLUX2_LAYER_KEYNAMES = FLUX_STYLE_LAYER_KEYNAMES
+FLUX_KLEIN_LAYER_KEYNAMES = ["stream_modulation", "time_in", "final_layer", "img_in", "txt_in"]
 DISTILL_LAYER_KEYNAMES_LARGE = ["distilled_guidance_layer", "final_layer", "img_in", "txt_in"]
 DISTILL_LAYER_KEYNAMES_SMALL = ["distilled_guidance_layer"]
 NERF_LAYER_KEYNAMES_LARGE = ["distilled_guidance_layer", "nerf_blocks", "nerf_image_embedder", "txt_in", "_attn.proj"]
@@ -66,6 +89,17 @@ WAN_LAYER_KEYNAMES = [
     "head.head", "face_encoder.out_proj", "face_adapter", "audio_injector"
 ]
 QWEN_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "transformer_blocks.0.img_mod.1", "txt_in"]
+ERNIE_IMAGE_LAYER_KEYNAMES = [
+    "time_embedding",
+    "adaLN_modulation",
+    "final_linear",
+    "final_norm",
+    "x_embedder",
+    "layers.0.self_attention",
+    "layers.0.mlp.gate_proj",
+    "layers.0.mlp.up_proj",
+    "text_proj",
+]
 ZIMAGE_LAYER_KEYNAMES = [
     "x_embedder", "clip_text_pooled_proj", "final_layer", "cap_embedder.1", "adaLN_modulation", "t_embedder", "time_text_embed"
 ]
@@ -75,8 +109,17 @@ ANIMA_LAYER_KEYNAMES = [
 ]
 LENS_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "img_mod.1", "txt_mod.1", "txt_in"]
 QWEN35_AVOID_KEY_NAMES = [
-    ".layers.0.", ".layers.63.", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "visual.pos_embed", "visual.patch_embed",
-    "merger", "mtp.fc", "visual.blocks.0."
+    ".layers.0.",
+    ".layers.23.",
+    ".layers.31.",
+    ".layers.63.",
+    "lm_head",
+    "embed_tokens",
+    "in_proj_a",
+    "in_proj_b",
+    "visual.",
+    "merger",
+    "mtp.fc",
 ]
 LTXV2_LAYER_KEYNAMES = [
     "scale_shift_table",
@@ -108,8 +151,7 @@ LTXV2_LAYER_KEYNAMES = [
 
 KREA2_LAYER_KEYNAMES = ["firs", "las", "tml", "txtfusion", "last.modulatio", "tpro"]
 BOOGU_LAYER_KEYNAMES = [
-    "image_index_embedding", "ref_image_patch_embedder", "time_caption_embed", "x_embedder", "norm_out.linear_1",
-    "norm_out.linear_2"
+    "image_index_embedding", "ref_image_patch_embedder", "time_caption_embed", "x_embedder", "norm1.linear", "norm_out"
 ]
 IDEOGRAM4_LAYER_KEYNAMES = ["embed_image_indicator", "t_embedding", "llm_cond_proj", "adaln_proj", "final_layer", "input_proj"]
 
@@ -126,12 +168,12 @@ MODEL_FILTERS = {
     # Text Encoders
     "gemma4": {
         "help":
-        "Gemma4 text/multimodal model: skip audio, per_layer_input_gate, per_layer_projection, vision, multi_modal_projector",
+        "Gemma 4 text/multimodal model: protect embeddings, K/V projections, audio, vision, and multimodal projectors",
         "category": "text",
         "exclude": GEMMA4_AVOID_KEY_NAMES
     },
     "qwen35": {
-        "help": "Qwen2.5 text/multimodal model: skip first/last layers, embeddings, visual components",
+        "help": "Qwen3.5 text/multimodal model: protect boundary layers, embeddings, and all visual components",
         "category": "text",
         "exclude": QWEN35_AVOID_KEY_NAMES
     },
@@ -147,15 +189,20 @@ MODEL_FILTERS = {
         "exclude": AVOID_KEY_NAMES
     },
     "visual": {
-        "help": "Visual encoder: skip MLP layers (down/up/gate proj)",
+        "help": "Visual encoder: protect MLP projections, patch/position embeddings, and merger layers",
         "category": "text",
         "exclude": VISUAL_AVOID_KEY_NAMES
     },
     "generic_text": {
-        "help": "Generic text encoder: skip MLP layers (down/up/gate proj)",
+        "help": "Generic text encoder: emit input scales for supported FP8 runtimes (does not exclude layers)",
         "category": "text"
     },
     # Diffusion Models (Flux-style)
+    "flux1": {
+        "help": "Flux.1: keep modulation/guidance/time/final/input layers high-precision",
+        "category": "diffusion",
+        "highprec": FLUX1_LAYER_KEYNAMES
+    },
     "anima": {
         "help": "Anima diffusion model: keep first blocks, adaln_modulation, final/embedding layers high-precision",
         "category": "diffusion",
@@ -170,6 +217,11 @@ MODEL_FILTERS = {
         "help": "Flux.2: keep modulation/guidance/time/final layers high-precision",
         "category": "diffusion",
         "highprec": FLUX2_LAYER_KEYNAMES
+    },
+    "flux_klein": {
+        "help": "FLUX.2 Klein: keep modulation/time/final/input layers high-precision",
+        "category": "diffusion",
+        "highprec": FLUX_KLEIN_LAYER_KEYNAMES
     },
     "distillation_large": {
         "help": "Chroma/distilled (large): keep distilled_guidance, final, img/txt_in high-precision",
@@ -225,6 +277,11 @@ MODEL_FILTERS = {
         "exclude": QWEN_AVOID_KEY_NAMES,
         "highprec": QWEN_LAYER_KEYNAMES
     },
+    "ernie_image": {
+        "help": "ERNIE Image: keep author-recommended time, AdaLN, boundary, and projection layers high-precision",
+        "category": "image",
+        "highprec": ERNIE_IMAGE_LAYER_KEYNAMES
+    },
     "zimage": {
         "help": "Z-Image: skip cap_embedder/norms, keep x_embedder/final high-precision",
         "category": "image",
@@ -244,6 +301,16 @@ MODEL_FILTERS = {
     },
     "ltxv2": {
         "help": "LTXv2: keep some transformer blocks high-precision and exclude vae and vocoder",
+        "category": "video",
+        "highprec": LTXV2_LAYER_KEYNAMES
+    },
+    "ltx2": {
+        "help": "LTX v2 / v2.3: keep boundary blocks, audio/video connectors, VAE, and vocoder high-precision",
+        "category": "video",
+        "highprec": LTXV2_LAYER_KEYNAMES
+    },
+    "ltx2_3": {
+        "help": "LTX v2.3: keep boundary blocks, audio/video connectors, VAE, and vocoder high-precision",
         "category": "video",
         "highprec": LTXV2_LAYER_KEYNAMES
     },

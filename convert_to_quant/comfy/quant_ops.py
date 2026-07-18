@@ -892,7 +892,6 @@ class TensorWiseINT8Layout(QuantizedLayout):
         Returns:
             Tuple of (quantized_data, layout_params)
         """
-        from .int8_kernels import act_quant_rowwise
         orig_dtype = tensor.dtype
 
         if scale is not None:
@@ -916,6 +915,8 @@ class TensorWiseINT8Layout(QuantizedLayout):
                 dequant_scale = 1.0 / quant_scale
             else:
                 # Dynamic activation quantization
+                from .int8_kernels import act_quant_rowwise
+
                 qdata, dequant_scale = act_quant_rowwise(tensor)
 
         layout_params = {"scale": dequant_scale.to(torch.float32), "orig_dtype": orig_dtype, "is_weight": is_weight}

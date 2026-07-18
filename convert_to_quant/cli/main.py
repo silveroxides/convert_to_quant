@@ -7,6 +7,7 @@ Entry point that handles argument parsing and dispatches to appropriate conversi
 import argparse
 import json
 import os
+import re
 import sys
 
 import torch
@@ -18,6 +19,7 @@ from safetensors.torch import (
 
 from ..config.layer_config import (
     generate_config_template,
+    get_layer_settings,
     load_layer_config,
 )
 from ..constants import (
@@ -97,12 +99,131 @@ def extract_filter_flags(args) -> dict:
         if getattr(args, name):
             flags[name] = True
 
-    # Text model aliases: these flags imply generic_text input_scale behavior
-    TEXT_MODEL_ALIASES = {"qwen35"}
-    if any(flags.get(alias) for alias in TEXT_MODEL_ALIASES):
-        flags["generic_text"] = True
-
     return flags
+
+
+def analyze_dry_run(args) -> None:
+    """Report the exact layer routing plan without loading weights or writing output."""
+    if not os.path.isfile(args.input):
+        print(f"Error: Input file not found: {args.input}")
+        return
+
+    custom_pattern = re.compile(args.custom_layers) if args.custom_layers else None
+    exclude_pattern = re.compile(args.exclude_layers) if args.exclude_layers else None
+    layer_config = load_layer_config(args.layer_config) if args.layer_config else None
+    filter_flags = extract_filter_flags(args)
+
+    if args.nvfp4:
+        primary_format = "nvfp4"
+    elif args.mxfp8:
+        primary_format = "mxfp8"
+    elif args.int8:
+        primary_format = "int8"
+    else:
+        primary_format = "fp8"
+
+    routes = {}
+    passthrough_count = 0
+    with safe_open(args.input, framework="pt", device="cpu") as checkpoint:
+        all_keys = list(checkpoint.keys())
+        candidates = []
+        for key in all_keys:
+            if not key.endswith(".weight"):
+                passthrough_count += 1
+                continue
+            tensor_slice = checkpoint.get_slice(key)
+            shape = tuple(tensor_slice.get_shape())
+            if len(shape) != 2:
+                passthrough_count += 1
+                continue
+            candidates.append((key, shape))
+
+        print("Dry-run analysis (no conversion will be performed)")
+        print(f"Input: {args.input}")
+        print(f"Primary format: {primary_format}")
+        print(f"2D weight candidates: {len(candidates)}")
+        print("-" * 60)
+
+        for index, (key, shape) in enumerate(candidates, start=1):
+            route = primary_format
+            route_kind = "primary"
+            remove_reason = None
+            for filter_name, enabled in filter_flags.items():
+                if not enabled:
+                    continue
+                remove_patterns = MODEL_FILTERS[filter_name].get("remove", [])
+                if any(pattern in key for pattern in remove_patterns):
+                    remove_reason = f"{filter_name} remove"
+                    break
+
+            if remove_reason:
+                route_kind = "remove"
+                route = remove_reason
+            else:
+                settings = (
+                    get_layer_settings(key, layer_config, fullmatch=args.layer_config_fullmatch)
+                    if layer_config
+                    else None
+                )
+                if settings:
+                    if settings.get("skip", False):
+                        route_kind = "skip"
+                        route = "layer-config skip"
+                    else:
+                        route_kind = "config"
+                        route = str(settings["format"])
+                elif custom_pattern and custom_pattern.search(key):
+                    route_kind = "custom"
+                    route = str(args.custom_type or primary_format)
+                else:
+                    exclusion_reason = None
+                    if exclude_pattern and exclude_pattern.search(key):
+                        exclusion_reason = "--exclude-layers"
+                    if exclusion_reason is None:
+                        for filter_name, enabled in filter_flags.items():
+                            if not enabled:
+                                continue
+                            config = MODEL_FILTERS[filter_name]
+                            patterns = config.get("exclude", []) + config.get("highprec", [])
+                            if any(pattern in key for pattern in patterns):
+                                exclusion_reason = f"{filter_name} filter"
+                                break
+                    if exclusion_reason:
+                        if args.fallback:
+                            route_kind = "fallback"
+                            route = str(args.fallback)
+                        else:
+                            route_kind = "skip"
+                            route = exclusion_reason
+
+                use_heuristic = args.custom_heur if route_kind == "custom" else args.heur
+                if use_heuristic and route_kind not in {"skip", "remove"}:
+                    active_block_size = args.block_size or 128
+                    if route_kind == "config" and settings and settings.get("block_size"):
+                        active_block_size = int(settings["block_size"])
+                    elif route_kind == "custom" and args.custom_block_size:
+                        active_block_size = int(args.custom_block_size)
+                    elif route_kind == "fallback" and args.fallback_block_size:
+                        active_block_size = int(args.fallback_block_size)
+                    if (
+                        shape[0] < active_block_size
+                        or shape[1] < active_block_size
+                        or shape[0] % active_block_size != 0
+                        or shape[1] % active_block_size != 0
+                    ):
+                        route_kind = "skip"
+                        route = f"performance heuristic (block {active_block_size})"
+
+            route_label = f"{route_kind}:{route}"
+            routes[route_label] = routes.get(route_label, 0) + 1
+            print(f"[{index}/{len(candidates)}] {key} {list(shape)} -> {route_label}")
+
+    print("-" * 60)
+    print("Dry-run summary:")
+    for route_label, count in sorted(routes.items()):
+        print(f"  {route_label}: {count}")
+    print(f"  passthrough tensors: {passthrough_count}")
+    print("No output file was written.")
 
 
 from ..utils.logging import setup_logging
@@ -547,13 +668,20 @@ def run_conversion(args):
     # Set pinned memory verbosity
     set_pinned_verbose(args.verbose_pinned)
 
-    # Handle dry-run create-template mode (separate workflow)
+    # Dry-run modes are separate workflows and must return before any conversion.
+    if args.dry_run == "analyze":
+        analyze_dry_run(args)
+        return
+
     if args.dry_run == "create-template":
         if not os.path.exists(args.input):
             print(f"Error: Input file not found: {args.input}")
             return
 
-        template_path = os.path.splitext(args.input)[0] + "_layer_config_template.json"
+        template_path = args.output or (os.path.splitext(args.input)[0] + "_layer_config_template.json")
+        template_directory = os.path.dirname(template_path)
+        if template_directory:
+            os.makedirs(template_directory, exist_ok=True)
         generate_config_template(args.input, template_path, block_size=args.block_size or 128)
         return
 
@@ -603,7 +731,7 @@ def run_conversion(args):
     # Handle NVFP4 quantization mode (separate workflow OR unified if mixing formats)
     if args.nvfp4:
         # Check if we need mixed format support
-        needs_mixing = args.custom_type or args.fallback
+        needs_mixing = args.custom_type or args.fallback or args.layer_config
 
         if needs_mixing:
             # Route through unified path for mixed format support
@@ -725,7 +853,7 @@ def run_conversion(args):
     # Handle MXFP8 quantization mode (separate workflow OR unified if mixing formats)
     if args.mxfp8:
         # Check if we need mixed format support
-        needs_mixing = args.custom_type or args.fallback
+        needs_mixing = args.custom_type or args.fallback or args.layer_config
 
         if needs_mixing:
             # Route through unified path for mixed format support
@@ -1022,9 +1150,9 @@ def run_conversion(args):
     # Call convert_to_fp8_scaled with explicit args (no **kwargs footgun)
     # Determine primary_format for NVFP4/MXFP8 mixed mode (when they fall through here)
     primary_format = None
-    if args.nvfp4 and (args.custom_type or args.fallback):
+    if args.nvfp4 and (args.custom_type or args.fallback or args.layer_config):
         primary_format = "nvfp4"
-    elif args.mxfp8 and (args.custom_type or args.fallback):
+    elif args.mxfp8 and (args.custom_type or args.fallback or args.layer_config):
         primary_format = "mxfp8"
 
     convert_to_fp8_scaled(

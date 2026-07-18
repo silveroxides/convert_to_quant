@@ -389,6 +389,10 @@ def convert_to_fp8_scaled(
                     layer_format = "fp8"
                 elif fmt.startswith("int8"):
                     layer_format = "int8"
+                elif fmt == "mxfp8":
+                    layer_format = "mxfp8"
+                elif fmt == "nvfp4":
+                    layer_format = "nvfp4"
                 else:
                     layer_format = "fp8"  # fallback
 
@@ -458,7 +462,14 @@ def convert_to_fp8_scaled(
         # Custom layers use custom_heur flag, others use global skip_inefficient_layers
         apply_heur = custom_heur if use_custom else skip_inefficient_layers
         if apply_heur:
-            should_skip, skip_perf_reason = should_skip_layer_for_performance(original_tensor, block_size)
+            active_block_size = block_size
+            if use_layer_config and layer_settings:
+                active_block_size = layer_settings.get("block_size", active_block_size)
+            elif use_custom and custom_block_size is not None:
+                active_block_size = custom_block_size
+            elif use_fallback and fallback_block_size is not None:
+                active_block_size = fallback_block_size
+            should_skip, skip_perf_reason = should_skip_layer_for_performance(original_tensor, active_block_size)
             if should_skip:
                 info(f"  - Skipping for performance: {skip_perf_reason}")
                 new_tensors[key] = original_tensor.to(device="cpu", dtype=original_tensor.dtype)
