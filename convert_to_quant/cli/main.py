@@ -279,6 +279,14 @@ def get_parser() -> MultiHelpArgumentParser:
     parser.add_argument(
         "--num_iter", "--num-iter", type=int, default=4000, dest="num_iter", help="Total optimization iterations per tensor."
     )
+    parser.add_argument(
+        "--auto-tune", action="store_true", dest="auto_tune",
+        help="Automatically probe and adapt learned-rounding convergence within --num-iter."
+    )
+    parser.add_argument(
+        "--auto-tune-report", type=str, default=None, dest="auto_tune_report",
+        help="Optional path for detailed automatic tuning diagnostics in JSON format."
+    )
     parser.add_argument("--lr", type=float, default=1.0, help="[AdamW/RAdam/Original] Initial learning rate.")
     parser.add_argument(
         "--use_speed", "--use-speed", action="store_true", dest="use_speed",
@@ -686,6 +694,8 @@ def run_conversion(args):
                 early_stop_loss=args.early_stop_loss,
                 early_stop_lr=args.early_stop_lr,
                 early_stop_stall=args.early_stop_stall,
+                auto_tune=args.auto_tune,
+                auto_tune_report=args.auto_tune_report,
                 # Scale optimization
                 scale_refinement_rounds=args.scale_refinement_rounds,
                 scale_optimization=args.scale_optimization,
@@ -799,6 +809,8 @@ def run_conversion(args):
                 early_stop_loss=args.early_stop_loss,
                 early_stop_lr=args.early_stop_lr,
                 early_stop_stall=args.early_stop_stall,
+                auto_tune=args.auto_tune,
+                auto_tune_report=args.auto_tune_report,
                 # Scale optimization
                 scale_refinement_rounds=args.scale_refinement_rounds,
                 scale_optimization=args.scale_optimization,
@@ -1095,6 +1107,8 @@ def run_conversion(args):
         early_stop_loss=args.early_stop_loss,
         early_stop_lr=args.early_stop_lr,
         early_stop_stall=args.early_stop_stall,
+        auto_tune=args.auto_tune,
+        auto_tune_report=args.auto_tune_report,
         # Scale optimization
         scale_optimization=args.scale_optimization,
         # Prodigy specific

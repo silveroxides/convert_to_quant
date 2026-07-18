@@ -25,6 +25,7 @@ from ..constants import (
     MODEL_FILTERS,
     NORMALIZE_SCALES_ENABLED,
 )
+from ..converters.convergence import TuningReportCollector
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..converters.nvfp4_converter import NVFP4Converter
 from ..utils.comfy_quant import (
@@ -84,6 +85,8 @@ def convert_to_nvfp4(
     early_stop_loss: float = 5e-9,
     early_stop_lr: float = 1.01e-8,
     early_stop_stall: int = 2000,
+    auto_tune: bool = False,
+    auto_tune_report: Optional[str] = None,
     # Scale optimization
     scale_refinement_rounds: int = 1,
     scale_optimization: str = "fixed",
@@ -112,6 +115,7 @@ def convert_to_nvfp4(
     Always creates .comfy_quant metadata tensors and _quantization_metadata header.
     """
     info(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
+    tuning_collector = TuningReportCollector(auto_tune_report, flush_on_add=False)
     info("-" * 60)
     info("Target format: NVFP4 (FP4 E2M1 block quantization)")
     info(f"Block size: {FP4_BLOCK_SIZE}")
@@ -177,6 +181,9 @@ def convert_to_nvfp4(
             early_stop_loss=early_stop_loss,
             early_stop_lr=early_stop_lr,
             early_stop_stall=early_stop_stall,
+            auto_tune=auto_tune,
+            auto_tune_report=auto_tune_report,
+            tuning_report_collector=tuning_collector,
             scale_refinement_rounds=scale_refinement_rounds,
             scale_optimization=scale_optimization,
             lr=lr,
@@ -418,5 +425,10 @@ def convert_to_nvfp4(
     info(f"  - Weights processed     : {quantized_count}")
     info(f"  - Weights skipped       : {skipped_count}")
     info(f"  - Final tensor count    : {len(output_tensors)}")
+    if auto_tune:
+        tuning_summary = tuning_collector.as_dict()["summary"]
+        info(f"  - Auto-tuned layers     : {tuning_summary['layers']} ({tuning_summary['retries']} retries)")
+        if auto_tune_report:
+            tuning_collector.write()
     info("-" * 60)
     info("Conversion complete!")

@@ -111,6 +111,8 @@ def test_run_conversion_forwards_the_complete_unified_contract(monkeypatch):
     assert captured["args"] == (str(input_path), str(output_path), False)
     assert set(captured["kwargs"]) == {
         "block_size",
+        "auto_tune",
+        "auto_tune_report",
         "calib_cpu",
         "calib_samples",
         "convrot",

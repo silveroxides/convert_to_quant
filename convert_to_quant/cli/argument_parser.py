@@ -77,6 +77,8 @@ LEARNED_ROUNDING_ARGS = {
     "num_iter",
     "lr",
     "lr_schedule",
+    "auto_tune",
+    "auto_tune_report",
     # SVD component selection
     "top_p",
     "min_k",

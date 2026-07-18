@@ -123,6 +123,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
             Tuple of (qdata_fp8, block_scales_e8m0, dequantized_weight)
         """
         global _FALLBACK_WARNING_SHOWN
+        self._active_layer_key = key
 
         # Transfer to GPU with pinned memory for large tensors
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
@@ -373,14 +374,7 @@ class LearnedMXFP8Converter(BaseLearnedConverter):
 
             current_loss = loss.item()
 
-            # Check improvement (matching learned_rounding.py logic)
-            if self.lr_threshold > 0:
-                if self.lr_threshold_mode == "rel":
-                    improved = current_loss < best_loss * (1.0 - self.lr_threshold)
-                else:
-                    improved = (best_loss - current_loss) > self.lr_threshold
-            else:
-                improved = current_loss < best_loss
+            improved = self._check_improvement(current_loss, best_loss)
 
             prev_worse_counter = worse_loss_counter
 

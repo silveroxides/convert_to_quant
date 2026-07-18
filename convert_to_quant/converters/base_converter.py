@@ -20,6 +20,12 @@ from typing import (
 
 import torch
 
+from .convergence import (
+    AdaptiveConvergenceController,
+    TuningReportCollector,
+    convergence_window,
+)
+
 
 class BaseLearnedConverter(ABC):
     """
@@ -58,6 +64,9 @@ class BaseLearnedConverter(ABC):
         early_stop_loss: float = 5e-9,
         early_stop_lr: float = 1.01e-8,
         early_stop_stall: int = 2000,
+        auto_tune: bool = False,
+        auto_tune_report: Optional[str] = None,
+        tuning_report_collector: Optional[TuningReportCollector] = None,
         device: Optional[str] = None,
         # LoRA extraction parameters
         extract_lora: bool = False,
@@ -93,6 +102,9 @@ class BaseLearnedConverter(ABC):
             early_stop_loss: Stop when loss drops below this
             early_stop_lr: Stop when LR drops below this
             early_stop_stall: Stop after this many steps without improvement
+            auto_tune: Probe and adapt convergence within num_iter
+            auto_tune_report: Optional JSON diagnostics output path
+            tuning_report_collector: Shared collector for multi-format conversion
             device: Device to use for optimization (default: auto-detect)
             **kwargs: Additional optimizer-specific parameters (e.g., lr)
         """
@@ -139,6 +151,15 @@ class BaseLearnedConverter(ABC):
         self.early_stop_lr = early_stop_lr
         self.early_stop_stall = early_stop_stall
 
+        # Automatic convergence tuning is opt-in. Manual mode retains every
+        # scheduler and early-stop value above without passing through the
+        # automatic controller.
+        self.auto_tune = auto_tune
+        self.auto_tune_report = auto_tune_report
+        self._tuning_report_collector = tuning_report_collector or TuningReportCollector(auto_tune_report)
+        self._active_auto_controller: Optional[AdaptiveConvergenceController] = None
+        self._active_layer_key: Optional[str] = None
+
         # LoRA extraction configuration
         self.extract_lora = extract_lora
         self.lora_rank = lora_rank
@@ -160,7 +181,156 @@ class BaseLearnedConverter(ABC):
         if self.optimizer_choice not in {"original", "adamw", "radam", "prodigy"}:
             raise ValueError(f"Unknown optimizer: '{self.optimizer_choice}'")
         method_name = f"{method_prefix}{self.optimizer_choice}"
-        return getattr(self, method_name)(*args, **kwargs)
+        method = getattr(self, method_name)
+        if not self.auto_tune or self.num_iter <= 0:
+            return method(*args, **kwargs)
+        return self._run_auto_tuned_optimizer(method, args, kwargs, method_name)
+
+    def _run_auto_tuned_optimizer(self, method, args, kwargs, method_name: str):
+        """Run LR probes, one selected attempt, and at most one recovery."""
+        weight = next((arg for arg in args if isinstance(arg, torch.Tensor) and arg.ndim >= 2), None)
+        if weight is None:
+            return method(*args, **kwargs)
+
+        shape = (int(weight.shape[0]), int(weight.shape[1]))
+        rank = None
+        matrix_args = [arg for arg in args[1:] if isinstance(arg, torch.Tensor) and arg.ndim == 2]
+        for left_index, left in enumerate(matrix_args):
+            if tuple(left.shape) == tuple(weight.shape) or left.shape[0] != shape[0]:
+                continue
+            for right in matrix_args[left_index + 1 :]:
+                if left.shape[1] == right.shape[0] and right.shape[1] == shape[1]:
+                    rank = int(left.shape[1])
+                    break
+            if rank is not None:
+                break
+        rank = rank or min(shape)
+
+        original = {
+            "num_iter": self.num_iter,
+            "lr": self.lr,
+            "lr_schedule": self.lr_schedule,
+            "lr_adaptive_mode": self.lr_adaptive_mode,
+            "early_stop_loss": self.early_stop_loss,
+            "early_stop_lr": self.early_stop_lr,
+            "early_stop_stall": self.early_stop_stall,
+        }
+        total_budget = self.num_iter
+        anchor_lr = self.lr
+        window = convergence_window(shape, rank)
+        probe_steps = max(8, window // 2)
+        use_probes = total_budget >= 6 * probe_steps
+        attempts = []
+        selected_lr = anchor_lr
+        consumed = 0
+        result = None
+        result_loss = math.inf
+        retried = False
+
+        cpu_rng = torch.random.get_rng_state()
+        cuda_device = weight.device if weight.is_cuda else None
+        cuda_rng = torch.cuda.get_rng_state(cuda_device) if cuda_device is not None else None
+
+        def restore_rng() -> None:
+            torch.random.set_rng_state(cpu_rng)
+            if cuda_rng is not None and cuda_device is not None:
+                torch.cuda.set_rng_state(cuda_rng, cuda_device)
+
+        def run_attempt(lr: float, budget: int, kind: str):
+            restore_rng()
+            self.num_iter = budget
+            self.lr = lr
+            self.lr_schedule = "adaptive"
+            self.lr_adaptive_mode = "simple-reset"
+            self.early_stop_loss = -1.0
+            self.early_stop_lr = 1e-12
+            self.early_stop_stall = budget + 1
+            controller = AdaptiveConvergenceController(
+                shape=shape,
+                rank=rank,
+                optimizer=self.optimizer_choice,
+                initial_lr=lr,
+                budget=budget,
+                kind=kind,
+            )
+            self._active_auto_controller = controller
+            try:
+                attempt_result = method(*args, **kwargs)
+            finally:
+                self._active_auto_controller = None
+            attempts.append(controller.summary)
+            return attempt_result, controller
+
+        try:
+            probe_results = []
+            if use_probes:
+                for multiplier in (0.25, 1.0, 4.0):
+                    candidate_lr = anchor_lr * multiplier
+                    _, controller = run_attempt(candidate_lr, probe_steps, "probe")
+                    probe_results.append((controller.score(), candidate_lr, controller))
+                    consumed += controller.summary.iterations
+                stable = [item for item in probe_results if not item[2].retry_recommended]
+                candidates = stable or probe_results
+                selected_lr = max(candidates, key=lambda item: item[0])[1]
+
+            remaining = max(1, total_budget - consumed)
+            result, controller = run_attempt(selected_lr, remaining, "selected")
+            consumed += controller.summary.iterations
+            result_loss = controller.best_loss
+
+            remaining = total_budget - consumed
+            if controller.retry_recommended and remaining >= max(8, window // 2):
+                retried = True
+                stable_probe_lrs = [
+                    summary.lr for summary in attempts
+                    if summary.kind == "probe" and summary.retry_reason is None
+                ]
+                retry_lr = min(stable_probe_lrs) if stable_probe_lrs else anchor_lr * 0.1
+                retry_result, retry_controller = run_attempt(retry_lr, remaining, "retry")
+                consumed += retry_controller.summary.iterations
+                if retry_controller.best_loss < result_loss:
+                    result = retry_result
+                    result_loss = retry_controller.best_loss
+
+            selected_summary = min(
+                (summary for summary in attempts if summary.kind in {"selected", "retry"}),
+                key=lambda summary: summary.best_loss if summary.best_loss is not None else math.inf,
+            )
+            record = {
+                "layer": self._active_layer_key or "<unknown>",
+                "shape": list(shape),
+                "rank": rank,
+                "converter": type(self).__name__,
+                "optimizer": self.optimizer_choice,
+                "method": method_name,
+                "budget": total_budget,
+                "iterations": consumed,
+                "window": window,
+                "lr_anchor": anchor_lr,
+                "selected_lr": selected_lr,
+                "retried": retried,
+                "stop_reason": selected_summary.stop_reason,
+                "best_loss": selected_summary.best_loss,
+                "normalized_best_loss": selected_summary.normalized_best_loss,
+                "attempts": [summary.as_dict() for summary in attempts],
+            }
+            self._tuning_report_collector.add(record)
+            from ..utils.logging import info
+
+            retry_note = ", retry used" if retried else ""
+            info(
+                f"    - Auto tune: lr={selected_lr:.3g}, iterations={consumed}/{total_budget}, "
+                f"stop={selected_summary.stop_reason}{retry_note}"
+            )
+            return result
+        finally:
+            self._active_auto_controller = None
+            for name, value in original.items():
+                setattr(self, name, value)
+
+    def get_tuning_report(self) -> Dict[str, object]:
+        """Return structured diagnostics collected by automatic tuning."""
+        return self._tuning_report_collector.as_dict()
 
     def _should_extract_lora(self, key: str, shape: torch.Size, depth: int = -1) -> bool:
         """
@@ -341,6 +511,11 @@ class BaseLearnedConverter(ABC):
         Returns:
             Tuple of (new_lr, lr_was_updated)
         """
+        if self._active_auto_controller is not None:
+            if self._active_auto_controller.should_stop:
+                return 0.0, True
+            return self._active_auto_controller.update_lr(curr_lr)
+
         M, N = tensor_shape
         shape_ratio = abs(M - N) / max(M, N)  # 0 for square, ~1 for very skewed
 
@@ -426,6 +601,15 @@ class BaseLearnedConverter(ABC):
         Returns:
             True if improvement is significant
         """
+        if self._active_auto_controller is not None:
+            improved = self._active_auto_controller.observe(current_loss, best_loss)
+            if self._active_auto_controller.should_stop:
+                # Every learned loop already checks these thresholds, including
+                # optimizer warmup branches that intentionally skip LR updates.
+                self.early_stop_loss = math.inf
+                self.early_stop_lr = math.inf
+            return improved
+
         if self.lr_threshold > 0:
             if self.lr_threshold_mode == "rel":
                 return current_loss < best_loss * (1.0 - self.lr_threshold)

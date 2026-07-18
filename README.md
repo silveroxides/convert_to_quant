@@ -86,7 +86,12 @@ ctq -i model.safetensors -o model-int8mixedrow.safetensors --int8 --scaling_mode
 
 # Blackwell MXFP8 quantization without learned rounding
 ctq -i model.safetensors -o model-mxfp8mixed.safetensors --mxfp8 --comfy_quant --save-quant-metadata --simple --low-memory
+
+# Learned rounding with automatic convergence tuning and an optional diagnostic report
+ctq -i model.safetensors -o model-auto.safetensors --auto-tune --num-iter 4000 --auto-tune-report tuning.json
 ```
+
+`--auto-tune` treats `--num-iter` as a firm per-layer budget. It probes learning rates around `--lr`, adapts decay and early stopping to each layer's shape and normalized loss trend, and may use one bounded recovery attempt. Without `--auto-tune`, all existing manual scheduler and early-stop arguments behave as before.
 
 ## Use In Code As Module
 

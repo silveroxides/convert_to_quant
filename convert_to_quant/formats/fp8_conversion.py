@@ -30,6 +30,7 @@ from ..constants import (
     T5XXL_REMOVE_KEY_NAMES,
     TARGET_FP8_DTYPE,
 )
+from ..converters.convergence import TuningReportCollector
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..converters.learned_rounding import (
@@ -90,6 +91,8 @@ def convert_to_fp8_scaled(
     layer_config_fullmatch: bool = False,
     low_memory: bool = False,
     device: Optional[str] = None,
+    auto_tune: bool = False,
+    auto_tune_report: Optional[str] = None,
     # LoRA extraction options
     extract_lora: bool = False,
     lora_rank: int = 16,
@@ -103,6 +106,10 @@ def convert_to_fp8_scaled(
 ):
     # Ensure filter_flags is a dict
     filter_flags = filter_flags or {}
+    tuning_collector = TuningReportCollector(auto_tune_report, flush_on_add=False)
+    converter_kwargs["auto_tune"] = auto_tune
+    converter_kwargs["auto_tune_report"] = auto_tune_report
+    converter_kwargs["tuning_report_collector"] = tuning_collector
 
     # Determine target format (priority: primary_format > int8 > fp8)
     if primary_format:
@@ -819,5 +826,12 @@ def convert_to_fp8_scaled(
     if fallback_count > 0:
         summary_parts.append(f"    - Fallback type layers: {fallback_count}")
     summary_parts.extend([f"  - Weights skipped       : {skipped_count}", f"  - Final tensor count    : {len(new_tensors)}"])
+    if auto_tune:
+        tuning_summary = tuning_collector.as_dict()["summary"]
+        summary_parts.append(
+            f"  - Auto-tuned layers     : {tuning_summary['layers']} ({tuning_summary['retries']} retries)"
+        )
+        if auto_tune_report:
+            tuning_collector.write()
     info("\n".join(summary_parts))
     info("-" * 60)

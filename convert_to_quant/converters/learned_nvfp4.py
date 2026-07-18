@@ -124,6 +124,8 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
         Returns:
             Tuple of (packed_qdata, block_scales, per_tensor_scale, dequantized_weight)
         """
+        self._active_layer_key = key
+
         # Transfer to GPU with pinned memory for large tensors
         W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
         W_float32_for_lora = W_float32.clone() if self.extract_lora else None
@@ -447,14 +449,7 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
             current_loss = loss.item()
 
-            # Threshold-based improvement check
-            if self.lr_threshold > 0:
-                if self.lr_threshold_mode == "rel":
-                    improved = current_loss < best_loss * (1.0 - self.lr_threshold)
-                else:
-                    improved = (best_loss - current_loss) > self.lr_threshold
-            else:
-                improved = current_loss < best_loss
+            improved = self._check_improvement(current_loss, best_loss)
 
             prev_worse_counter = worse_loss_counter
 

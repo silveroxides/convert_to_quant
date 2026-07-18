@@ -560,16 +560,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 loss = torch.linalg.norm(projected_error)
 
             current_loss = loss.item()
-            # Check if improvement exceeds threshold (supports rel/abs mode like PyTorch ReduceLROnPlateau)
-            if self.lr_threshold > 0:
-                if self.lr_threshold_mode == "rel":
-                    # Relative: significant if loss < best * (1 - threshold)
-                    improved = current_loss < best_loss * (1.0 - self.lr_threshold)
-                else:  # 'abs'
-                    # Absolute: significant if improvement > threshold
-                    improved = (best_loss - current_loss) > self.lr_threshold
-            else:
-                improved = current_loss < best_loss
+            improved = self._check_improvement(current_loss, best_loss)
 
             # Store counter before potential reset (for no-reset adaptive mode)
             prev_worse_counter = worse_loss_counter
@@ -665,6 +656,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, calibration_data: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+        self._active_layer_key = key
         has_bias = kwargs.get("has_bias", True)
         self.has_bias = has_bias
         self._current_extra_tensors = {}
@@ -1049,6 +1041,14 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         Apply SVD-guided AdaRound (learned soft rounding) optimization over the rotated parameter space
         minimizing local activation reconstruction MSE using the cached calibration data.
         """
+        if self.auto_tune and self._active_auto_controller is None:
+            return self._run_auto_tuned_optimizer(
+                self._optimize_int8_adaround,
+                (W_float32, qdata, scale, X_rot, Y_ref),
+                {},
+                "_optimize_int8_adaround",
+            )
+
         M, N = W_float32.shape
 
         # 1. Compute SVD components of rotated parameter matrix
@@ -1777,16 +1777,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 loss = torch.linalg.norm(projected_error)
 
             current_loss = loss.item()
-            # Check if improvement exceeds threshold (supports rel/abs mode like PyTorch ReduceLROnPlateau)
-            if self.lr_threshold > 0:
-                if self.lr_threshold_mode == "rel":
-                    # Relative: significant if loss < best * (1 - threshold)
-                    improved = current_loss < best_loss * (1.0 - self.lr_threshold)
-                else:  # 'abs'
-                    # Absolute: significant if improvement > threshold
-                    improved = (best_loss - current_loss) > self.lr_threshold
-            else:
-                improved = current_loss < best_loss
+            improved = self._check_improvement(current_loss, best_loss)
 
             # Store counter before potential reset (for no-reset adaptive mode)
             prev_worse_counter = worse_loss_counter
