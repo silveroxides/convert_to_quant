@@ -47,6 +47,26 @@ class ModelFilterRegistryTests(unittest.TestCase):
         self.assertEqual(self._skip_patterns("ltx2"), expected)
         self.assertEqual(self._skip_patterns("ltx2_3"), expected)
 
+        for protected_layer in (
+            "scale_shift_table",
+            "text_embedding_projection",
+            "audio_embeddings_connector",
+            "video_embeddings_connector",
+            "adaln_single",
+            "audio_patchify_proj",
+            "audio_proj_out",
+            "transformer_blocks.0.",
+            "transformer_blocks.1.",
+            "transformer_blocks.46.",
+            "transformer_blocks.47.",
+            "to_gate_logits",
+            "audio_vae",
+            "vae.decoder",
+            "vae.encoder",
+            "vocoder",
+        ):
+            self.assertIn(protected_layer, expected)
+
     def test_generic_text_is_explicitly_input_scale_only(self):
         self.assertNotIn("exclude", MODEL_FILTERS["generic_text"])
         self.assertNotIn("highprec", MODEL_FILTERS["generic_text"])
