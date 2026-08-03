@@ -151,14 +151,6 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
         Y_d += extra_d["bias_correction"].to(device=device)
     metrics_d = compute_detailed_errors(Y_ref, Y_d)
 
-    # -------------------------------------------------------------------------
-    # Print Comparative Results Table
-    # -------------------------------------------------------------------------
-    print("\n" + f"COMPARISON REPORT FOR {name}:")
-    print("-" * 140)
-    print(f"{'Metric':<25} | {'System A (Standard Row)':<23} | {f'System B (Static Rot-{static_group_size})':<25} | {f'System C (Dynamic Rot-{dynamic_group_size})':<25} | {f'System D (Dynamic + AdaRound)':<28}")
-    print("-" * 140)
-
     metric_labels = {
         "MAE": "MAE (↓)",
         "MSE": "MSE (v)",  # Wait, let's use ↓ for lower is better
@@ -168,6 +160,75 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
     }
     # Let's fix MSE label as well
     metric_labels["MSE"] = "MSE (↓)"
+
+    # -------------------------------------------------------------------------
+    # System E: Dynamic ConvRot + INT4 W4A4 (Simple RTN)
+    # -------------------------------------------------------------------------
+    print(f"  Running System E: Dynamic ConvRot (group_size={dynamic_group_size}) + INT4 W4A4 (RTN)...")
+    conv_int4_rtn = LearnedRoundingConverter(
+        target_format="int4",
+        dynamic_convrot=True,
+        convrot_group_size=256,  # min group size
+        no_learned_rounding=True,
+        device=device
+    )
+    qdata_e, scale_e, dequant_w_e, extra_e = conv_int4_rtn.convert(W_orig, calibration_data=X)
+
+    if dynamic_applied:
+        Y_e = X_rot_dynamic @ dequant_w_e.T + bias
+    else:
+        Y_e = X @ dequant_w_e.T + bias
+    if "bias_correction" in extra_e:
+        Y_e += extra_e["bias_correction"].to(device=device)
+    metrics_e = compute_detailed_errors(Y_ref, Y_e)
+
+    # -------------------------------------------------------------------------
+    # System F: Dynamic ConvRot + INT4 W4A4 + SVD-guided AdaRound
+    # -------------------------------------------------------------------------
+    print(f"  Running System F: Dynamic ConvRot (group_size={dynamic_group_size}) + INT4 W4A4 + AdaRound...")
+    conv_int4_ada = LearnedRoundingConverter(
+        target_format="int4",
+        dynamic_convrot=True,
+        convrot_group_size=256,  # min group size
+        num_iter=2000,
+        optimizer="prodigy",
+        lr_schedule="adaptive",
+        lr_factor=0.965,
+        lr_cooldown=1,
+        lr=1.0,
+        device=device
+    )
+    qdata_f, scale_f, dequant_w_f, extra_f = conv_int4_ada.convert(W_orig, calibration_data=X)
+
+    if dynamic_applied:
+        Y_f = X_rot_dynamic @ dequant_w_f.T + bias
+    else:
+        Y_f = X @ dequant_w_f.T + bias
+    if "bias_correction" in extra_f:
+        Y_f += extra_f["bias_correction"].to(device=device)
+    metrics_f = compute_detailed_errors(Y_ref, Y_f)
+
+    print("\n" + f"INT4 W4A4 COMPARISON REPORT FOR {name}:")
+    print("-" * 100)
+    print(f"{'Metric':<25} | {'System E (INT4 RTN)':<22} | {'System F (INT4 AdaRound)':<25}")
+    print("-" * 100)
+    for metric in ["MAE", "MSE", "RMSE", "SNR (dB)", "Cosine Similarity"]:
+        label = metric_labels[metric]
+        v5 = metrics_e[metric]
+        v6 = metrics_f[metric]
+        print(f"{label:<25} | {v5:.6e}           | {v6:.6e}")
+    print("-" * 100)
+
+    # INT4 AdaRound should not be worse than INT4 RTN on the same rotated weights
+    assert metrics_f["SNR (dB)"] >= metrics_e["SNR (dB)"], "INT4 AdaRound failed to match or beat INT4 RTN baseline SNR!"
+
+    # -------------------------------------------------------------------------
+    # Print Comparative Results Table
+    # -------------------------------------------------------------------------
+    print("\n" + f"COMPARISON REPORT FOR {name}:")
+    print("-" * 140)
+    print(f"{'Metric':<25} | {'System A (Standard Row)':<23} | {f'System B (Static Rot-{static_group_size})':<25} | {f'System C (Dynamic Rot-{dynamic_group_size})':<25} | {f'System D (Dynamic + AdaRound)':<28}")
+    print("-" * 140)
 
     for metric in ["MAE", "MSE", "RMSE", "SNR (dB)", "Cosine Similarity"]:
         label = metric_labels[metric]
