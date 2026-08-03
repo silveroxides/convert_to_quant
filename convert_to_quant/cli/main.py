@@ -133,6 +133,10 @@ def get_parser() -> MultiHelpArgumentParser:
     )
     parser.add_argument("--int8", action="store_true", help="Use INT8 block-wise quantization instead of FP8.")
     parser.add_argument(
+        "--int4", action="store_true",
+        help="Use INT4 W4A4 ConvRot quantization (group-wise Hadamard rotation + row-wise INT4). Implies --convrot."
+    )
+    parser.add_argument(
         "--convrot", action="store_true",
         help="Enable group-wise Hadamard rotation (ConvRot) for INT8 row-wise quantization to improve quality."
     )
@@ -969,8 +973,8 @@ def run_conversion(args):
         print("Note: --comfy_quant auto-enabled (required for --custom-type mixed precision)")
         args.comfy_quant = True
 
-    # Only check FP8 support if not using INT8
-    if not args.int8:
+    # Only check FP8 support if not using INT8 or INT4
+    if not args.int8 and not args.int4:
         try:
             _ = torch.zeros(1, dtype=TARGET_FP8_DTYPE, device="cuda" if torch.cuda.is_available() else "cpu")
         except (RuntimeError, TypeError):
@@ -982,7 +986,10 @@ def run_conversion(args):
         # Build filename: {simple_|learned_}{format}[mixed]_{scaling}
         # TODO: SVD stats (k, top_p, lr) should be saved to _convert_to_quant_stats metadata entry
         prefix = "simple_" if args.simple else "learned_"
-        if args.int8:
+        if args.int4:
+            format_str = "int4"
+            scaling_str = "_convrot_w4a4"
+        elif args.int8:
             format_str = "int8"
             if args.scaling_mode == "tensor":
                 scaling_str = "_tensorwise"
@@ -1022,7 +1029,9 @@ def run_conversion(args):
     # Call convert_to_fp8_scaled with explicit args (no **kwargs footgun)
     # Determine primary_format for NVFP4/MXFP8 mixed mode (when they fall through here)
     primary_format = None
-    if args.nvfp4 and (args.custom_type or args.fallback):
+    if args.int4:
+        primary_format = "int4"
+    elif args.nvfp4 and (args.custom_type or args.fallback):
         primary_format = "nvfp4"
     elif args.mxfp8 and (args.custom_type or args.fallback):
         primary_format = "mxfp8"
@@ -1052,7 +1061,7 @@ def run_conversion(args):
         custom_full_precision_mm=args.custom_full_precision_mm,
         custom_convrot=args.custom_convrot,
         custom_convrot_group_size=args.custom_convrot_group_size,
-        convrot=args.convrot,
+        convrot=args.convrot or args.int4,
         convrot_group_size=args.convrot_group_size,
         dynamic_convrot=args.dynamic_convrot,
         # Fallback options

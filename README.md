@@ -30,7 +30,7 @@ pip install -e .
 | Feature | Requirement |
 |---------|-------------|
 | **Minimum (FP8/INT8)** | Python 3.10+, PyTorch 2.8+, CUDA 12.8+ |
-| **Full (NVFP4/MXFP8)** | Python 3.12+, PyTorch 2.10+, CUDA 13.0+, **[comfy-kitchen](https://github.com/silveroxides/comfy-kitchen)** |
+| **Full (NVFP4/MXFP8/INT4 W4A4)** | Python 3.12+, PyTorch 2.10+, CUDA 13.0+, **[comfy-kitchen](https://github.com/silveroxides/comfy-kitchen)** (INT4 conversion itself works without it; comfy-kitchen is only needed for accelerated INT4 inference in ComfyUI) |
 | **INT8 Kernels** | Triton (Linux native, Windows via `triton-windows`) |
 
 > [!IMPORTANT]
@@ -83,6 +83,9 @@ ctq -i model.safetensors -o model-fp8mixed.safetensors --comfy_quant --save-quan
 
 # INT8 Row-Wise quantization without learned rounding
 ctq -i model.safetensors -o model-int8mixedrow.safetensors --int8 --scaling_mode row --comfy_quant --save-quant-metadata --simple --low-memory
+
+# INT4 W4A4 ConvRot quantization without learned rounding
+ctq -i model.safetensors -o model-int4convrot.safetensors --int4 --comfy_quant --save-quant-metadata --simple --low-memory
 
 # Blackwell MXFP8 quantization without learned rounding
 ctq -i model.safetensors -o model-mxfp8mixed.safetensors --mxfp8 --comfy_quant --save-quant-metadata --simple --low-memory
