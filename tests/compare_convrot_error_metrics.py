@@ -178,7 +178,10 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
         )
         qdata_e, scale_e, dequant_w_e, extra_e = conv_int4_rtn.convert(W_orig, calibration_data=X)
 
-        Y_e = X_rot_dynamic @ dequant_w_e.T + bias
+        # NOTE: unlike INT8's ConvRot path (Systems C/D), which returns dequant_w in
+        # ROTATED space, _convert_int4_convrot_w4a4 un-rotates before returning, so
+        # dequant_w_e/dequant_w_f are in the ORIGINAL basis - use X, not X_rot_dynamic.
+        Y_e = X @ dequant_w_e.T + bias
         if "bias_correction" in extra_e:
             Y_e += extra_e["bias_correction"].to(device=device)
         metrics_e = compute_detailed_errors(Y_ref, Y_e)
@@ -198,7 +201,7 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
         )
         qdata_f, scale_f, dequant_w_f, extra_f = conv_int4_ada.convert(W_orig, calibration_data=X)
 
-        Y_f = X_rot_dynamic @ dequant_w_f.T + bias
+        Y_f = X @ dequant_w_f.T + bias
         if "bias_correction" in extra_f:
             Y_f += extra_f["bias_correction"].to(device=device)
         metrics_f = compute_detailed_errors(Y_ref, Y_f)
@@ -214,12 +217,11 @@ def evaluate_case(name, out_features, in_features, num_samples=128):
             print(f"{label:<25} | {v5:.6e}           | {v6:.6e}")
         print("-" * 100)
 
-        # INT4 AdaRound should not be worse than INT4 RTN on the same rotated weights.
-        # At 4-bit resolution (15 levels vs INT8's 255) AdaRound's soft-rounding optimizer
-        # has far less room to improve on RTN, and can be a statistical wash on pathological
-        # synthetic inputs (e.g. extreme per-column outliers) - allow a small tolerance rather
-        # than treating sub-0.1dB noise as a regression.
-        assert metrics_f["SNR (dB)"] >= metrics_e["SNR (dB)"] - 0.1, "INT4 AdaRound failed to match or beat INT4 RTN baseline SNR!"
+        # INT4 AdaRound should not be worse than INT4 RTN on the same un-rotated
+        # weights (see the return-space note above: dequant_w_e/f are compared against
+        # X, not X_rot_dynamic). With that measurement fixed, AdaRound reliably and
+        # substantially beats RTN, so no tolerance is needed here.
+        assert metrics_f["SNR (dB)"] >= metrics_e["SNR (dB)"], "INT4 AdaRound failed to match or beat INT4 RTN baseline SNR!"
     else:
         print("  INT4 W4A4 (Systems E/F) safely skipped: no compatible ConvRot group size for this shape (INT4 requires rotation).")
 

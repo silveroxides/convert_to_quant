@@ -85,6 +85,8 @@ ctq -i model.safetensors -o model-fp8mixed.safetensors --comfy_quant --save-quan
 ctq -i model.safetensors -o model-int8mixedrow.safetensors --int8 --scaling_mode row --comfy_quant --save-quant-metadata --simple --low-memory
 
 # INT4 W4A4 ConvRot quantization without learned rounding
+# Note: every layer's in_features must be divisible by the ConvRot group size (default 256);
+# add --dynamic-convrot to auto-resolve a compatible group size per layer instead of erroring out.
 ctq -i model.safetensors -o model-int4convrot.safetensors --int4 --comfy_quant --save-quant-metadata --simple --low-memory
 
 # Blackwell MXFP8 quantization without learned rounding

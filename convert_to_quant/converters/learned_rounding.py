@@ -94,7 +94,6 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         if target_format == "int4":
             scaling_mode = "row"
             self.convrot = True
-            self.dynamic_convrot = dynamic_convrot
 
         # INT8 defaults to block-wise scaling, but allows tensor-wise and row-wise
         if target_format == "int8" and scaling_mode not in ("tensor", "row", "block"):
@@ -993,6 +992,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         """
         INT4 W4A4 ConvRot quantization: mandatory group-wise Hadamard rotation,
         row-wise symmetric INT4 quantization (range [-7, 7]), optional AdaRound.
+
+        Return-space note: unlike `_convert_int8_tensorwise`'s ConvRot path (which
+        returns `dequantized` in the ROTATED basis, so `X_rot @ dequant.T == X @ W.T`),
+        this method un-rotates before returning, so its `dequantized` output is in
+        the ORIGINAL, un-rotated basis (`X @ dequant.T == X @ W.T`). Callers comparing
+        against a rotated activation (e.g. `X_rot`) must account for this difference.
         """
         from ..utils.convrot import (
             build_hadamard,
@@ -1003,7 +1008,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         from ..utils.tensor_utils import prepare_calibration_data
         from ..constants import INT4_SYMMETRIC_MAX
 
-        M, N = W_float32.shape
+        _, N = W_float32.shape
         layer_group_size = self.convrot_group_size
         if self.dynamic_convrot:
             from ..utils.convrot import find_max_compatible_group_size

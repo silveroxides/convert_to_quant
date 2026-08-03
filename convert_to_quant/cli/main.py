@@ -134,7 +134,9 @@ def get_parser() -> MultiHelpArgumentParser:
     parser.add_argument("--int8", action="store_true", help="Use INT8 block-wise quantization instead of FP8.")
     parser.add_argument(
         "--int4", action="store_true",
-        help="Use INT4 W4A4 ConvRot quantization (group-wise Hadamard rotation + row-wise INT4). Implies --convrot."
+        help="Use INT4 W4A4 ConvRot quantization (group-wise Hadamard rotation + row-wise INT4). Implies --convrot. "
+             "Every layer's in_features must be divisible by the ConvRot group size (default 256), or conversion "
+             "will raise an error; combine with --dynamic-convrot to auto-resolve a compatible group size per layer."
     )
     parser.add_argument(
         "--convrot", action="store_true",
