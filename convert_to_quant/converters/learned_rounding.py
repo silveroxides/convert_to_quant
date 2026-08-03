@@ -90,6 +90,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.scale_optimization = scale_optimization
         self.has_bias = True
 
+        # INT4 W4A4 ConvRot is always row-wise and always rotated (no unrotated INT4 mode)
+        if target_format == "int4":
+            scaling_mode = "row"
+            self.convrot = True
+            self.dynamic_convrot = dynamic_convrot
+
         # INT8 defaults to block-wise scaling, but allows tensor-wise and row-wise
         if target_format == "int8" and scaling_mode not in ("tensor", "row", "block"):
             scaling_mode = "block"
@@ -99,13 +105,13 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.scaling_mode = scaling_mode
 
         # Check ConvRot validity
-        if self.convrot and not (self.target_format == "int8" and self.scaling_mode == "row"):
-            verbose("  - WARNING: ConvRot is currently only supported for INT8 row-wise quantization. It will be ignored.")
+        if self.convrot and self.target_format not in ("int4",) and not (self.target_format == "int8" and self.scaling_mode == "row"):
+            verbose("  - WARNING: ConvRot is currently only supported for INT8 row-wise and INT4 quantization. It will be ignored.")
             self.convrot = False
             self.dynamic_convrot = False
 
         # Set format-specific max values and dtype
-        if self.target_format == "int8":
+        if self.target_format in ("int8", "int4"):
             self.target_dtype = TARGET_INT8_DTYPE
             self.f8_max_val = None
         else:
@@ -687,6 +693,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     # Determine if we should optimize
                     if torch.all(W_float32 == 0):
                         verbose("  - Tensor is all zeros, skipping optimization.")
+
+                        if self.target_format == "int4":
+                            out_features, in_features = W_float32.shape
+                            quantized_tensor = torch.zeros(
+                                out_features, in_features // 2, dtype=self.target_dtype, device=self.device
+                            )
+                            dequant_scale = torch.ones(out_features, device=self.device, dtype=SCALE_DTYPE)
+                            return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
+
                         quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
                         dequant_scale = None
 
@@ -720,8 +735,12 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
                         return quantized_tensor, dequant_scale, torch.zeros_like(W_float32), {}
 
-                    # INT8 quantization path
-                    if self.target_format == "int8":
+                    # INT4 W4A4 ConvRot quantization path
+                    if self.target_format == "int4":
+                        qdata, scale, dequantized = self._convert_int4_convrot_w4a4(
+                            W_float32, calibration_data=calibration_data
+                        )
+                    elif self.target_format == "int8":
                         if self.scaling_mode in ("tensor", "row"):
                             qdata, scale, dequantized = self._convert_int8_tensorwise(
                                 W_float32, calibration_data=calibration_data
@@ -967,6 +986,68 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         return (qdata, scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized_weight)
 
     # _convert_int8_rowwise merged into _convert_int8_tensorwise
+
+    def _convert_int4_convrot_w4a4(
+        self, W_float32: torch.Tensor, calibration_data: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        INT4 W4A4 ConvRot quantization: mandatory group-wise Hadamard rotation,
+        row-wise symmetric INT4 quantization (range [-7, 7]), optional AdaRound.
+        """
+        from ..utils.convrot import (
+            build_hadamard,
+            pack_int4_row_major,
+            quantize_int4_rowwise,
+            rotate_weight,
+        )
+        from ..utils.tensor_utils import prepare_calibration_data
+        from ..constants import INT4_SYMMETRIC_MAX
+
+        M, N = W_float32.shape
+        layer_group_size = self.convrot_group_size
+        if self.dynamic_convrot:
+            from ..utils.convrot import find_max_compatible_group_size
+            layer_group_size = find_max_compatible_group_size(N, min_group_size=self.convrot_group_size)
+
+        if layer_group_size is None or N % layer_group_size != 0:
+            raise ValueError(
+                f"INT4 ConvRot W4A4 requires in_features ({N}) divisible by convrot_group_size ({layer_group_size})."
+            )
+
+        H = build_hadamard(layer_group_size, device=self.device, dtype=COMPUTE_DTYPE)
+        W_rot = rotate_weight(W_float32, H, layer_group_size)
+        verbose(f"    - Applied ConvRot Hadamard rotation (group_size={layer_group_size}).")
+
+        X_rot, Y_ref, _ = prepare_calibration_data(
+            W_rot, calibration_data, True, layer_group_size, self.device, COMPUTE_DTYPE, calib_scale=self.calib_scale
+        )
+
+        qdata, scale = quantize_int4_rowwise(W_rot)
+
+        if not self.no_learned_rounding and self.num_iter > 0:
+            verbose("    - Applying learned rounding optimization for INT4 ConvRot W4A4...")
+            qdata, scale = self._optimize_int8_adaround(W_rot, qdata, scale, X_rot, Y_ref, qmax=INT4_SYMMETRIC_MAX)
+
+        scale_broadcast = scale.unsqueeze(1)
+        dequantized_rotated = qdata.to(COMPUTE_DTYPE) * scale_broadcast
+        # H is symmetric and orthogonal (an involution): applying rotate_weight again undoes the rotation.
+        dequantized = rotate_weight(dequantized_rotated, H, layer_group_size)
+
+        # Phase 4: Residual Bias Calibration (mirrors the INT8 ConvRot path)
+        if self.has_bias and X_rot is not None and Y_ref is not None:
+            with torch.no_grad():
+                Y_quant = X_rot @ dequantized_rotated.T
+                bias_adj = (Y_ref - Y_quant).mean(dim=0)
+                self._current_extra_tensors["bias_correction"] = bias_adj.cpu()
+                verbose(
+                    f"    - Phase 4: Residual Bias Calibration (bias correction norm: {bias_adj.norm().item():.6f})"
+                )
+
+        packed = pack_int4_row_major(qdata)
+
+        self._cleanup_tensors(W_rot, X_rot, Y_ref)
+
+        return packed, scale.to(device=self.device, dtype=SCALE_DTYPE), dequantized
 
     def _optimize_int8_tensorwise_learned_rounding(self, W_float32: torch.Tensor, qdata: torch.Tensor,
                                                    scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
