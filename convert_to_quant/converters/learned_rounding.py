@@ -1061,11 +1061,15 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         return dequantized
 
     def _optimize_int8_adaround(
-        self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, X_rot: torch.Tensor, Y_ref: torch.Tensor
+        self, W_float32: torch.Tensor, qdata: torch.Tensor, scale: torch.Tensor, X_rot: torch.Tensor, Y_ref: torch.Tensor,
+        qmax: int = INT8_SYMMETRIC_MAX
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply SVD-guided AdaRound (learned soft rounding) optimization over the rotated parameter space
         minimizing local activation reconstruction MSE using the cached calibration data.
+
+        Args:
+            qmax: Symmetric clamp range for the discretized output, e.g. 127 for INT8 or 7 for INT4.
         """
         M, N = W_float32.shape
 
@@ -1312,8 +1316,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         with torch.no_grad():
             final_h_V = torch.sigmoid(best_V)
             final_round_up = (final_h_V >= 0.5).to(COMPUTE_DTYPE)
-            final_qdata = (W_floor + final_round_up).clamp(-INT8_SYMMETRIC_MAX,
-                                                           INT8_SYMMETRIC_MAX).round().to(TARGET_INT8_DTYPE)
+            final_qdata = (W_floor + final_round_up).clamp(-qmax, qmax).round().to(TARGET_INT8_DTYPE)
 
             verbose(f"    - Discretization audit: {best_converged_ratio * 100:.2f}% of parameters converged to strict boundaries.")
 
