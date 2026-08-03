@@ -196,7 +196,7 @@ def convert_to_fp8_scaled(
 
     # Get format-aware block_size default (converters handle their own fixed sizes)
     # This is only used for metadata/display; converters use their __init__ defaults
-    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64}
+    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "int4": 64, "fp8": 64}
     block_size = converter_kwargs.get("block_size") or format_block_sizes.get(target_format, 64)
 
     # Helper function to create converter for a specific format type
@@ -489,6 +489,7 @@ def convert_to_fp8_scaled(
 
         # Determine format type for this layer
         is_int8 = layer_format == "int8"
+        is_int4 = layer_format == "int4"
         is_mxfp8 = layer_format == "mxfp8"
         is_nvfp4 = layer_format == "nvfp4"
 
@@ -619,6 +620,15 @@ def convert_to_fp8_scaled(
                 # Add input_scale only for block-wise INT8 (dynamic quantization for rowwise doesn't use it)
                 if comfy_quant_format == "int8_blockwise":
                     new_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32, device="cpu")
+            elif is_int4:
+                new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                comfy_quant_format = "int4_convrot_w4a4"
+                block_size_for_meta = None
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    "int4_convrot_w4a4",
+                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    convrot=True, convrot_groupsize=convrot_group_size,
+                )
             else:
                 # FP8 format - determine format based on scaling_mode or layer_config
                 new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
