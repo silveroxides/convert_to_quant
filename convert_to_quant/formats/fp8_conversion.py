@@ -473,12 +473,20 @@ def convert_to_fp8_scaled(
             cfg_block_size = layer_settings.get("block_size")
             cfg_scaling_mode = layer_settings.get("scaling_mode")
             cfg_simple = layer_settings.get("simple", False)
+            cfg_convrot = layer_settings.get("convrot", False)
+            cfg_dynamic_convrot = layer_settings.get("dynamic_convrot", False)
+            cfg_convrot_group_size = layer_settings.get("convrot_group_size")
             if cfg_block_size is not None:
                 cfg_overrides["block_size"] = cfg_block_size
             if cfg_scaling_mode is not None:
                 cfg_overrides["scaling_mode"] = cfg_scaling_mode
             if cfg_simple:
                 cfg_overrides["no_learned_rounding"] = True
+            if cfg_convrot or cfg_dynamic_convrot:
+                cfg_overrides["convrot"] = True
+                cfg_overrides["dynamic_convrot"] = cfg_dynamic_convrot
+                if cfg_convrot_group_size is not None:
+                    cfg_overrides["convrot_group_size"] = cfg_convrot_group_size
             converter = create_converter_for_format(layer_format, cfg_overrides if cfg_overrides else None)
         elif use_custom:
             converter = converters["custom"]
