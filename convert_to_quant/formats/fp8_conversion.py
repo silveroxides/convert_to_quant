@@ -624,10 +624,10 @@ def convert_to_fp8_scaled(
                     new_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32, device="cpu")
             elif is_int4:
                 new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
-                comfy_quant_format = "int4_convrot_w4a4"
+                comfy_quant_format = "convrot_w4a4"
                 block_size_for_meta = None
                 comfy_quant_tensor = create_comfy_quant_tensor(
-                    "int4_convrot_w4a4",
+                    "convrot_w4a4",
                     full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
                     convrot=True, convrot_groupsize=convrot_group_size,
                 )
