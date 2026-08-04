@@ -56,6 +56,21 @@ from ..utils.memory_efficient_loader import (
 from ..utils.tensor_utils import normalize_tensorwise_scales
 
 
+def resolve_layer_config_format(fmt: str) -> str:
+    """Map a --layer-config entry's "format" string to the internal
+    layer_format used to select a converter (see create_converter_for_format)."""
+    if fmt.startswith("float8"):
+        return "fp8"
+    elif fmt.startswith("int8"):
+        return "int8"
+    elif fmt == "nvfp4":
+        return "nvfp4"
+    elif fmt == "mxfp8":
+        return "mxfp8"
+    else:
+        return "fp8"  # fallback
+
+
 @log_debug
 def convert_to_fp8_scaled(
     input_file: str,
@@ -385,12 +400,7 @@ def convert_to_fp8_scaled(
                 use_layer_config = True
                 # Map format to layer_format type
                 fmt = layer_settings["format"]
-                if fmt.startswith("float8"):
-                    layer_format = "fp8"
-                elif fmt.startswith("int8"):
-                    layer_format = "int8"
-                else:
-                    layer_format = "fp8"  # fallback
+                layer_format = resolve_layer_config_format(fmt)
 
         # Check for custom pattern match (second priority, only if no layer_config match)
         if not use_layer_config and custom_pattern and custom_pattern.search(key):
