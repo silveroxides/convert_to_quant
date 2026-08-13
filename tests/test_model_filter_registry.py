@@ -6,8 +6,8 @@ from convert_to_quant.constants import MODEL_FILTERS, build_exclusion_patterns
 
 
 class ModelFilterRegistryTests(unittest.TestCase):
-    def _skip_patterns(self, name):
-        skip, highprec, remove = build_exclusion_patterns({name: True})
+    def _skip_patterns(self, name, tensor_keys=()):
+        skip, highprec, remove = build_exclusion_patterns({name: True}, tensor_keys)
         self.assertEqual(skip, highprec)
         self.assertEqual(remove, [])
         return skip
@@ -29,8 +29,15 @@ class ModelFilterRegistryTests(unittest.TestCase):
 
     def test_qwen35_protects_supported_variant_boundaries_and_visual_stack(self):
         patterns = self._skip_patterns("qwen35")
-        for expected in (".layers.0.", ".layers.23.", ".layers.31.", ".layers.63.", "visual."):
+        for expected in (".layers.0.", "visual."):
             self.assertIn(expected, patterns)
+
+        for final_index in (23, 31, 63):
+            keys = (
+                "model.layers.0.attn.weight",
+                f"model.layers.{final_index}.attn.weight",
+            )
+            self.assertIn(f"model.layers.{final_index}.", self._skip_patterns("qwen35", keys))
 
     def test_gemma4_protects_embeddings_kv_and_multimodal_projectors(self):
         patterns = self._skip_patterns("gemma4")

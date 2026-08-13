@@ -58,7 +58,7 @@ def _build_model() -> dict:
       - Several 2D .weight tensors (quantizable)
       - 1D / 3D / 4D tensors (must never be quantized)
       - Layer names covering: normal layers, AVOID_KEY_NAMES hits,
-        custom filter patterns (for anima, qwen35, t5xxl)
+        custom filter patterns (for anima, Qwen VLM, t5xxl)
     """
     t = {}
 
@@ -79,20 +79,23 @@ def _build_model() -> dict:
     t["t_embedder.mlp.0.weight"] = torch.randn(64, 64)
     t["x_embedder.proj.weight"] = torch.randn(64, 64)
 
-    # ---- 2D weights that match qwen35 exclude patterns ----
-    # Boundary layers for the 2B/4B/9B/27B variants, plus all visual layers.
-    # "in_proj_a"   "in_proj_b"    "merger"   "mtp.fc"
-    # "visual.pos_embed"  "visual.patch_embed"  "visual.blocks.0."
+    # ---- 2D weights that match Qwen VLM exclude patterns ----
     t["model.layers.0.attn.weight"] = torch.randn(64, 64)
     t["model.layers.23.attn.weight"] = torch.randn(64, 64)
     t["model.layers.31.attn.weight"] = torch.randn(64, 64)
     t["model.layers.63.attn.weight"] = torch.randn(64, 64)
+    t["model.language_model.layers.0.attn.weight"] = torch.randn(64, 64)
+    t["model.language_model.layers.34.attn.weight"] = torch.randn(64, 64)
+    t["model.language_model.layers.35.attn.weight"] = torch.randn(64, 64)
     t["lm_head.weight"] = torch.randn(64, 64)
     t["embed_tokens.weight"] = torch.randn(64, 64)
     t["in_proj_a.weight"] = torch.randn(64, 64)
     t["in_proj_b.weight"] = torch.randn(64, 64)
-    t["merger.dense.weight"] = torch.randn(64, 64)
+    t["visual.merger.dense.weight"] = torch.randn(64, 64)
+    t["model.visual.deepstack_merger_list.2.linear_fc1.weight"] = torch.randn(64, 64)
+    t["model.visual.blocks.23.attn.weight"] = torch.randn(64, 64)
     t["mtp.fc.weight"] = torch.randn(64, 64)
+    t["model.mtp.layers.2.attn.weight"] = torch.randn(64, 64)
     t["visual.pos_embed.weight"] = torch.randn(64, 64)
     t["visual.patch_embed.proj.weight"] = torch.randn(64, 64)
     t["visual.blocks.0.attn.weight"] = torch.randn(64, 64)
@@ -362,21 +365,27 @@ class TestFilterFlags(unittest.TestCase):
 
     QWEN35_SKIPPED = [
         "model.layers.0.attn",
-        "model.layers.23.attn",
-        "model.layers.31.attn",
         "model.layers.63.attn",
+        "model.language_model.layers.0.attn",
+        "model.language_model.layers.35.attn",
         "lm_head",
         "embed_tokens",
         "in_proj_a",
         "in_proj_b",
-        "merger.dense",
+        "visual.merger.dense",
+        "model.visual.deepstack_merger_list.2.linear_fc1",
+        "model.visual.blocks.23.attn",
         "mtp.fc",
+        "model.mtp.layers.2.attn",
         "visual.pos_embed",
         "visual.patch_embed.proj",
         "visual.blocks.0.attn",
-        "visual.blocks.5.attn",
     ]
-    QWEN35_KEPT = ["transformer.blocks.2.attn.qkv", "net.blocks.2.attn"]
+    QWEN35_KEPT = [
+        "transformer.blocks.2.attn.qkv",
+        "net.blocks.2.attn",
+        "model.language_model.layers.34.attn",
+    ]
 
     def test_fp8_qwen35_flag_skips_excluded_layers(self):
         out = self._run_fp8({"qwen35": True, "generic_text": True})
@@ -389,6 +398,13 @@ class TestFilterFlags(unittest.TestCase):
         out = self._run_fp8({"qwen35": True, "generic_text": True})
         for base in self.QWEN35_KEPT:
             self.assertTrue(_is_quantized(out, base), f"--qwen35: {base} should still be quantized")
+
+    def test_fp8_qwen_vlm_flag_matches_qwen35_alias(self):
+        out = self._run_fp8({"qwen_vlm": True, "generic_text": True})
+        for base in self.QWEN35_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"--qwen_vlm: {base} should NOT be quantized")
+        for base in self.QWEN35_KEPT:
+            self.assertTrue(_is_quantized(out, base), f"--qwen_vlm: {base} should still be quantized")
 
     def test_nvfp4_qwen35_flag_skips_excluded_layers(self):
         out = self._run_nvfp4({"qwen35": True, "generic_text": True})
@@ -403,13 +419,10 @@ class TestFilterFlags(unittest.TestCase):
             self.assertIn(f"{base}.weight", out)
 
     # ------------------------------------------------------------------
-    # 6. extract_filter_flags preserves only explicit filter flags
+    # 6. extract_filter_flags applies text-model aliases
     # ------------------------------------------------------------------
 
-    def test_extract_filter_flags_qwen35_does_not_inject_generic_text(self):
-        """extract_filter_flags must not add generic_text when only qwen35 is set."""
-        # Build a fake args namespace with all MODEL_FILTERS keys set to False
-        # except qwen35
+    def test_extract_filter_flags_qwen35_injects_generic_text(self):
         import types
 
         from convert_to_quant.constants import MODEL_FILTERS
@@ -421,11 +434,10 @@ class TestFilterFlags(unittest.TestCase):
 
         flags = extract_filter_flags(ns)
 
-        self.assertTrue(flags.get("qwen35"), "qwen35 must be True in flags")
-        self.assertNotIn("generic_text", flags, "generic_text must not be auto-injected when qwen35 is set")
+        self.assertTrue(flags.get("qwen35"))
+        self.assertTrue(flags.get("generic_text"))
 
-    def test_extract_filter_flags_keeps_explicit_generic_text(self):
-        """generic_text must be present only when explicitly enabled."""
+    def test_extract_filter_flags_qwen_vlm_injects_generic_text(self):
         import types
 
         from convert_to_quant.constants import MODEL_FILTERS
@@ -433,11 +445,25 @@ class TestFilterFlags(unittest.TestCase):
         ns = types.SimpleNamespace()
         for name in MODEL_FILTERS.keys():
             setattr(ns, name, False)
-        setattr(ns, "generic_text", True)
+        setattr(ns, "qwen_vlm", True)
 
         flags = extract_filter_flags(ns)
 
-        self.assertTrue(flags.get("generic_text"), "generic_text must be kept when explicitly active")
+        self.assertTrue(flags.get("qwen_vlm"))
+        self.assertTrue(flags.get("generic_text"))
+
+    def test_extract_filter_flags_no_alias_without_qwen35(self):
+        """generic_text must NOT be injected when qwen35 is not set."""
+        import types
+
+        from convert_to_quant.constants import MODEL_FILTERS
+
+        ns = types.SimpleNamespace()
+        for name in MODEL_FILTERS.keys():
+            setattr(ns, name, False)
+        flags = extract_filter_flags(ns)
+
+        self.assertNotIn("generic_text", flags, "generic_text must not appear when no alias is active")
 
     # ------------------------------------------------------------------
     # 7. Explicit qwen35 + generic_text input_scale behavior (FP8)
@@ -533,8 +559,7 @@ class TestFilterFlags(unittest.TestCase):
     # 12. Dimension shapes are preserved for skipped layers
     # ------------------------------------------------------------------
 
-    def test_fp8_skipped_layer_weight_shape_preserved(self):
-        """Skipped layers must be written with their original shape and dtype."""
+    def test_fp8_skipped_layer_weight_shape_and_output_dtype(self):
         model = _build_model()
         out = self._run_fp8({"anima": True})
 
@@ -543,7 +568,7 @@ class TestFilterFlags(unittest.TestCase):
             if key in model:
                 orig = model[key]
                 self.assertEqual(out[key].shape, orig.shape, f"Shape mismatch for skipped {key}")
-                self.assertEqual(out[key].dtype, orig.dtype, f"Dtype mismatch for skipped {key}")
+                self.assertEqual(out[key].dtype, torch.bfloat16, f"Output dtype mismatch for skipped {key}")
 
     def test_fp8_3d_4d_shape_preserved(self):
         """3D and 4D tensors must be copied with original shape and dtype."""

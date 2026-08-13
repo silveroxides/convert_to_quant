@@ -21,7 +21,7 @@ from .tensor_utils import dict_to_tensor, normalize_tensorwise_scales, tensor_to
 BLOCK_BASED_FORMATS = ("int8_blockwise", "float8_e4m3fn_blockwise")
 
 
-def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None, convrot: Optional[bool] = None, convrot_groupsize: Optional[int] = None, per_row: Optional[bool] = None) -> torch.Tensor:
+def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None, convrot: Optional[bool] = None, convrot_groupsize: Optional[int] = None, per_row: Optional[bool] = None, orig_dtype: Optional[str] = None) -> torch.Tensor:
     """
     Create a .comfy_quant layer configuration tensor for ComfyUI.
 
@@ -38,6 +38,9 @@ def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None
         torch.uint8 tensor containing JSON-encoded layer configuration
     """
     comfy_quant = {"format": format_type}
+
+    if orig_dtype is not None:
+        comfy_quant["orig_dtype"] = orig_dtype
 
     # Add group_size directly (not nested in params) for block-based formats
     if block_size is not None and format_type in BLOCK_BASED_FORMATS:
@@ -325,7 +328,7 @@ def edit_comfy_quant(input_file: str, output_file: str, remove_keys: Optional[Li
                     continue  # Can't determine format
 
             # Copy relevant keys from metadata
-            for key in ["group_size", "full_precision_matrix_mult"]:
+            for key in ["group_size", "full_precision_matrix_mult", "orig_dtype"]:
                 if key in meta_entry:
                     config[key] = meta_entry[key]
 
@@ -396,6 +399,8 @@ def edit_comfy_quant(input_file: str, output_file: str, remove_keys: Optional[Li
                     meta_entry["group_size"] = config["group_size"]
                 if config.get("full_precision_matrix_mult"):
                     meta_entry["full_precision_matrix_mult"] = True
+                if "orig_dtype" in config:
+                    meta_entry["orig_dtype"] = config["orig_dtype"]
                 generated_layers[base_name] = meta_entry
             except Exception as e:
                 warning(f"  WARNING: Failed to parse {key}: {e}")

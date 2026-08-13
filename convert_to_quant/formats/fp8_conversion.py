@@ -11,48 +11,20 @@ import os
 import re
 import shutil
 import tempfile
-from typing import (
-    Any,
-    Dict,
-    Optional,
-)
+from typing import Any, Dict, Optional
 
 import torch
 from safetensors.torch import save_file
 
 from ..config.layer_config import get_layer_settings
-from ..constants import (
-    COMPUTE_DTYPE,
-    FP8_MAX,
-    FP8_MIN,
-    INT8_SYMMETRIC_MAX,
-    MODEL_FILTERS,
-    NORMALIZE_SCALES_ENABLED,
-    SCALE_DTYPE,
-    T5XXL_REMOVE_KEY_NAMES,
-    TARGET_FP8_DTYPE,
-    TARGET_INT8_DTYPE,
-)
+from ..constants import COMPUTE_DTYPE, FP8_MAX, FP8_MIN, INT8_SYMMETRIC_MAX, NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, T5XXL_REMOVE_KEY_NAMES, TARGET_FP8_DTYPE, TARGET_INT8_DTYPE, resolve_model_filter_patterns
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
-from ..converters.learned_rounding import (
-    LearnedRoundingConverter,
-)
-from ..utils.comfy_quant import (
-    create_comfy_quant_tensor,
-    should_skip_layer_for_performance,
-)
-from ..utils.logging import (
-    error,
-    info,
-    log_debug,
-    minimal,
-    verbose,
-    warning,
-)
-from ..utils.memory_efficient_loader import (
-    MemoryEfficientSafeOpen,
-)
+from ..converters.learned_rounding import LearnedRoundingConverter
+from ..utils.comfy_quant import create_comfy_quant_tensor, should_skip_layer_for_performance
+from ..utils.logging import error, info, log_debug, minimal, verbose, warning
+from ..utils.memory_efficient_loader import MemoryEfficientSafeOpen
+from ..utils.output_dtype import cast_unquantized_weights, compile_preserve_layers, resolve_output_dtype
 from ..utils.tensor_utils import normalize_tensorwise_scales
 
 
@@ -101,10 +73,20 @@ def convert_to_fp8_scaled(
     lora_save_path: Optional[str] = None,
     # Added for CLI compatibility
     lora_output: Optional[str] = None,
+    output_dtype: str = "bfloat16",
+    preserve_layers: Optional[str] = None,
     **converter_kwargs,
 ):
     # Ensure filter_flags is a dict
     filter_flags = filter_flags or {}
+
+    try:
+        resolved_output_dtype = resolve_output_dtype(output_dtype)
+        preserve_pattern = compile_preserve_layers(preserve_layers)
+    except ValueError as exc:
+        error(f"ERROR: {exc}")
+        return
+    quantized_orig_dtype = str(resolved_output_dtype)
 
     # Determine target format (priority: primary_format > int8 > fp8)
     if primary_format:
@@ -170,12 +152,14 @@ def convert_to_fp8_scaled(
         return
 
     all_keys = loader.keys()
+    resolved_filter_patterns = resolve_model_filter_patterns(filter_flags, all_keys)
 
     # Read original file metadata to preserve during conversion
     original_metadata = loader.metadata()
 
     # Initialize metadata collection if enabled
     quant_metadata_layers = {} if save_quant_metadata else None
+    quantized_weight_keys = set()
 
     # Add target_format and no_learned_rounding to converter kwargs
     converter_kwargs["target_format"] = target_format
@@ -408,17 +392,7 @@ def convert_to_fp8_scaled(
         # Check exclusion filters (only matters if not custom matched and not layer_config matched)
         # Uses MODEL_FILTERS registry for centralized filter definitions
         if not use_custom and not use_layer_config:
-            # Use filter_flags dict passed from CLI
-            active_filters = filter_flags
-
-            # Check each active filter against the key
-            for filter_name, is_active in active_filters.items():
-                if not is_active:
-                    continue
-                cfg = MODEL_FILTERS[filter_name]
-
-                # Both "exclude" and "highprec" mean the same thing: skip quantization
-                skip_patterns = cfg.get("exclude", []) + cfg.get("highprec", [])
+            for filter_name, skip_patterns in resolved_filter_patterns.items():
                 if skip_patterns and any(n in key for n in skip_patterns):
                     exclusion_reason = f"{filter_name} skip"
                     break
@@ -570,6 +544,7 @@ def convert_to_fp8_scaled(
                     torch.cuda.empty_cache()
 
         new_tensors[key] = q_tensor.to(device="cpu")
+        quantized_weight_keys.add(key)
         base_name = key[:key.rfind(".weight")]
 
         bias_key = f"{base_name}.bias"
@@ -597,7 +572,8 @@ def convert_to_fp8_scaled(
                 block_size_for_meta = 32  # MXFP8 fixed block size
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     "mxfp8", block_size=32,
-                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None
+                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    orig_dtype=quantized_orig_dtype,
                 )
             elif is_nvfp4:
                 # NVFP4 format - dual scaling (block + per-tensor)
@@ -607,7 +583,8 @@ def convert_to_fp8_scaled(
                 block_size_for_meta = 16  # NVFP4 fixed block size
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     "nvfp4", block_size=16,
-                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None
+                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    orig_dtype=quantized_orig_dtype,
                 )
             elif is_int8:
                 new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
@@ -625,7 +602,8 @@ def convert_to_fp8_scaled(
                     comfy_quant_format, block_size=block_size_for_meta,
                     full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
                     convrot=convrot_applied, convrot_groupsize=convrot_group_size if convrot_applied else None,
-                    per_row=per_row if converter.scaling_mode == "row" else None
+                    per_row=per_row if converter.scaling_mode == "row" else None,
+                    orig_dtype=quantized_orig_dtype,
                 )
                 # Add input_scale only for block-wise INT8 (dynamic quantization for rowwise doesn't use it)
                 if comfy_quant_format == "int8_blockwise":
@@ -660,7 +638,8 @@ def convert_to_fp8_scaled(
 
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     fp8_format, block_size=fp8_block_size,
-                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None
+                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    orig_dtype=quantized_orig_dtype,
                 )
                 # Add input_scale for FP8: use weight_scale for t5xxl/mistral/visual, 1.0 otherwise
                 if include_input_scale or text_encoder_filter:
@@ -674,6 +653,7 @@ def convert_to_fp8_scaled(
             if save_quant_metadata:
                 # Reconstruct the dict that was used to create the tensor
                 meta_entry = {"format": comfy_quant_format}
+                meta_entry["orig_dtype"] = quantized_orig_dtype
                 block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise", "mxfp8", "nvfp4"}
                 if block_size_for_meta is not None and comfy_quant_format in block_based_formats:
                     meta_entry["group_size"] = block_size_for_meta
@@ -831,6 +811,16 @@ def convert_to_fp8_scaled(
             continue
         if key not in new_tensors:
             new_tensors[key] = loader.get_tensor(key)
+
+    cast_count = cast_unquantized_weights(
+        new_tensors,
+        quantized_weight_keys,
+        resolved_output_dtype,
+        preserve_pattern,
+        filter_flags,
+    )
+    if cast_count:
+        info(f"Converted {cast_count} unquantized 2D weight tensors to the output dtype policy")
 
     # Close loader to release file handle
     loader.close()
