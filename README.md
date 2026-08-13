@@ -97,6 +97,16 @@ ctq -i model.safetensors -o model-int8mixedrow.safetensors --int8 --scaling_mode
 ctq -i model.safetensors -o model-mxfp8mixed.safetensors --mxfp8 --comfy_quant --save-quant-metadata --simple --low-memory
 ```
 
+### LTX-2.5 22B HQ INT8 ConvRot
+
+The specialized LTX-2.5 workflow streams the original BF16 checkpoint into a native ComfyUI mixed BF16/INT8 ConvRot file. It reproduces the validated per-row MSE clipping and per-layer group-size search, keeps the video-sensitive projections in BF16, and writes a JSON quality report beside the output.
+
+```bash
+ctq -i ltx-2.5-22b-dev-transformer-bf16.safetensors --ltx25-convrot-hq
+```
+
+`--ltx25-variant auto` detects `dev` or `distilled` from the filename. The default `--ltx25-recipe video` produces the recommended approximately 22 GB checkpoint; `compact` and `full` expose the intermediate sensitivity recipes. The converter validates the known 48-block, 1,440-linear LTX-2.5 22B architecture before writing and rejects already-quantized inputs.
+
 ## Use In Code As Module
 
 ```bash
@@ -146,7 +156,7 @@ For a deep dive into how these formats work, see **[FORMATS.md](docs/FORMATS.md)
 | FLUX.2 Klein | `--flux_klein` | Flux-sensitive layers without guidance input |
 | ERNIE Image | `--ernie_image` | Protect author-recommended time/AdaLN/boundary/projection layers |
 | Gemma 4 | `--gemma4` | Protect embeddings, K/V, audio, vision, and multimodal projectors |
-| Qwen3.5 | `--qwen35` | Protect size-specific boundaries, embeddings, and complete visual stack |
+| Qwen VLM (Qwen3.5+) | `--qwen_vlm` (`--qwen35` alias) | Protect dynamic language boundaries, embeddings, MTP, and the complete visual stack |
 | Boogu | `--boogu` | Protect embeddings and norm projections |
 | LTX 2 / 2.3 | `--ltxv2`, `--ltx2`, `--ltx2_3` | Protect boundary blocks, connectors, VAE, and vocoder |
 | T5-XXL | `--t5xxl` | Decoder removed |

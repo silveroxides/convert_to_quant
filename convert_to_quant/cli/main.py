@@ -36,6 +36,7 @@ from ..formats.hybrid_mxfp8_conversion import (
 from ..formats.int8_conversion import (
     convert_int8_to_comfy_quant,
 )
+from ..formats.ltx25_convrot import convert_ltx25_convrot_hq
 from ..formats.legacy_utils import (
     add_legacy_input_scale,
     cleanup_fp8_scaled,
@@ -533,6 +534,26 @@ def get_parser() -> MultiHelpArgumentParser:
         "--convert-int8-scaled", "--convert_int8_scaled", action="store_true", dest="convert_int8_scaled",
         help="Convert legacy INT8 model (.scale_weight) to comfy_quant format (.weight_scale + metadata)"
     )
+    parser.add_argument(
+        "--ltx25-convrot-hq", "--ltx25_convrot_hq", action="store_true", dest="ltx25_convrot_hq",
+        help="Create the validated LTX-2.5 22B mixed BF16/INT8 ConvRot HQ checkpoint."
+    )
+    parser.add_argument(
+        "--ltx25-variant", choices=["auto", "dev", "distilled"], default="auto", dest="ltx25_variant",
+        help="LTX-2.5 model variant. Auto detects dev/distilled from the source filename."
+    )
+    parser.add_argument(
+        "--ltx25-recipe", choices=["video", "compact", "full"], default="video", dest="ltx25_recipe",
+        help="LTX-2.5 HQ recipe. Video is the validated final 22 GB quality/speed balance."
+    )
+    parser.add_argument(
+        "--ltx25-report", default=None, dest="ltx25_report",
+        help="Optional LTX-2.5 per-layer JSON report path. Defaults beside the output checkpoint."
+    )
+    parser.add_argument(
+        "--ltx25-min-gemm", type=int, default=256, dest="ltx25_min_gemm",
+        help="Minimum matrix dimension for the validated LTX-2.5 recipe (default: 256)."
+    )
 
     # Legacy input scale addition mode
     parser.add_argument(
@@ -697,6 +718,18 @@ def run_conversion(args):
         if template_directory:
             os.makedirs(template_directory, exist_ok=True)
         generate_config_template(args.input, template_path, block_size=args.block_size or 128)
+        return
+
+    if args.ltx25_convrot_hq:
+        convert_ltx25_convrot_hq(
+            args.input,
+            output_path=args.output,
+            report_path=args.ltx25_report,
+            variant=args.ltx25_variant,
+            recipe=args.ltx25_recipe,
+            min_gemm=args.ltx25_min_gemm,
+            device=args.device,
+        )
         return
 
     # Handle fp8_scaled conversion mode first (separate workflow)
