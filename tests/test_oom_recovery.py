@@ -1,7 +1,7 @@
 import torch
-import pytest
-from unittest.mock import MagicMock
+
 from convert_to_quant.converters.learned_rounding import LearnedRoundingConverter
+
 
 def test_oom_recovery_and_calib_scale_shrinkage(monkeypatch):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -13,7 +13,7 @@ def test_oom_recovery_and_calib_scale_shrinkage(monkeypatch):
         convrot=True,
         convrot_group_size=64,
         num_iter=10,
-        device=device
+        device=device,
     )
 
     # We want to mock _convert_int8_tensorwise so that the first call raises OutOfMemoryError,
@@ -41,7 +41,10 @@ def test_oom_recovery_and_calib_scale_shrinkage(monkeypatch):
     assert converter.calib_scale == 1.0
 
     qdata, scale, dequant_w, extra_tensors = converter.convert(
-        W_orig, key="test_layer.weight", depth=0, calibration_data=X
+        W_orig,
+        key="test_layer.weight",
+        depth=0,
+        calibration_data=X,
     )
 
     # Assertions
@@ -54,3 +57,18 @@ def test_oom_recovery_and_calib_scale_shrinkage(monkeypatch):
     assert qdata.shape == W_orig.shape
     assert qdata.dtype == torch.int8
     assert scale.shape == (64, 1)
+
+
+def test_finalize_int8_qdata_clamps_rounds_and_casts_in_place():
+    converter = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        num_iter=1,
+        device="cpu",
+    )
+    working = torch.tensor([-200.0, -1.6, -0.4, 2.6, 200.0], dtype=torch.float32)
+
+    result = converter._finalize_int8_qdata(working)
+
+    assert result.dtype == torch.int8
+    assert result.tolist() == [-127, -2, 0, 3, 127]

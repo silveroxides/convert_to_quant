@@ -31,7 +31,8 @@ pip install -e .
 |---------|-------------|
 | **Minimum (FP8/INT8)** | Python 3.10+, PyTorch 2.8+, CUDA 12.8+ |
 | **Full (NVFP4/MXFP8)** | Python 3.12+, PyTorch 2.10+, CUDA 13.0+, **[comfy-kitchen](https://github.com/silveroxides/comfy-kitchen)** |
-| **INT8 Kernels** | Triton (Linux native, Windows via `triton-windows`) |
+| **Bundled legacy INT8 runtime kernels** | Optional Triton (Linux native, Windows via `triton-windows`) |
+| **ConvRot** | SciPy (installed automatically) |
 
 > [!IMPORTANT]
 > **PyTorch must be installed manually** with the correct CUDA version for your GPU.
@@ -57,16 +58,24 @@ pip install torch --index-url https://download.pytorch.org/whl/cu128
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
-### 2. Optional: Triton (needed for INT8)
+### 2. Optional: Triton (bundled legacy/custom runtime kernels)
+
+Weight conversion and current ComfyUI tensor/row INT8 layouts do not require Triton. Install it only when using the bundled Triton runtime kernels.
 
 ```bash
-# Linux
-pip install -U triton
+# Linux for torch 2.12+
+pip install -U "triton<3.8"
 
 # Windows for torch 2.10 and 2.11
 pip install -U "triton-windows<3.7"
-# Windows for torch 2.12
+# Windows for torch 2.12+
 pip install -U "triton-windows<3.8"
+```
+
+### 3. Optional: Blackwell formats (NVFP4/MXFP8)
+
+```bash
+pip install -U "comfy-kitchen>=0.2.18,<0.3"
 ```
 
 ---
@@ -87,6 +96,39 @@ ctq -i model.safetensors -o model-int8mixedrow.safetensors --int8 --scaling_mode
 # Blackwell MXFP8 quantization without learned rounding
 ctq -i model.safetensors -o model-mxfp8mixed.safetensors --mxfp8 --comfy_quant --save-quant-metadata --simple --low-memory
 ```
+
+### LTX-2.5 22B HQ INT8 ConvRot
+
+The specialized LTX-2.5 workflow streams the original BF16 checkpoint into a native ComfyUI mixed BF16/INT8 ConvRot file. It reproduces the validated per-row MSE clipping and per-layer group-size search, keeps the video-sensitive projections in BF16, and writes a JSON quality report beside the output.
+
+```bash
+ctq -i ltx-2.5-22b-dev-transformer-bf16.safetensors --ltx25-convrot-hq
+```
+
+`--ltx25-variant auto` detects `dev` or `distilled` from the filename. The default `--ltx25-recipe video` produces the recommended approximately 22 GB checkpoint; `compact` and `full` expose the intermediate sensitivity recipes. The converter validates the known 48-block, 1,440-linear LTX-2.5 22B architecture before writing and rejects already-quantized inputs.
+
+### FLUX.2 Klein Base 9B measured ConvRot presets
+
+The specialized Klein compiler streams the original BF16 checkpoint into a native ComfyUI mixed-precision file and validates the exact 8-double-block + 24-single-block, 112-projection architecture. Routing is supplied by a versioned JSON policy so a calibration result can be reviewed and reproduced independently of the converter.
+
+```bash
+# Measured all-W8 transformer route; non-projection tensors stay BF16.
+ctq -i flux-2-klein-base-9b.safetensors \
+  -o flux-2-klein-base-9b-int8-convrot-hq.safetensors \
+  --flux-klein-convrot-hq --flux-klein-precision int8 \
+  --flux-klein-policy flux2_klein_9b_int8_convrot_hq.json \
+  --flux-klein-scale-search absmax
+
+# Compact measured route: packed group-16 W4A8 plus sensitive W8 projections.
+ctq -i flux-2-klein-base-9b.safetensors \
+  -o flux-2-klein-base-9b-int4-convrot-hq.safetensors \
+  --flux-klein-convrot-hq --flux-klein-precision int4 \
+  --flux-klein-policy flux2_klein_9b_int4_convrot_hq.json \
+  --flux-klein-int4-layout w4a8 --flux-klein-int4-group-size 16 \
+  --flux-klein-scale-search absmax
+```
+
+The shipped Musubi GUI supplies the policy paths automatically. The INT4 label refers to packed four-bit **weights**; its native `asym_w4a8_int8` runtime uses INT8 activations. See [FLUX2_KLEIN_CONVROT_RESEARCH.md](FLUX2_KLEIN_CONVROT_RESEARCH.md) for the sensitivity workflow, exact measured tradeoffs, rejected candidates, and reproducibility notes.
 
 ## Use In Code As Module
 
@@ -118,8 +160,10 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 | Format | CLI Flag | Hardware | Optimization |
 |--------|----------|----------|--------------|
 | **FP8 (E4M3)** | *(default)* | Ada/Hopper+ | Learned Rounding (SVD) |
-| **INT8 Block-wise**| `--int8` | Any GPU | Learned Rounding (SVD) |
-| **INT8 Tensor-wise**| `--int8 --scaling_mode tensor` | Any GPU | High-perf `_scaled_mm` |
+| **INT8 Block-wise**| `--int8` | QuantOps runtime | Learned Rounding (SVD) |
+| **INT8 Tensor-wise**| `--int8 --scaling_mode tensor` | Turing+ runtime | Native `_scaled_mm` path |
+| **INT8 ConvRot**| `--int8 --scaling_mode row --convrot --convrot-group-size 256` | Turing+ runtime | Native row-wise layout with Hadamard rotation |
+| **Packed W4A8 ConvRot (Klein HQ)** | `--flux-klein-convrot-hq --flux-klein-precision int4 --flux-klein-int4-layout w4a8` | Current ComfyUI/comfy-kitchen | Grouped four-bit weights, INT8 activations, exact mixed policy |
 | **NVFP4 (4-bit)** | `--nvfp4` | Blackwell | Dual-scale optimization |
 | **MXFP8** | `--mxfp8` | Blackwell | Microscaling (E8M0) |
 
@@ -131,7 +175,14 @@ For a deep dive into how these formats work, see **[FORMATS.md](docs/FORMATS.md)
 
 | Model | Flag | Notes |
 |-------|------|-------|
+| Flux.1 | `--flux1` | Keep modulation/guidance/time/final/input layers high-precision |
 | Flux.2 | `--flux2` | Keep modulation/guidance/time/final high-precision |
+| FLUX.2 Klein | `--flux_klein` | Flux-sensitive layers without guidance input |
+| ERNIE Image | `--ernie_image` | Protect author-recommended time/AdaLN/boundary/projection layers |
+| Gemma 4 | `--gemma4` | Protect embeddings, K/V, audio, vision, and multimodal projectors |
+| Qwen VLM (Qwen3.5+) | `--qwen_vlm` (`--qwen35` alias) | Protect dynamic language boundaries, embeddings, MTP, and the complete visual stack |
+| Boogu | `--boogu` | Protect embeddings and norm projections |
+| LTX 2 / 2.3 | `--ltxv2`, `--ltx2`, `--ltx2_3` | Protect boundary blocks, connectors, VAE, and vocoder |
 | T5-XXL | `--t5xxl` | Decoder removed |
 | Hunyuan Video| `--hunyuan`| Attention norms excluded |
 | WAN Video | `--wan` | Time embeddings excluded |
@@ -144,6 +195,7 @@ For a deep dive into how these formats work, see **[FORMATS.md](docs/FORMATS.md)
 
 - **Learned Rounding**: SVD-based optimization minimizes quantization error.
 - **Bias Correction**: Automatic bias adjustment using synthetic calibration data.
+- **Lower INT8 Peak Memory**: In-place learned-rounding finalization avoids a second full-size float working tensor.
 - **Model-Specific Support**: Exclusion lists for sensitive layers (norms, embeddings).
 - **Three-Tier Quantization**: Mix different formats per layer using `--custom-layers`.
 

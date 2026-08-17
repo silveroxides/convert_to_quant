@@ -109,6 +109,18 @@ MODES_ARGS = {
     "quant_filter",
     # Development tools
     "dry_run",
+    "ltx25_convrot_hq",
+    "ltx25_variant",
+    "ltx25_recipe",
+    "ltx25_report",
+    "ltx25_min_gemm",
+    "flux_klein_convrot_hq",
+    "flux_klein_precision",
+    "flux_klein_policy",
+    "flux_klein_report",
+    "flux_klein_scale_search",
+    "flux_klein_w4_activation",
+    "flux_klein_no_strict",
     # Conversion-specific options
     "hp_filter",
     "full_precision_mm",
@@ -406,7 +418,13 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Format Conversion:")
         print("-" * 40)
 
-        conversion_args = ["convert_fp8_scaled", "hp_filter", "full_precision_mm", "convert_int8_scaled"]
+        conversion_args = [
+            "convert_fp8_scaled", "hp_filter", "full_precision_mm", "convert_int8_scaled",
+            "flux_klein_convrot_hq", "flux_klein_precision", "flux_klein_policy",
+            "flux_klein_report", "flux_klein_scale_search", "flux_klein_w4_activation",
+            "flux_klein_no_strict",
+            "ltx25_convrot_hq", "ltx25_variant", "ltx25_recipe", "ltx25_report", "ltx25_min_gemm",
+        ]
         for action in self._all_actions:
             if self._get_dest_name(action) in conversion_args:
                 line = self._format_action_help(action)

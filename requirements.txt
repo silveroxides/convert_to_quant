@@ -2,6 +2,7 @@
 torch>=2.1.0
 safetensors>=0.4.2
 tqdm
+scipy
 
 # Optional: For INT8 Triton kernels (quant_ops.py runtime inference)
 # triton>=2.1.0
