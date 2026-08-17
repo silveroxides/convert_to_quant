@@ -30,6 +30,7 @@ from ..formats.format_migration import (
     convert_fp8_scaled_to_comfy_quant,
 )
 from ..formats.fp8_conversion import convert_to_fp8_scaled
+from ..formats.flux_klein_convrot import convert_flux_klein_convrot_hq
 from ..formats.hybrid_mxfp8_conversion import (
     convert_to_hybrid_mxfp8,
 )
@@ -535,6 +536,48 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Convert legacy INT8 model (.scale_weight) to comfy_quant format (.weight_scale + metadata)"
     )
     parser.add_argument(
+        "--flux-klein-convrot-hq", "--flux_klein_convrot_hq", action="store_true",
+        dest="flux_klein_convrot_hq",
+        help="Compile FLUX.2 Klein 9B with an exact mixed BF16/W8/W4 ConvRot policy."
+    )
+    parser.add_argument(
+        "--flux-klein-precision", choices=["int8", "int4"], default="int8",
+        dest="flux_klein_precision",
+        help="Default projection precision when a FLUX Klein policy does not override it."
+    )
+    parser.add_argument(
+        "--flux-klein-policy", default=None, dest="flux_klein_policy",
+        help="Versioned JSON file containing exact FLUX Klein per-layer precision routes."
+    )
+    parser.add_argument(
+        "--flux-klein-report", default=None, dest="flux_klein_report",
+        help="Optional FLUX Klein compiler report path. Defaults beside the output checkpoint."
+    )
+    parser.add_argument(
+        "--flux-klein-scale-search", choices=["absmax", "mse"], default="mse",
+        dest="flux_klein_scale_search",
+        help="Per-row weight scaling method. MSE uses deterministic two-stage clipping search."
+    )
+    parser.add_argument(
+        "--flux-klein-w4-activation", choices=["int8", "int4"], default="int8",
+        dest="flux_klein_w4_activation",
+        help="Activation compute for legacy W4A4 layers; int8 is the Blackwell fallback."
+    )
+    parser.add_argument(
+        "--flux-klein-int4-layout", choices=["w4a8", "w4a4"], default="w4a8",
+        dest="flux_klein_int4_layout",
+        help="Packed INT4 layout. W4A8 uses local Lloyd-Max groups and is the HQ default."
+    )
+    parser.add_argument(
+        "--flux-klein-int4-group-size", choices=[4, 8, 16, 32, 64], type=int, default=16,
+        dest="flux_klein_int4_group_size",
+        help="Local weight group size for the W4A8 HQ layout (smaller is higher quality/larger)."
+    )
+    parser.add_argument(
+        "--flux-klein-no-strict", action="store_true", dest="flux_klein_no_strict",
+        help="Allow research fixtures or non-9B layouts instead of enforcing the 8+24 block architecture."
+    )
+    parser.add_argument(
         "--ltx25-convrot-hq", "--ltx25_convrot_hq", action="store_true", dest="ltx25_convrot_hq",
         help="Create the validated LTX-2.5 22B mixed BF16/INT8 ConvRot HQ checkpoint."
     )
@@ -729,6 +772,22 @@ def run_conversion(args):
             recipe=args.ltx25_recipe,
             min_gemm=args.ltx25_min_gemm,
             device=args.device,
+        )
+        return
+
+    if args.flux_klein_convrot_hq:
+        convert_flux_klein_convrot_hq(
+            args.input,
+            output_path=args.output,
+            report_path=args.flux_klein_report,
+            policy_path=args.flux_klein_policy,
+            default_mode=args.flux_klein_precision,
+            scale_search=args.flux_klein_scale_search,
+            w4_activation=args.flux_klein_w4_activation,
+            int4_layout=args.flux_klein_int4_layout,
+            int4_group_size=args.flux_klein_int4_group_size,
+            device=args.device,
+            strict_architecture=not args.flux_klein_no_strict,
         )
         return
 

@@ -51,7 +51,17 @@ from .constants import (  # New registry
 from .converters import LearnedRoundingConverter
 
 # Re-export formats
-from .formats import add_legacy_input_scale, cleanup_fp8_scaled, convert_fp8_scaled_to_comfy_quant, convert_int8_to_comfy_quant, convert_ltx25_convrot_hq, convert_to_fp8_scaled, inspect_ltx25_checkpoint
+from .formats import (
+    add_legacy_input_scale,
+    cleanup_fp8_scaled,
+    convert_flux_klein_convrot_hq,
+    convert_fp8_scaled_to_comfy_quant,
+    convert_int8_to_comfy_quant,
+    convert_ltx25_convrot_hq,
+    convert_to_fp8_scaled,
+    inspect_flux_klein_checkpoint,
+    inspect_ltx25_checkpoint,
+)
 
 # Re-export utils
 from .utils import create_comfy_quant_tensor, dict_to_tensor, edit_comfy_quant, fix_comfy_quant_params_structure, normalize_tensorwise_scales, parse_add_keys_string, should_skip_layer_for_performance, tensor_to_dict
@@ -149,6 +159,8 @@ __all__ = [
     "convert_to_fp8_scaled",
     "convert_fp8_scaled_to_comfy_quant",
     "convert_int8_to_comfy_quant",
+    "convert_flux_klein_convrot_hq",
+    "inspect_flux_klein_checkpoint",
     "convert_ltx25_convrot_hq",
     "inspect_ltx25_checkpoint",
     "add_legacy_input_scale",

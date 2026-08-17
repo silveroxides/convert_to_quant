@@ -107,6 +107,29 @@ ctq -i ltx-2.5-22b-dev-transformer-bf16.safetensors --ltx25-convrot-hq
 
 `--ltx25-variant auto` detects `dev` or `distilled` from the filename. The default `--ltx25-recipe video` produces the recommended approximately 22 GB checkpoint; `compact` and `full` expose the intermediate sensitivity recipes. The converter validates the known 48-block, 1,440-linear LTX-2.5 22B architecture before writing and rejects already-quantized inputs.
 
+### FLUX.2 Klein Base 9B measured ConvRot presets
+
+The specialized Klein compiler streams the original BF16 checkpoint into a native ComfyUI mixed-precision file and validates the exact 8-double-block + 24-single-block, 112-projection architecture. Routing is supplied by a versioned JSON policy so a calibration result can be reviewed and reproduced independently of the converter.
+
+```bash
+# Measured all-W8 transformer route; non-projection tensors stay BF16.
+ctq -i flux-2-klein-base-9b.safetensors \
+  -o flux-2-klein-base-9b-int8-convrot-hq.safetensors \
+  --flux-klein-convrot-hq --flux-klein-precision int8 \
+  --flux-klein-policy flux2_klein_9b_int8_convrot_hq.json \
+  --flux-klein-scale-search absmax
+
+# Compact measured route: packed group-16 W4A8 plus sensitive W8 projections.
+ctq -i flux-2-klein-base-9b.safetensors \
+  -o flux-2-klein-base-9b-int4-convrot-hq.safetensors \
+  --flux-klein-convrot-hq --flux-klein-precision int4 \
+  --flux-klein-policy flux2_klein_9b_int4_convrot_hq.json \
+  --flux-klein-int4-layout w4a8 --flux-klein-int4-group-size 16 \
+  --flux-klein-scale-search absmax
+```
+
+The shipped Musubi GUI supplies the policy paths automatically. The INT4 label refers to packed four-bit **weights**; its native `asym_w4a8_int8` runtime uses INT8 activations. See [FLUX2_KLEIN_CONVROT_RESEARCH.md](FLUX2_KLEIN_CONVROT_RESEARCH.md) for the sensitivity workflow, exact measured tradeoffs, rejected candidates, and reproducibility notes.
+
 ## Use In Code As Module
 
 ```bash
@@ -140,6 +163,7 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 | **INT8 Block-wise**| `--int8` | QuantOps runtime | Learned Rounding (SVD) |
 | **INT8 Tensor-wise**| `--int8 --scaling_mode tensor` | Turing+ runtime | Native `_scaled_mm` path |
 | **INT8 ConvRot**| `--int8 --scaling_mode row --convrot --convrot-group-size 256` | Turing+ runtime | Native row-wise layout with Hadamard rotation |
+| **Packed W4A8 ConvRot (Klein HQ)** | `--flux-klein-convrot-hq --flux-klein-precision int4 --flux-klein-int4-layout w4a8` | Current ComfyUI/comfy-kitchen | Grouped four-bit weights, INT8 activations, exact mixed policy |
 | **NVFP4 (4-bit)** | `--nvfp4` | Blackwell | Dual-scale optimization |
 | **MXFP8** | `--mxfp8` | Blackwell | Microscaling (E8M0) |
 

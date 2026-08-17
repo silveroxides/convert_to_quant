@@ -114,6 +114,13 @@ MODES_ARGS = {
     "ltx25_recipe",
     "ltx25_report",
     "ltx25_min_gemm",
+    "flux_klein_convrot_hq",
+    "flux_klein_precision",
+    "flux_klein_policy",
+    "flux_klein_report",
+    "flux_klein_scale_search",
+    "flux_klein_w4_activation",
+    "flux_klein_no_strict",
     # Conversion-specific options
     "hp_filter",
     "full_precision_mm",
@@ -413,6 +420,9 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
 
         conversion_args = [
             "convert_fp8_scaled", "hp_filter", "full_precision_mm", "convert_int8_scaled",
+            "flux_klein_convrot_hq", "flux_klein_precision", "flux_klein_policy",
+            "flux_klein_report", "flux_klein_scale_search", "flux_klein_w4_activation",
+            "flux_klein_no_strict",
             "ltx25_convrot_hq", "ltx25_variant", "ltx25_recipe", "ltx25_report", "ltx25_min_gemm",
         ]
         for action in self._all_actions:
