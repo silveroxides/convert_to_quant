@@ -152,3 +152,83 @@ def find_max_compatible_group_size(in_features: int, min_group_size: int = 256) 
             return group_size
         group_size //= 4
     return None
+
+
+def quantize_int4_rowwise(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Row-wise symmetric INT4 quantization: scale = absmax / 7, range [-7, 7].
+
+    Matches comfy-kitchen's ``quantize_signed_int4_rowwise`` formula exactly
+    so packed output round-trips against comfy-kitchen's kernels.
+
+    Args:
+        x: Shape (rows, cols), any float dtype.
+
+    Returns:
+        Tuple of (qdata, scale):
+        - qdata: torch.int8, same shape as x, values in [-7, 7] (unpacked, one byte per value).
+        - scale: torch.float32, shape (rows,).
+    """
+    absmax = x.abs().amax(dim=-1).clamp(min=1e-10)
+    scale = absmax / 7.0
+    qdata = (x / scale.unsqueeze(-1)).round().clamp(-7, 7).to(torch.int8)
+    return qdata, scale.to(torch.float32)
+
+
+def pack_int4_row_major(qdata: torch.Tensor) -> torch.Tensor:
+    """Pack signed int4 values (stored as int8 in [-7, 7]) 2-per-byte, row-major.
+
+    Even column index -> low nibble, odd column index -> high nibble.
+
+    Args:
+        qdata: torch.int8, shape (rows, cols), cols must be even.
+
+    Returns:
+        torch.int8, shape (rows, cols // 2).
+    """
+    if qdata.shape[-1] % 2 != 0:
+        raise ValueError(f"pack_int4_row_major requires an even number of columns, got {qdata.shape[-1]}")
+    low = qdata[..., 0::2].to(torch.uint8) & 0x0F
+    high = qdata[..., 1::2].to(torch.uint8) & 0x0F
+    packed = (low | (high << 4)).to(torch.int8)
+    return packed
+
+
+def unpack_int4_row_major(qdata_packed: torch.Tensor) -> torch.Tensor:
+    """Inverse of pack_int4_row_major.
+
+    Args:
+        qdata_packed: torch.int8, shape (rows, packed_cols).
+
+    Returns:
+        torch.int8, shape (rows, packed_cols * 2), values in [-7, 7].
+    """
+    packed_u8 = qdata_packed.to(torch.uint8)
+    low = packed_u8 & 0x0F
+    high = (packed_u8 >> 4) & 0x0F
+
+    def _to_signed_nibble(v: torch.Tensor) -> torch.Tensor:
+        # 4-bit two's complement: values 8-15 represent -8..-1
+        return torch.where(v >= 8, v.to(torch.int16) - 16, v.to(torch.int16)).to(torch.int8)
+
+    low_signed = _to_signed_nibble(low)
+    high_signed = _to_signed_nibble(high)
+
+    rows, packed_cols = qdata_packed.shape
+    out = torch.empty(rows, packed_cols * 2, dtype=torch.int8, device=qdata_packed.device)
+    out[..., 0::2] = low_signed
+    out[..., 1::2] = high_signed
+    return out
+
+
+def dequantize_int4_rowwise(qdata_packed: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """Unpack and dequantize row-wise INT4 data.
+
+    Args:
+        qdata_packed: torch.int8, shape (rows, packed_cols).
+        scale: torch.float32, shape (rows,).
+
+    Returns:
+        torch.float32, shape (rows, packed_cols * 2).
+    """
+    qdata = unpack_int4_row_major(qdata_packed)
+    return qdata.to(torch.float32) * scale.to(torch.float32).unsqueeze(-1)
