@@ -184,7 +184,12 @@ def convert_to_fp8_scaled(
     block_size = converter_kwargs.get("block_size") or format_block_sizes.get(target_format, 64)
 
     # Helper function to create converter for a specific format type
-    def create_converter_for_format(fmt: str, overrides: dict = None, is_primary: bool = True):
+    def create_converter_for_format(
+        fmt: str,
+        overrides: dict = None,
+        is_primary: bool = True,
+        primary_int8_convrot_compat: Optional[bool] = None,
+    ):
         """Create appropriate converter instance for the given format.
 
         Args:
@@ -195,6 +200,9 @@ def convert_to_fp8_scaled(
         """
         kwargs = converter_kwargs.copy()
         kwargs["target_format"] = fmt
+        if primary_int8_convrot_compat is None:
+            primary_int8_convrot_compat = bool(is_primary and fmt == "int8")
+        kwargs["primary_int8_convrot_compat"] = primary_int8_convrot_compat
 
         # Custom/fallback should NOT inherit global no_learned_rounding
         # They use their own --custom-simple / --fallback-simple flags
@@ -202,15 +210,21 @@ def convert_to_fp8_scaled(
             kwargs["no_learned_rounding"] = False  # Default to learned rounding
 
         if overrides:
-            kwargs.update(overrides)
+            kwargs.update({k: v for k, v in overrides.items() if k != "primary_int8_convrot_compat"})
 
         if fmt == "mxfp8":
             # MXFP8 has fixed block_size=32, remove incompatible kwargs
-            mxfp8_kwargs = {k: v for k, v in kwargs.items() if k not in ("target_format", "scaling_mode", "block_size")}
+            mxfp8_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ("target_format", "scaling_mode", "block_size", "primary_int8_convrot_compat")
+            }
             return LearnedMXFP8Converter(**mxfp8_kwargs)
         elif fmt == "nvfp4":
             # NVFP4 has fixed block_size=16, remove incompatible kwargs
-            nvfp4_kwargs = {k: v for k, v in kwargs.items() if k not in ("target_format", "scaling_mode", "block_size")}
+            nvfp4_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ("target_format", "scaling_mode", "block_size", "primary_int8_convrot_compat")
+            }
             return LearnedNVFP4Converter(**nvfp4_kwargs)
         else:
             return LearnedRoundingConverter(**kwargs)
@@ -464,7 +478,11 @@ def convert_to_fp8_scaled(
                 cfg_overrides["scaling_mode"] = cfg_scaling_mode
             if cfg_simple:
                 cfg_overrides["no_learned_rounding"] = True
-            converter = create_converter_for_format(layer_format, cfg_overrides if cfg_overrides else None)
+            converter = create_converter_for_format(
+                layer_format,
+                cfg_overrides if cfg_overrides else None,
+                primary_int8_convrot_compat=False,
+            )
         elif use_custom:
             converter = converters["custom"]
         elif use_fallback:
@@ -486,7 +504,16 @@ def convert_to_fp8_scaled(
         # Check if convrot was effectively applied by this converter
         convrot_applied = False
         convrot_group_size = 256
-        if hasattr(converter, "convrot") and getattr(converter, "convrot") and getattr(converter, "scaling_mode", "") == "row":
+        target_primary_int8_convrot = bool(
+            is_int8 and getattr(converter, "primary_int8_convrot_compat", False)
+            and not getattr(converter, "dynamic_convrot", False)
+        )
+        if (
+            not target_primary_int8_convrot
+            and hasattr(converter, "convrot")
+            and getattr(converter, "convrot")
+            and getattr(converter, "scaling_mode", "") == "row"
+        ):
             in_features = original_tensor.shape[1]
             dynamic_convrot = getattr(converter, "dynamic_convrot", False)
             if dynamic_convrot:
@@ -535,6 +562,12 @@ def convert_to_fp8_scaled(
             q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(
                 original_tensor, key=key, depth=depth, calibration_data=calibration_data, has_bias=has_bias
             )
+
+            if target_primary_int8_convrot:
+                applied_group = converter.last_primary_convrot_group_size
+                convrot_applied = applied_group is not None
+                if convrot_applied:
+                    convrot_group_size = applied_group
 
             # Cleanup calibration_data immediately if loaded from disk to prevent OOM
             if calib_data_loaded and calibration_data is not None:

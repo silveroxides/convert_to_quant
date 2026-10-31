@@ -167,6 +167,24 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 | **NVFP4 (4-bit)** | `--nvfp4` | Blackwell | Dual-scale optimization |
 | **MXFP8** | `--mxfp8` | Blackwell | Microscaling (E8M0) |
 
+### INT8 ConvRot
+
+Learned/AdaRound row-wise INT8 ConvRot:
+
+```bash
+ctq -i model.safetensors -o model-int8-convrot.safetensors --comfy_quant --save-quant-metadata --int8 --scaling-mode row --convrot --convrot-group-size 256
+```
+
+Add `--simple` to use direct row-wise INT8 quantization without learned/AdaRound optimization:
+
+```bash
+ctq -i model.safetensors -o model-int8-convrot-simple.safetensors --comfy_quant --save-quant-metadata --int8 --scaling-mode row --convrot --convrot-group-size 256 --simple
+```
+
+Group 256 remains the default when it divides the layer input width. Primary
+INT8 ConvRot layers otherwise use regular group 64 when compatible, including
+widths such as 2688.
+
 For a deep dive into how these formats work, see **[FORMATS.md](docs/FORMATS.md)**.
 
 ---
@@ -186,6 +204,7 @@ For a deep dive into how these formats work, see **[FORMATS.md](docs/FORMATS.md)
 | T5-XXL | `--t5xxl` | Decoder removed |
 | Hunyuan Video| `--hunyuan`| Attention norms excluded |
 | WAN Video | `--wan` | Time embeddings excluded |
+| MiniMax H3 | `--minimaxh3` | Patch, conditioning, final, time, and token-refiner layers kept high-precision |
 
 *(See `--help-filters` for a full list of presets)*
 

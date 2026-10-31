@@ -1,7 +1,10 @@
 import torch
 import pytest
 import math
-from convert_to_quant.converters.learned_rounding import LearnedRoundingConverter
+from convert_to_quant.converters.learned_rounding import (
+    LearnedRoundingConverter,
+    _quantize_convrot_int8_rowwise,
+)
 from convert_to_quant.comfy.quant_ops import TensorWiseINT8Layout
 from convert_to_quant.utils.convrot import build_hadamard, rotate_weight, rotate_activation
 
@@ -166,4 +169,121 @@ def test_dynamic_convrot_pipeline():
     assert qdata.shape == W_orig.shape
     assert qdata.dtype == torch.int8
     assert scale.shape == (128, 1)
+
+
+@pytest.mark.parametrize("group_size", [64, 256])
+@pytest.mark.parametrize("zero_rows", [False, True])
+def test_quantize_convrot_int8_rowwise_equations(group_size, zero_rows):
+    torch.manual_seed(group_size)
+    tensor = torch.randn(4, group_size, dtype=torch.float32)
+    if zero_rows:
+        tensor[0].zero_()
+
+    qdata, scale = _quantize_convrot_int8_rowwise(tensor)
+
+    expected_scale = (tensor.abs().amax(dim=-1, keepdim=True).float() / 127.0).clamp(min=1e-30)
+    scale_for_math = expected_scale.to(dtype=tensor.dtype)
+    scale_for_math = torch.where(
+        scale_for_math == 0,
+        torch.full_like(scale_for_math, torch.finfo(tensor.dtype).tiny),
+        scale_for_math,
+    )
+    expected_qdata = (tensor / scale_for_math).round().clamp(-128.0, 127.0).to(torch.int8)
+
+    assert torch.equal(qdata, expected_qdata)
+    assert torch.equal(scale, expected_scale)
+    assert scale.dtype == torch.float32
+    assert scale.shape == (tensor.shape[0], 1)
+
+
+@pytest.mark.parametrize(
+    ("width", "expected_group"),
+    [(512, 256), (2688, 64), (96, None)],
+)
+def test_primary_simple_convrot_applied_groups_and_incompatible_width(width, expected_group, monkeypatch):
+    torch.manual_seed(width)
+    weight = torch.randn(2, width, dtype=torch.float32)
+    applied_groups = []
+    original_rotate_weight = rotate_weight
+
+    def record_rotate_weight(tensor, hadamard, group_size):
+        applied_groups.append(group_size)
+        return original_rotate_weight(tensor, hadamard, group_size)
+
+    monkeypatch.setattr(
+        "convert_to_quant.utils.convrot.rotate_weight",
+        record_rotate_weight,
+    )
+    converter = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        convrot=True,
+        convrot_group_size=256,
+        primary_int8_convrot_compat=True,
+        no_learned_rounding=True,
+        device="cpu",
+    )
+
+    qdata, scale, dequantized, _ = converter.convert(weight, has_bias=False)
+
+    assert applied_groups == ([] if expected_group is None else [expected_group])
+    assert converter.last_primary_convrot_group_size == expected_group
+    assert qdata.dtype == torch.int8
+    assert scale.dtype == torch.float32
+    assert scale.shape == (weight.shape[0], 1)
+    assert torch.equal(dequantized, qdata.float() * scale)
+
+
+def test_primary_simple_convrot_zero_rows():
+    weight = torch.zeros(3, 2688, dtype=torch.float32)
+    converter = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        convrot=True,
+        convrot_group_size=256,
+        primary_int8_convrot_compat=True,
+        no_learned_rounding=True,
+        device="cpu",
+    )
+
+    qdata, scale, dequantized, _ = converter.convert(weight, has_bias=False)
+
+    assert converter.last_primary_convrot_group_size == 64
+    assert torch.count_nonzero(qdata) == 0
+    assert torch.equal(scale, torch.full((3, 1), 1e-30, dtype=torch.float32))
+    assert torch.count_nonzero(dequantized) == 0
+
+
+def test_primary_learned_convrot_group64_uses_optimizer(monkeypatch):
+    torch.manual_seed(1)
+    weight = torch.randn(2, 2688, dtype=torch.float32)
+    calibration = torch.randn(2, 2688, dtype=torch.float32)
+    converter = LearnedRoundingConverter(
+        target_format="int8",
+        scaling_mode="row",
+        convrot=True,
+        convrot_group_size=256,
+        primary_int8_convrot_compat=True,
+        no_learned_rounding=False,
+        num_iter=1,
+        device="cpu",
+    )
+    calls = []
+
+    def record_optimizer(tensor, qdata, scale, x_rot, y_ref):
+        calls.append((tensor.shape, x_rot.shape, y_ref.shape))
+        return qdata, scale
+
+    monkeypatch.setattr(converter, "_optimize_int8_adaround", record_optimizer)
+
+    _, scale, _, extra_tensors = converter.convert(
+        weight,
+        calibration_data=calibration,
+        has_bias=True,
+    )
+
+    assert converter.last_primary_convrot_group_size == 64
+    assert calls == [((2, 2688), (2, 2688), (2, 2))]
+    assert scale.shape == (2, 1)
+    assert "bias_correction" in extra_tensors
 

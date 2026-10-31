@@ -38,6 +38,22 @@ from ..utils.logging import (
 from .base_converter import BaseLearnedConverter
 
 
+def _quantize_convrot_int8_rowwise(
+    tensor: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize already-rotated weights with the ConvRot row-wise contract."""
+    abs_max = tensor.abs().amax(dim=-1, keepdim=True)
+    scale = (abs_max.float() / 127.0).clamp(min=1e-30)
+    scale_for_math = scale.to(device=tensor.device, dtype=tensor.dtype)
+    scale_for_math = torch.where(
+        scale_for_math == 0,
+        torch.full_like(scale_for_math, torch.finfo(tensor.dtype).tiny),
+        scale_for_math,
+    )
+    qdata = (tensor / scale_for_math).round().clamp(-128.0, 127.0).to(torch.int8)
+    return qdata, scale
+
+
 class LearnedRoundingConverter(BaseLearnedConverter):
     """
     Learned rounding converter for FP8 and INT8 quantization.
@@ -60,6 +76,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         convrot: bool = False,
         convrot_group_size: int = 256,
         dynamic_convrot: bool = False,
+        primary_int8_convrot_compat: bool = False,
         scale_optimization: str = "fixed",
         **kwargs,
     ):
@@ -85,6 +102,8 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         self.convrot = convrot
         self.convrot_group_size = convrot_group_size
         self.dynamic_convrot = dynamic_convrot
+        self.primary_int8_convrot_compat = primary_int8_convrot_compat
+        self.last_primary_convrot_group_size: Optional[int] = None
         if self.dynamic_convrot:
             self.convrot = True
         self.scale_optimization = scale_optimization
@@ -667,6 +686,7 @@ class LearnedRoundingConverter(BaseLearnedConverter):
         has_bias = kwargs.get("has_bias", True)
         self.has_bias = has_bias
         self._current_extra_tensors = {}
+        self.last_primary_convrot_group_size = None
 
         # 1. Initialize State
         attempt = 1
@@ -681,11 +701,19 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                 try:
                     # Clear current extra tensors at start of attempt
                     self._current_extra_tensors = {}
+                    self.last_primary_convrot_group_size = None
 
                     W_float32 = transfer_to_gpu_pinned(W_orig, self.device, COMPUTE_DTYPE)
 
                     # Determine if we should optimize
-                    if torch.all(W_float32 == 0):
+                    targeted_simple_convrot = (
+                        self.primary_int8_convrot_compat
+                        and self.target_format == "int8"
+                        and self.scaling_mode == "row"
+                        and self.convrot
+                        and self.no_learned_rounding
+                    )
+                    if torch.all(W_float32 == 0) and not targeted_simple_convrot:
                         verbose("  - Tensor is all zeros, skipping optimization.")
                         quantized_tensor = torch.zeros_like(W_float32, dtype=self.target_dtype)
                         dequant_scale = None
@@ -867,12 +895,16 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
         # Apply ConvRot if enabled and we're doing row-wise quantization
         convrot_applied = False
+        target_convrot_applied = False
         layer_group_size = self.convrot_group_size
         if self.convrot and self.scaling_mode == "row":
             M, N = W_float32.shape
             if self.dynamic_convrot:
                 from ..utils.convrot import find_max_compatible_group_size
                 layer_group_size = find_max_compatible_group_size(N, min_group_size=self.convrot_group_size)
+            elif self.primary_int8_convrot_compat:
+                from ..utils.convrot import resolve_int8_convrot_group_size
+                layer_group_size = resolve_int8_convrot_group_size(N, self.convrot_group_size)
 
             # Only apply if in_features is divisible by the group size
             if layer_group_size is not None and N % layer_group_size == 0:
@@ -881,6 +913,9 @@ class LearnedRoundingConverter(BaseLearnedConverter):
                     W_float32 = rotate_weight(W_float32, H, layer_group_size)
                     verbose(f"    - Applied ConvRot Hadamard rotation (group_size={layer_group_size}).")
                     convrot_applied = True
+                    if self.primary_int8_convrot_compat and not self.dynamic_convrot:
+                        target_convrot_applied = True
+                        self.last_primary_convrot_group_size = layer_group_size
                 except Exception as e:
                     verbose(f"    - WARNING: Failed to apply ConvRot: {e}")
             else:
@@ -912,8 +947,11 @@ class LearnedRoundingConverter(BaseLearnedConverter):
             scale = dequant_scale
         else:
             # Row-wise (default for TensorWiseINT8Layout if is_weight=True)
-            qdata, layout_params = TensorWiseINT8Layout.quantize(W_float32, is_weight=True)
-            scale = layout_params["scale"]
+            if target_convrot_applied and self.no_learned_rounding:
+                qdata, scale = _quantize_convrot_int8_rowwise(W_float32)
+            else:
+                qdata, layout_params = TensorWiseINT8Layout.quantize(W_float32, is_weight=True)
+                scale = layout_params["scale"]
 
         # Optional: Apply learned rounding optimization for INT8
         if not self.no_learned_rounding and self.num_iter > 0:

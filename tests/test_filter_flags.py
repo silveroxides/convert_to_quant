@@ -24,7 +24,7 @@ import unittest
 import torch
 from safetensors.torch import load_file, save_file
 
-from convert_to_quant.cli.main import extract_filter_flags
+from convert_to_quant.cli.main import extract_filter_flags, get_parser
 from convert_to_quant.formats.fp8_conversion import convert_to_fp8_scaled
 from convert_to_quant.formats.mxfp8_conversion import convert_to_mxfp8
 from convert_to_quant.formats.nvfp4_conversion import convert_to_nvfp4
@@ -78,6 +78,14 @@ def _build_model() -> dict:
     t["llm_adapter.proj.weight"] = torch.randn(64, 64)
     t["t_embedder.mlp.0.weight"] = torch.randn(64, 64)
     t["x_embedder.proj.weight"] = torch.randn(64, 64)
+
+    # ---- 2D weights that match MiniMax H3 highprec patterns ----
+    t["audio_patch_proj.weight"] = torch.randn(64, 64)
+    t["condition_proj.weight"] = torch.randn(64, 64)
+    t["final_layer.audio_out.weight"] = torch.randn(64, 64)
+    t["time_embedder.proj_in.weight"] = torch.randn(64, 64)
+    t["token_refiner.blocks.0.attn.qkv_proj.weight"] = torch.randn(64, 64)
+    t["video_patch_proj.weight"] = torch.randn(64, 64)
 
     # ---- 2D weights that match Qwen VLM exclude patterns ----
     t["model.layers.0.attn.weight"] = torch.randn(64, 64)
@@ -358,6 +366,40 @@ class TestFilterFlags(unittest.TestCase):
         for base in self.ANIMA_SKIPPED:
             self.assertFalse(_is_quantized(out, base), f"mxfp8 --anima: {base} should NOT be quantized")
             self.assertIn(f"{base}.weight", out)
+
+    MINIMAXH3_SKIPPED = [
+        "audio_patch_proj",
+        "condition_proj",
+        "final_layer.audio_out",
+        "time_embedder.proj_in",
+        "token_refiner.blocks.0.attn.qkv_proj",
+        "video_patch_proj",
+    ]
+
+    def test_fp8_minimaxh3_flag_skips_highprec_layers(self):
+        out = self._run_fp8({"minimaxh3": True})
+        for base in self.MINIMAXH3_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"--minimaxh3: {base} should NOT be quantized")
+            self.assertIn(f"{base}.weight", out)
+        self.assertTrue(_is_quantized(out, "transformer.blocks.2.attn.qkv"))
+
+    def test_minimaxh3_cli_flag_is_registered(self):
+        args = get_parser().parse_args(["-i", "model.safetensors", "--minimaxh3"])
+        self.assertTrue(args.minimaxh3)
+
+    def test_nvfp4_minimaxh3_flag_skips_highprec_layers(self):
+        out = self._run_nvfp4({"minimaxh3": True})
+        for base in self.MINIMAXH3_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"nvfp4 --minimaxh3: {base} should NOT be quantized")
+            self.assertIn(f"{base}.weight", out)
+        self.assertTrue(_is_quantized(out, "transformer.blocks.2.attn.qkv"))
+
+    def test_mxfp8_minimaxh3_flag_skips_highprec_layers(self):
+        out = self._run_mxfp8({"minimaxh3": True})
+        for base in self.MINIMAXH3_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"mxfp8 --minimaxh3: {base} should NOT be quantized")
+            self.assertIn(f"{base}.weight", out)
+        self.assertTrue(_is_quantized(out, "transformer.blocks.2.attn.qkv"))
 
     # ------------------------------------------------------------------
     # 5. --qwen35 filter (exclude) — all paths
