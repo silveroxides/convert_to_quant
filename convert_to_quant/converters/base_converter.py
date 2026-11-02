@@ -5,15 +5,20 @@ Provides shared infrastructure for LearnedRoundingConverter (FP8/INT8)
 and LearnedNVFP4Converter (NVFP4). Contains common initialization,
 SVD computation, LR scheduling, and early stopping logic.
 """
+
 import gc
 import math
-from abc import ABC, abstractmethod
-from typing import Tuple, Optional
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from typing import (
+    Dict,
+    Optional,
+    Tuple,
+)
 
 import torch
-
-from ..constants import COMPUTE_DTYPE, SCALE_DTYPE
-from ..pinned_transfer import transfer_to_gpu_pinned
 
 
 class BaseLearnedConverter(ABC):
@@ -31,17 +36,17 @@ class BaseLearnedConverter(ABC):
 
     def __init__(
         self,
-        optimizer: str = "original",
-        num_iter: int = 1000,
-        lr: float = 8.077300000003e-3,
-        top_p: float = 0.01,
-        min_k: int = 1,
-        max_k: int = 16,
+        optimizer: str = "prodigy",
+        num_iter: int = 2000,
+        lr: float = 1.0,
+        top_p: float = 0.2,
+        min_k: int = 128,
+        max_k: int = 1280,
         full_matrix: bool = False,
         no_learned_rounding: bool = False,
-        lr_schedule: str = "adaptive",
+        lr_schedule: str = "plateau",
         lr_gamma: float = 0.99,
-        lr_patience: int = 50,
+        lr_patience: int = 1,
         lr_factor: float = 0.95,
         lr_min: float = 1e-8,
         lr_cooldown: int = 0,
@@ -49,9 +54,18 @@ class BaseLearnedConverter(ABC):
         lr_adaptive_mode: str = "simple-reset",
         lr_shape_influence: float = 1.0,
         lr_threshold_mode: str = "rel",
-        early_stop_loss: float = 1e-8,
-        early_stop_lr: float = 1e-10,
-        early_stop_stall: int = 1000,
+        lr_small_mult: Optional[float] = None,
+        early_stop_loss: float = 5e-9,
+        early_stop_lr: float = 1.01e-8,
+        early_stop_stall: int = 2000,
+        device: Optional[str] = None,
+        # LoRA extraction parameters
+        extract_lora: bool = False,
+        lora_rank: int = 32,
+        lora_depth: int = 1,
+        lora_target: Optional[str] = None,
+        lora_ar_threshold: float = 0.0,
+        use_speed: bool = False,
         **kwargs,
     ):
         """
@@ -75,12 +89,17 @@ class BaseLearnedConverter(ABC):
             lr_adaptive_mode: Counter reset mode ("simple-reset", "no-reset")
             lr_shape_influence: Shape-aware LR scaling (0.0-1.0)
             lr_threshold_mode: Threshold mode ("rel", "abs")
+            lr_small_mult: Dimension-aware multiplier (default 1.0)
             early_stop_loss: Stop when loss drops below this
             early_stop_lr: Stop when LR drops below this
             early_stop_stall: Stop after this many steps without improvement
+            device: Device to use for optimization (default: auto-detect)
             **kwargs: Additional optimizer-specific parameters (e.g., lr)
         """
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device is not None:
+            self.device = device
+        else:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # SVD parameters
         self.top_p = top_p
@@ -90,6 +109,13 @@ class BaseLearnedConverter(ABC):
 
         # Optimizer configuration
         self.optimizer_choice = optimizer
+        self.use_speed = use_speed
+        if self.optimizer_choice == "prodigy":
+            try:
+                import prodigyplus.prodigy_plus_schedulefree
+            except ImportError:
+                raise ImportError("User needs to run `pip install prodigy-plus-schedule-free` to use the prodigy optimizer.")
+
         self.num_iter = num_iter
         self.lr = lr
         self.no_learned_rounding = no_learned_rounding
@@ -106,15 +132,131 @@ class BaseLearnedConverter(ABC):
         self.lr_adaptive_mode = lr_adaptive_mode
         self.lr_shape_influence = lr_shape_influence
         self.lr_threshold_mode = lr_threshold_mode
+        self.lr_small_mult = lr_small_mult
 
         # Early stopping thresholds
         self.early_stop_loss = early_stop_loss
         self.early_stop_lr = early_stop_lr
         self.early_stop_stall = early_stop_stall
 
-    def _compute_svd_components(
-        self, W_float32: torch.Tensor, verbose: bool = True
-    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        # LoRA extraction configuration
+        self.extract_lora = extract_lora
+        self.lora_rank = lora_rank
+        self.lora_depth = lora_depth
+        self.lora_ar_threshold = lora_ar_threshold
+        self.lora_target_regex = None
+        if lora_target:
+            import re
+
+            try:
+                self.lora_target_regex = re.compile(lora_target)
+            except re.error:
+                from ..utils.logging import warning
+
+                warning(f"      [LoRA] Invalid target regex '{lora_target}', ignoring.")
+
+    def _should_extract_lora(self, key: str, shape: torch.Size, depth: int = -1) -> bool:
+        """
+        Determine if LoRA should be extracted for the given layer.
+
+        Heuristics:
+        1. Explicitly enabled via self.extract_lora.
+        2. Key matches lora_target_regex (if provided).
+        3. Block index < lora_depth (e.g. .0. blocks).
+        4. Sensitive layers (qkv, proj, attn) that are not too skewed.
+        """
+        if not self.extract_lora:
+            return False
+
+        # 1. Explicit Regex Match
+        if self.lora_target_regex and self.lora_target_regex.search(key):
+            return True
+
+        # 2. Block Index Check
+        block_idx = depth
+        if block_idx == -1:
+            # Try to extract from key if not provided
+            import re
+
+            block_match = re.search(r"\.(\d+)\.", key)
+            if block_match:
+                block_idx = int(block_match.group(1))
+
+        if block_idx != -1:
+            # Global Depth Limit: depth=1 targets only block 0
+            if block_idx >= self.lora_depth:
+                return False
+
+            # Calculate Aspect Ratio
+            if len(shape) >= 2:
+                rows, cols = shape[0], shape[1]
+                ar = max(rows, cols) / min(rows, cols)
+
+                # 3. User Aspect Ratio Threshold Override (LESS THAN targets square layers)
+                if self.lora_ar_threshold > 0.0:
+                    return ar < self.lora_ar_threshold
+
+                # Case 3: AR > 4.0 -> Too large. Never extract (default logic).
+                if ar > 4.0:
+                    return False
+
+                # Case 1: AR < 3.0 -> Safe zone. Extract if below depth (default logic).
+                if ar < 3.0:
+                    return True
+
+                # Case 2: 3.0 <= AR <= 4.0 -> Marginal zone.
+                # Extract if Block 0 OR specific sensitive type (QKV/Attn).
+                if block_idx == 0:
+                    return True
+
+                k_lower = key.lower()
+                if "qkv" in k_lower or "attn" in k_lower or "proj" in k_lower:
+                    return True
+
+                return False
+
+        return False
+
+    def _extract_error_lora(self, W_orig: torch.Tensor, W_dequant: torch.Tensor) -> Optional[Dict[str, torch.Tensor]]:
+        """
+        Extract quantization error into low-rank components (U, V).
+        Error = W_orig - W_dequant
+        """
+        if self.lora_rank <= 0:
+            return None
+
+        with torch.no_grad():
+            # Ensure everything is on same device and float32 for SVD
+            error = (W_orig - W_dequant).to(device=W_orig.device, dtype=torch.float32)
+
+            # Flatten if necessary (for convs)
+            if error.ndim > 2:
+                error = error.flatten(1)
+
+            M, N = error.shape
+            actual_rank = min(self.lora_rank, M, N)
+
+            if actual_rank <= 0:
+                return None
+
+            try:
+                # Use svd_lowrank for efficiency
+                U, S, V = torch.svd_lowrank(error, q=actual_rank, niter=4)
+
+                # LoRA Up = U * diag(S)
+                # LoRA Down = V^T
+                # Return as float16 CPU tensors for storage efficiency
+                return {
+                    "lora_up": (U @ torch.diag(S)).to(torch.float32).cpu().contiguous(),
+                    "lora_down": V.t().to(torch.float32).cpu().contiguous()
+                }
+            except Exception as e:
+                from ..utils.logging import warning
+
+                warning(f"      [LoRA] SVD failed for error extraction: {e}")
+                return None
+
+    def _compute_svd_components(self, W_float32: torch.Tensor, verbose: bool = True) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
         Compute SVD components for optimization.
 
@@ -151,13 +293,8 @@ class BaseLearnedConverter(ABC):
         return U[:, :k], Vh[:k, :], k
 
     def _adaptive_lr_update_cosine(
-        self,
-        curr_lr: float,
-        improved: bool,
-        worse_loss_counter: int,
-        iteration: int,
-        tensor_shape: Tuple[int, int],
-        min_lr: float = 1e-10,
+        self, curr_lr: float, improved: bool, worse_loss_counter: int, iteration: int, tensor_shape: Tuple[int, int],
+        min_lr: float = 1e-10, small_mult: float = 1.0
     ) -> Tuple[float, bool]:
         """
         Cosine-based adaptive LR update with shape-awareness.
@@ -180,7 +317,7 @@ class BaseLearnedConverter(ABC):
         Replace the existing tier-based if/elif chain with:
             new_lr, lr_updated = self._adaptive_lr_update_cosine(
                 curr_lr, improved, worse_loss_counter, iteration,
-                (M, N), self.early_stop_lr
+                (M, N), self.early_stop_lr, small_mult
             )
             if lr_updated:
                 curr_lr = new_lr
@@ -192,6 +329,7 @@ class BaseLearnedConverter(ABC):
             iteration: Current optimization iteration
             tensor_shape: (M, N) dimensions of weight tensor
             min_lr: Minimum allowed learning rate
+            small_mult: Dimension-aware multiplier (default 1.0)
 
         Returns:
             Tuple of (new_lr, lr_was_updated)
@@ -215,6 +353,9 @@ class BaseLearnedConverter(ABC):
             # This prevents compounding boosts when already improving rapidly.
             boost_mult = 1.0 + scaled_distance * (1.0 - u_factor)
 
+            # Apply small_mult
+            boost_mult *= small_mult
+
             new_lr = min(curr_lr * boost_mult, 100.0)
             return new_lr, True
         else:
@@ -230,12 +371,14 @@ class BaseLearnedConverter(ABC):
             max_decay = 0.995
 
             decay_mult = min_decay + (max_decay - min_decay) * u_factor
+
+            # Apply small_mult
+            decay_mult *= small_mult
+
             new_lr = max(curr_lr * decay_mult, min_lr)
             return new_lr, True
 
-    def _compute_shape_aware_plateau_params(
-        self, M: int, N: int
-    ) -> Tuple[int, float, int]:
+    def _compute_shape_aware_plateau_params(self, M: int, N: int) -> Tuple[int, float, int]:
         """
         Compute shape-aware parameters for plateau LR schedule.
 
@@ -253,7 +396,7 @@ class BaseLearnedConverter(ABC):
 
             effective_patience = self.lr_patience
             raw_factor = self.lr_factor
-            aggressive_factor = raw_factor ** ar_factor
+            aggressive_factor = raw_factor**ar_factor
             effective_factor = raw_factor + (aggressive_factor - raw_factor) * blend
             effective_cooldown = self.lr_cooldown
         else:
@@ -263,9 +406,7 @@ class BaseLearnedConverter(ABC):
 
         return effective_patience, effective_factor, effective_cooldown
 
-    def _check_improvement(
-        self, current_loss: float, best_loss: float
-    ) -> bool:
+    def _check_improvement(self, current_loss: float, best_loss: float) -> bool:
         """
         Check if current loss is a significant improvement.
 
@@ -294,14 +435,16 @@ class BaseLearnedConverter(ABC):
             torch.cuda.empty_cache()
 
     @abstractmethod
-    def convert(self, W_orig: torch.Tensor) -> Tuple:
+    def convert(self, W_orig: torch.Tensor, key: Optional[str] = None, depth: int = -1, **kwargs) -> Tuple:
         """
         Convert tensor to quantized format.
 
         Args:
             W_orig: Input tensor (2D)
+            key: Layer name for filtering/heuristics
+            depth: Block depth for filtering
 
         Returns:
-            Tuple of quantized tensors (format-specific)
+            Tuple of quantized tensors (format-specific) + optional extra_tensors dict
         """
         pass

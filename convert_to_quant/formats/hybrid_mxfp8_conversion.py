@@ -9,16 +9,18 @@ standard MXFP8 models. This allows for a performant fallback on GPUs that
 don't support native MXFP8 (e.g., Ada Lovelace/SM 8.9) by using the
 tensorwise scale for standard FP8 matmul.
 """
-import os
+
 import json
+import os
+from typing import Any, Dict, Optional
+
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from typing import Dict, Optional, Any
 
 from ..utils.float_utils import e8m0_to_f32
+from ..utils.logging import error, info, verbose, warning
 from ..utils.tensor_utils import dict_to_tensor, tensor_to_dict
-from ..utils.logging import info, warning, error, verbose
 
 
 def _compute_tensorwise_scale(block_scales: torch.Tensor) -> torch.Tensor:
@@ -51,11 +53,7 @@ def _compute_tensorwise_scale(block_scales: torch.Tensor) -> torch.Tensor:
     return max_scale.to(torch.float32).reshape(())
 
 
-def convert_to_hybrid_mxfp8(
-    input_file: str,
-    output_file: str,
-    tensor_scales_path: Optional[str] = None,
-) -> None:
+def convert_to_hybrid_mxfp8(input_file: str, output_file: str, tensor_scales_path: Optional[str] = None) -> None:
     """
     Convert an MXFP8 model to Hybrid MXFP8 format.
 
@@ -84,7 +82,7 @@ def convert_to_hybrid_mxfp8(
         with safe_open(tensor_scales_path, framework="pt", device="cpu") as f:
             for k in f.keys():
                 if k.endswith(".weight_scale"):
-                    base = k[:-13] # remove .weight_scale
+                    base = k[:-13]  # remove .weight_scale
                     tensor_scales[base] = f.get_tensor(k)
         info(f"Loaded {len(tensor_scales)} scales from external model")
 

@@ -3,13 +3,16 @@ Unified safetensors loader with optional memory-efficient mode.
 
 Provides a consistent interface for tensor loading regardless of mode.
 """
+
 import gc
-import mmap
 import json
+import mmap
 import struct
+from typing import Dict, Optional
+
 import torch
 from safetensors import safe_open
-from typing import Dict, Optional
+
 
 class UnifiedSafetensorsLoader:
     """Unified safetensors loader supporting both preload and streaming modes.
@@ -61,6 +64,7 @@ class UnifiedSafetensorsLoader:
                 self._all_keys = list(f.keys())
                 print(f"Loading {len(self._all_keys)} tensors from source file...")
                 from tqdm import tqdm
+
                 for key in tqdm(self._all_keys, desc="Loading tensors"):
                     self._tensors[key] = f.get_tensor(key)
 
@@ -166,18 +170,7 @@ class UnifiedSafetensorsLoader:
     @staticmethod
     def _get_torch_dtype(dtype_str: str) -> torch.dtype:
         """Map safetensors dtype string to torch dtype."""
-        dtype_map = {
-            "F64": torch.float64,
-            "F32": torch.float32,
-            "F16": torch.float16,
-            "BF16": torch.bfloat16,
-            "I64": torch.int64,
-            "I32": torch.int32,
-            "I16": torch.int16,
-            "I8": torch.int8,
-            "U8": torch.uint8,
-            "BOOL": torch.bool,
-        }
+        dtype_map = {"F64": torch.float64, "F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16, "I64": torch.int64, "I32": torch.int32, "I16": torch.int16, "I8": torch.int8, "U8": torch.uint8, "BOOL": torch.bool}
         if hasattr(torch, "float8_e5m2"):
             dtype_map["F8_E5M2"] = torch.float8_e5m2
         if hasattr(torch, "float8_e4m3fn"):

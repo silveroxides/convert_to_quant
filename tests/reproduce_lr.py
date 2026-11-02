@@ -1,6 +1,6 @@
-
-import sys
 import math
+import sys
+
 
 class MockScheduler:
     def __init__(self, schedule_name, patience, cooldown, factor, shape_influence, aspect_ratio=1.0):
@@ -22,7 +22,7 @@ class MockScheduler:
             blend = shape_influence
             self.effective_patience = self.lr_patience
             raw_factor = self.lr_factor
-            aggressive_factor = raw_factor ** ar_factor
+            aggressive_factor = raw_factor**ar_factor
             self.effective_factor = raw_factor + (aggressive_factor - raw_factor) * blend
             self.effective_cooldown = self.lr_cooldown
         else:
@@ -52,10 +52,11 @@ class MockScheduler:
             return f"Wait ({self.plateau_counter}/{self.effective_patience})"
         elif self.lr_schedule == "exponential":
             old_lr = self.curr_lr
-            self.curr_lr = max(self.curr_lr * 0.99, self.lr_min) # Mock gamma 0.99
+            self.curr_lr = max(self.curr_lr * 0.99, self.lr_min)  # Mock gamma 0.99
             return f"EXP DECAY ({old_lr:.2e} -> {self.curr_lr:.2e})"
         else:
             return "Adaptive (Assume Update)"
+
 
 def test_repro():
     print("\n--- Test 1: User Case (Patience=3) ---")
@@ -72,6 +73,7 @@ def test_repro():
     s3 = MockScheduler("exponential", patience=3, cooldown=0, factor=0.96, shape_influence=10.5)
     for i in range(1, 4):
         print(f"S3.{i}: {s3.step(improved=False)}")
+
 
 if __name__ == "__main__":
     test_repro()
