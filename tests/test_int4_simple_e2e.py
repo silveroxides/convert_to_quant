@@ -82,6 +82,23 @@ def test_convert_to_int4_simple_e2e():
         assert meta_dict["format"] == "convrot_w4a4"
         assert meta_dict["convrot"] is True
         assert meta_dict["convrot_groupsize"] == 64
+        assert meta_dict["orig_dtype"] == "torch.bfloat16"
+
+        # Check safetensors header _quantization_metadata follows format_version 1.0 schema with "layers"
+        from safetensors import safe_open
+        import json
+        with safe_open(out_file, framework="pt") as f:
+            header_meta = f.metadata()
+            assert "_quantization_metadata" in header_meta
+            quant_meta = json.loads(header_meta["_quantization_metadata"])
+            assert quant_meta.get("format_version") == "1.0"
+            assert "layers" in quant_meta
+            assert "model.layers.0.attn.qkv" in quant_meta["layers"]
+            layer_entry = quant_meta["layers"]["model.layers.0.attn.qkv"]
+            assert layer_entry["format"] == "convrot_w4a4"
+            assert layer_entry["orig_dtype"] == "torch.bfloat16"
+            assert layer_entry["convrot"] is True
+            assert layer_entry["convrot_groupsize"] == 64
 
         # Norm weight (1D) preserved unquantized
         assert "model.layers.0.norm.weight" in out

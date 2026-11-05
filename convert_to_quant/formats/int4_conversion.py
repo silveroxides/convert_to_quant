@@ -122,6 +122,7 @@ def convert_to_int4(
     info(f"Found {total_weights} 2D weight tensors to process.")
 
     new_tensors: Dict[str, torch.Tensor] = {}
+    quant_metadata_layers: Optional[Dict[str, dict]] = {} if save_quant_metadata else None
     quantized_weight_keys = set()
     skipped_count = 0
     processed_count = 0
@@ -184,16 +185,29 @@ def convert_to_int4(
         new_tensors[f"{base_name}.weight_scale"] = scale.to(device="cpu", dtype=SCALE_DTYPE)
         quantized_weight_keys.add(key)
         processed_count += 1
+        quantized_orig_dtype = str(resolved_output_dtype)
+        used_group_size = converter.last_group_size or convrot_group_size
 
         if comfy_quant:
-            used_group_size = converter.last_group_size or convrot_group_size
             comfy_meta = create_comfy_quant_tensor(
                 "convrot_w4a4",
                 convrot=True,
                 convrot_groupsize=used_group_size,
                 full_precision_matrix_mult=full_precision_matrix_mult if full_precision_matrix_mult else None,
+                orig_dtype=quantized_orig_dtype,
             )
             new_tensors[f"{base_name}.comfy_quant"] = comfy_meta
+
+        if save_quant_metadata and quant_metadata_layers is not None:
+            meta_entry = {
+                "format": "convrot_w4a4",
+                "orig_dtype": quantized_orig_dtype,
+                "convrot": True,
+                "convrot_groupsize": used_group_size,
+            }
+            if full_precision_matrix_mult:
+                meta_entry["full_precision_matrix_mult"] = True
+            quant_metadata_layers[base_name] = meta_entry
 
         # Apply residual bias correction if generated
         if has_bias and "bias_correction" in extra_tensors:
@@ -225,21 +239,20 @@ def convert_to_int4(
     if cast_count > 0:
         info(f"Cast {cast_count} unquantized tensors to {resolved_output_dtype}.")
 
-    # Metadata assembly
+    # Normalize 1-element scale tensors if any
+    from ..constants import NORMALIZE_SCALES_ENABLED
+    from ..utils.tensor_utils import normalize_tensorwise_scales
+    new_tensors, _ = normalize_tensorwise_scales(new_tensors, NORMALIZE_SCALES_ENABLED)
+
+    # Metadata assembly matching ComfyUI format_version 1.0 schema
     final_meta = dict(existing_meta) if existing_meta else {}
-    if save_quant_metadata:
+    if save_quant_metadata and quant_metadata_layers:
         import json
-        quant_info = {
-            "format": "int4_convrot_w4a4",
-            "comfy_format": "convrot_w4a4",
-            "simple": simple,
-            "convrot": convrot,
-            "convrot_group_size": convrot_group_size,
-            "dynamic_convrot": dynamic_convrot,
-            "quantized_layers": processed_count,
-            "skipped_layers": skipped_count,
+        full_metadata = {
+            "format_version": "1.0",
+            "layers": quant_metadata_layers,
         }
-        final_meta["_quantization_metadata"] = json.dumps(quant_info)
+        final_meta["_quantization_metadata"] = json.dumps(full_metadata)
 
     loader.close()
     info(f"Saving {len(new_tensors)} tensors to {output_file}...")

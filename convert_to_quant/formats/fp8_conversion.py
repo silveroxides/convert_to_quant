@@ -575,6 +575,9 @@ def convert_to_fp8_scaled(
                 convrot_group_size = getattr(converter, "convrot_group_size", 256)
                 if in_features % convrot_group_size == 0:
                     convrot_applied = True
+        elif is_int4:
+            convrot_applied = getattr(converter, "convrot", True)
+            convrot_group_size = getattr(converter, "last_group_size", None) or getattr(converter, "convrot_group_size", 64)
 
         # Check if the layer actually has a bias in the original model
         temp_base_name = key[:key.rfind(".weight")]
