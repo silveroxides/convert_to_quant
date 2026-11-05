@@ -37,6 +37,8 @@ EXPERIMENTAL_ARGS = {
     "layer_config",
     "layer_config_fullmatch",
     "exclude_layers",
+    "output_dtype",
+    "preserve_layers",
     "scaling_mode",
     "block_size",
     "input_scales_path",
@@ -272,7 +274,9 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("Fallback Layer Options:")
         print("-" * 40)
 
-        fallback_args = ["exclude_layers", "fallback", "fallback_block_size", "fallback_simple"]
+        fallback_args = [
+            "exclude_layers", "output_dtype", "preserve_layers", "fallback", "fallback_block_size", "fallback_simple"
+        ]
         for action in self._all_actions:
             if self._get_dest_name(action) in fallback_args:
                 line = self._format_action_help(action)

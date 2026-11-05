@@ -10,41 +10,19 @@ Use --simple to switch to raw NVFP4Converter.
 
 import gc
 import os
-from typing import (
-    Dict,
-    Optional,
-)
+from typing import Dict, Optional
 
 import torch
 from safetensors.torch import save_file
 
-from ..constants import (
-    AVOID_KEY_NAMES,
-    COMPUTE_DTYPE,
-    FP4_BLOCK_SIZE,
-    MODEL_FILTERS,
-    NORMALIZE_SCALES_ENABLED,
-)
+from ..constants import AVOID_KEY_NAMES, COMPUTE_DTYPE, FP4_BLOCK_SIZE, NORMALIZE_SCALES_ENABLED, resolve_model_filter_patterns
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..converters.nvfp4_converter import NVFP4Converter
-from ..utils.comfy_quant import (
-    should_skip_layer_for_performance,
-)
-from ..utils.logging import (
-    error,
-    info,
-    log_debug,
-    minimal,
-    verbose,
-    warning,
-)
-from ..utils.memory_efficient_loader import (
-    UnifiedSafetensorsLoader,
-)
-from ..utils.tensor_utils import (
-    dict_to_tensor,
-    normalize_tensorwise_scales,
-)
+from ..utils.comfy_quant import should_skip_layer_for_performance
+from ..utils.logging import error, info, log_debug, minimal, verbose, warning
+from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
+from ..utils.output_dtype import cast_unquantized_weights, compile_preserve_layers, resolve_output_dtype
+from ..utils.tensor_utils import dict_to_tensor, normalize_tensorwise_scales
 
 
 @log_debug
@@ -102,6 +80,8 @@ def convert_to_nvfp4(
     lora_save_path: Optional[str] = None,
     # Added for CLI compatibility
     lora_output: Optional[str] = None,
+    output_dtype: str = "bfloat16",
+    preserve_layers: Optional[str] = None,
 ) -> None:
     """
     Convert safetensors model to NVFP4 (FP4 E2M1) quantized format.
@@ -117,6 +97,14 @@ def convert_to_nvfp4(
     info(f"Block size: {FP4_BLOCK_SIZE}")
     info("-" * 60)
 
+    try:
+        resolved_output_dtype = resolve_output_dtype(output_dtype)
+        preserve_pattern = compile_preserve_layers(preserve_layers)
+    except ValueError as exc:
+        error(f"ERROR: {exc}")
+        return
+    quantized_orig_dtype = str(resolved_output_dtype)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     seed_device = "cpu"
     seed_generator = torch.Generator(device=seed_device)
@@ -127,14 +115,6 @@ def convert_to_nvfp4(
 
     # Use filter_flags dict passed from CLI (or empty if not provided)
     active_filters = filter_flags or {}
-
-    # Add patterns from active filters
-    for filter_name, is_active in active_filters.items():
-        if not is_active:
-            continue
-        cfg = MODEL_FILTERS[filter_name]
-        exclude_patterns.extend(cfg.get("exclude", []))
-        exclude_patterns.extend(cfg.get("highprec", []))
 
     # Compile --exclude-layers regex pattern
     exclude_regex_pattern = None
@@ -195,6 +175,7 @@ def convert_to_nvfp4(
     quant_metadata = {}
     quantized_count = 0
     skipped_count = 0
+    quantized_weight_keys = set()
 
     # Load tensors using unified loader (handles both standard and low-memory modes)
     try:
@@ -204,6 +185,8 @@ def convert_to_nvfp4(
         return
 
     all_keys = loader.keys()
+    for patterns in resolve_model_filter_patterns(active_filters, all_keys).values():
+        exclude_patterns.extend(patterns)
 
     # Read original file metadata to preserve during conversion
     original_metadata = loader.metadata()
@@ -314,6 +297,7 @@ def convert_to_nvfp4(
 
         # Store quantized data and scales (move to CPU for saving)
         output_tensors[key] = qdata.cpu()  # Packed uint8
+        quantized_weight_keys.add(key)
 
         # per_tensor_scale -> weight_scale_2 (scalar, matching NVIDIA format)
         output_tensors[f"{base_key}.weight_scale_2"] = per_tensor_scale.cpu().to(torch.float32)
@@ -357,7 +341,7 @@ def convert_to_nvfp4(
         metadata = {
             "format": "nvfp4",
             "group_size": FP4_BLOCK_SIZE,
-            "orig_dtype": str(tensor.dtype),
+            "orig_dtype": quantized_orig_dtype,
             "orig_shape": list(tensor.shape)
         }
         output_tensors[f"{base_key}.comfy_quant"] = dict_to_tensor(metadata)
@@ -380,6 +364,16 @@ def convert_to_nvfp4(
     for key in all_keys:
         if key not in output_tensors:
             output_tensors[key] = loader.get_tensor(key)
+
+    cast_count = cast_unquantized_weights(
+        output_tensors,
+        quantized_weight_keys,
+        resolved_output_dtype,
+        preserve_pattern,
+        active_filters,
+    )
+    if cast_count:
+        info(f"Converted {cast_count} unquantized 2D weight tensors to the output dtype policy")
 
     # Close loader
     loader.close()

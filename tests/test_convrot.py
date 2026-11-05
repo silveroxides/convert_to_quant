@@ -1,6 +1,11 @@
 import torch
 import pytest
-from convert_to_quant.utils.convrot import build_hadamard, rotate_weight, rotate_activation
+from convert_to_quant.utils.convrot import (
+    build_hadamard,
+    resolve_int8_convrot_group_size,
+    rotate_activation,
+    rotate_weight,
+)
 from convert_to_quant.utils.tensor_utils import prepare_calibration_data
 
 
@@ -61,4 +66,16 @@ def test_prepare_calibration_data():
         W, X, convrot=False, convrot_group_size=4, device="cpu", calib_scale=0.01
     )
     assert X_rot_scaled_min.shape == (1, 16)
+
+
+def test_resolve_int8_convrot_group_size_exact_cases():
+    assert resolve_int8_convrot_group_size(512, 256) == 256
+    assert resolve_int8_convrot_group_size(4096, 256) == 256
+    assert resolve_int8_convrot_group_size(2688, 256) == 64
+    assert resolve_int8_convrot_group_size(1152, 256) == 64
+    assert resolve_int8_convrot_group_size(96, 256) is None
+    assert resolve_int8_convrot_group_size(1024, 64) == 64
+    assert resolve_int8_convrot_group_size(768, 1024) is None
+    assert resolve_int8_convrot_group_size(1024, 512) == 512
+    assert resolve_int8_convrot_group_size(768, 512) is None
 

@@ -24,7 +24,7 @@ import unittest
 import torch
 from safetensors.torch import load_file, save_file
 
-from convert_to_quant.cli.main import extract_filter_flags
+from convert_to_quant.cli.main import extract_filter_flags, get_parser
 from convert_to_quant.formats.fp8_conversion import convert_to_fp8_scaled
 from convert_to_quant.formats.mxfp8_conversion import convert_to_mxfp8
 from convert_to_quant.formats.nvfp4_conversion import convert_to_nvfp4
@@ -58,7 +58,7 @@ def _build_model() -> dict:
       - Several 2D .weight tensors (quantizable)
       - 1D / 3D / 4D tensors (must never be quantized)
       - Layer names covering: normal layers, AVOID_KEY_NAMES hits,
-        custom filter patterns (for anima, qwen35, t5xxl)
+        custom filter patterns (for anima, Qwen VLM, t5xxl)
     """
     t = {}
 
@@ -79,18 +79,29 @@ def _build_model() -> dict:
     t["t_embedder.mlp.0.weight"] = torch.randn(64, 64)
     t["x_embedder.proj.weight"] = torch.randn(64, 64)
 
-    # ---- 2D weights that match qwen35 exclude patterns ----
-    # ".layers.0."  ".layers.63."  "lm_head"  "embed_tokens"
-    # "in_proj_a"   "in_proj_b"    "merger"   "mtp.fc"
-    # "visual.pos_embed"  "visual.patch_embed"  "visual.blocks.0."
+    # ---- 2D weights that match MiniMax H3 highprec patterns ----
+    t["audio_patch_proj.weight"] = torch.randn(64, 64)
+    t["condition_proj.weight"] = torch.randn(64, 64)
+    t["final_layer.audio_out.weight"] = torch.randn(64, 64)
+    t["time_embedder.proj_in.weight"] = torch.randn(64, 64)
+    t["token_refiner.blocks.0.attn.qkv_proj.weight"] = torch.randn(64, 64)
+    t["video_patch_proj.weight"] = torch.randn(64, 64)
+
+    # ---- 2D weights that match Qwen VLM exclude patterns ----
     t["model.layers.0.attn.weight"] = torch.randn(64, 64)
     t["model.layers.63.attn.weight"] = torch.randn(64, 64)
+    t["model.language_model.layers.0.attn.weight"] = torch.randn(64, 64)
+    t["model.language_model.layers.34.attn.weight"] = torch.randn(64, 64)
+    t["model.language_model.layers.35.attn.weight"] = torch.randn(64, 64)
     t["lm_head.weight"] = torch.randn(64, 64)
     t["embed_tokens.weight"] = torch.randn(64, 64)
     t["in_proj_a.weight"] = torch.randn(64, 64)
     t["in_proj_b.weight"] = torch.randn(64, 64)
-    t["merger.dense.weight"] = torch.randn(64, 64)
+    t["visual.merger.dense.weight"] = torch.randn(64, 64)
+    t["model.visual.deepstack_merger_list.2.linear_fc1.weight"] = torch.randn(64, 64)
+    t["model.visual.blocks.23.attn.weight"] = torch.randn(64, 64)
     t["mtp.fc.weight"] = torch.randn(64, 64)
+    t["model.mtp.layers.2.attn.weight"] = torch.randn(64, 64)
     t["visual.pos_embed.weight"] = torch.randn(64, 64)
     t["visual.patch_embed.proj.weight"] = torch.randn(64, 64)
     t["visual.blocks.0.attn.weight"] = torch.randn(64, 64)
@@ -353,12 +364,67 @@ class TestFilterFlags(unittest.TestCase):
             self.assertFalse(_is_quantized(out, base), f"mxfp8 --anima: {base} should NOT be quantized")
             self.assertIn(f"{base}.weight", out)
 
+    MINIMAXH3_SKIPPED = [
+        "audio_patch_proj",
+        "condition_proj",
+        "final_layer.audio_out",
+        "time_embedder.proj_in",
+        "token_refiner.blocks.0.attn.qkv_proj",
+        "video_patch_proj",
+    ]
+
+    def test_fp8_minimaxh3_flag_skips_highprec_layers(self):
+        out = self._run_fp8({"minimaxh3": True})
+        for base in self.MINIMAXH3_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"--minimaxh3: {base} should NOT be quantized")
+            self.assertIn(f"{base}.weight", out)
+        self.assertTrue(_is_quantized(out, "transformer.blocks.2.attn.qkv"))
+
+    def test_minimaxh3_cli_flag_is_registered(self):
+        args = get_parser().parse_args(["-i", "model.safetensors", "--minimaxh3"])
+        self.assertTrue(args.minimaxh3)
+
+    def test_nvfp4_minimaxh3_flag_skips_highprec_layers(self):
+        out = self._run_nvfp4({"minimaxh3": True})
+        for base in self.MINIMAXH3_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"nvfp4 --minimaxh3: {base} should NOT be quantized")
+            self.assertIn(f"{base}.weight", out)
+        self.assertTrue(_is_quantized(out, "transformer.blocks.2.attn.qkv"))
+
+    def test_mxfp8_minimaxh3_flag_skips_highprec_layers(self):
+        out = self._run_mxfp8({"minimaxh3": True})
+        for base in self.MINIMAXH3_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"mxfp8 --minimaxh3: {base} should NOT be quantized")
+            self.assertIn(f"{base}.weight", out)
+        self.assertTrue(_is_quantized(out, "transformer.blocks.2.attn.qkv"))
+
     # ------------------------------------------------------------------
     # 5. --qwen35 filter (exclude) — all paths
     # ------------------------------------------------------------------
 
-    QWEN35_SKIPPED = ["model.layers.0.attn", "model.layers.63.attn", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "merger.dense", "mtp.fc", "visual.pos_embed", "visual.patch_embed.proj", "visual.blocks.0.attn"]
-    QWEN35_KEPT = ["transformer.blocks.2.attn.qkv", "net.blocks.2.attn"]
+    QWEN35_SKIPPED = [
+        "model.layers.0.attn",
+        "model.layers.63.attn",
+        "model.language_model.layers.0.attn",
+        "model.language_model.layers.35.attn",
+        "lm_head",
+        "embed_tokens",
+        "in_proj_a",
+        "in_proj_b",
+        "visual.merger.dense",
+        "model.visual.deepstack_merger_list.2.linear_fc1",
+        "model.visual.blocks.23.attn",
+        "mtp.fc",
+        "model.mtp.layers.2.attn",
+        "visual.pos_embed",
+        "visual.patch_embed.proj",
+        "visual.blocks.0.attn",
+    ]
+    QWEN35_KEPT = [
+        "transformer.blocks.2.attn.qkv",
+        "net.blocks.2.attn",
+        "model.language_model.layers.34.attn",
+    ]
 
     def test_fp8_qwen35_flag_skips_excluded_layers(self):
         out = self._run_fp8({"qwen35": True, "generic_text": True})
@@ -371,6 +437,13 @@ class TestFilterFlags(unittest.TestCase):
         out = self._run_fp8({"qwen35": True, "generic_text": True})
         for base in self.QWEN35_KEPT:
             self.assertTrue(_is_quantized(out, base), f"--qwen35: {base} should still be quantized")
+
+    def test_fp8_qwen_vlm_flag_matches_qwen35_alias(self):
+        out = self._run_fp8({"qwen_vlm": True, "generic_text": True})
+        for base in self.QWEN35_SKIPPED:
+            self.assertFalse(_is_quantized(out, base), f"--qwen_vlm: {base} should NOT be quantized")
+        for base in self.QWEN35_KEPT:
+            self.assertTrue(_is_quantized(out, base), f"--qwen_vlm: {base} should still be quantized")
 
     def test_nvfp4_qwen35_flag_skips_excluded_layers(self):
         out = self._run_nvfp4({"qwen35": True, "generic_text": True})
@@ -405,6 +478,21 @@ class TestFilterFlags(unittest.TestCase):
 
         self.assertTrue(flags.get("qwen35"), "qwen35 must be True in flags")
         self.assertTrue(flags.get("generic_text"), "generic_text must be auto-injected when qwen35 is set")
+
+    def test_extract_filter_flags_qwen_vlm_injects_generic_text(self):
+        import types
+
+        from convert_to_quant.constants import MODEL_FILTERS
+
+        ns = types.SimpleNamespace()
+        for name in MODEL_FILTERS.keys():
+            setattr(ns, name, False)
+        setattr(ns, "qwen_vlm", True)
+
+        flags = extract_filter_flags(ns)
+
+        self.assertTrue(flags.get("qwen_vlm"))
+        self.assertTrue(flags.get("generic_text"))
 
     def test_extract_filter_flags_no_alias_without_qwen35(self):
         """generic_text must NOT be injected when qwen35 is not set."""
@@ -514,8 +602,7 @@ class TestFilterFlags(unittest.TestCase):
     # 12. Dimension shapes are preserved for skipped layers
     # ------------------------------------------------------------------
 
-    def test_fp8_skipped_layer_weight_shape_preserved(self):
-        """Skipped layers must be written with their original shape and dtype."""
+    def test_fp8_skipped_layer_weight_shape_and_output_dtype(self):
         model = _build_model()
         out = self._run_fp8({"anima": True})
 
@@ -524,7 +611,7 @@ class TestFilterFlags(unittest.TestCase):
             if key in model:
                 orig = model[key]
                 self.assertEqual(out[key].shape, orig.shape, f"Shape mismatch for skipped {key}")
-                self.assertEqual(out[key].dtype, orig.dtype, f"Dtype mismatch for skipped {key}")
+                self.assertEqual(out[key].dtype, torch.bfloat16, f"Output dtype mismatch for skipped {key}")
 
     def test_fp8_3d_4d_shape_preserved(self):
         """3D and 4D tensors must be copied with original shape and dtype."""

@@ -98,7 +98,7 @@ def extract_filter_flags(args) -> dict:
             flags[name] = True
 
     # Text model aliases: these flags imply generic_text input_scale behavior
-    TEXT_MODEL_ALIASES = {"qwen35"}
+    TEXT_MODEL_ALIASES = {"qwen35", "qwen_vlm"}
     if any(flags.get(alias) for alias in TEXT_MODEL_ALIASES):
         flags["generic_text"] = True
 
@@ -171,6 +171,15 @@ def get_parser() -> MultiHelpArgumentParser:
     parser.add_argument(
         "--exclude-layers", "--exclude_layers", type=str, default=None, dest="exclude_layers",
         help="Regex pattern for layers to exclude from quantization (keep original precision or use fallback)."
+    )
+    parser.add_argument(
+        "--output-dtype", "--output_dtype", type=str, default="bfloat16", dest="output_dtype",
+        choices=["bfloat16", "float16"],
+        help="Compute dtype recorded for quantized layers and output dtype for unquantized 2D weights."
+    )
+    parser.add_argument(
+        "--preserve-layers", "--preserve_layers", type=str, default=None, dest="preserve_layers",
+        help="Regex for unquantized 2D weight keys that must retain their source dtype."
     )
     parser.add_argument(
         "--custom-type", "--custom_type", type=str, default=None, dest="custom_type", choices=["fp8", "int8", "mxfp8", "nvfp4"],
@@ -658,6 +667,8 @@ def run_conversion(args):
                 # Filter flags
                 filter_flags=filter_flags,
                 exclude_layers=args.exclude_layers,
+                output_dtype=args.output_dtype,
+                preserve_layers=args.preserve_layers,
                 # Quantization options
                 simple=args.simple,
                 num_iter=args.num_iter,
@@ -771,6 +782,8 @@ def run_conversion(args):
                 # Filter flags
                 filter_flags=filter_flags,
                 exclude_layers=args.exclude_layers,
+                output_dtype=args.output_dtype,
+                preserve_layers=args.preserve_layers,
                 # Quantization options
                 simple=args.simple,
                 num_iter=args.num_iter,
@@ -1044,6 +1057,8 @@ def run_conversion(args):
         # Custom layer options
         custom_layers=args.custom_layers,
         exclude_layers=args.exclude_layers,
+        output_dtype=args.output_dtype,
+        preserve_layers=args.preserve_layers,
         custom_type=args.custom_type,
         custom_block_size=args.custom_block_size,
         custom_scaling_mode=args.custom_scaling_mode,

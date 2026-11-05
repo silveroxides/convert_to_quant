@@ -126,6 +126,18 @@ def rotate_activation(
     return x_rot.view(orig_shape)
 
 
+def resolve_int8_convrot_group_size(
+    in_features: int,
+    requested_group_size: int,
+) -> int | None:
+    """Resolve the static ConvRot group for a primary row-wise INT8 layer."""
+    if in_features % requested_group_size == 0:
+        return requested_group_size
+    if requested_group_size == 256 and in_features % 64 == 0:
+        return 64
+    return None
+
+
 def find_max_compatible_group_size(in_features: int, min_group_size: int = 256) -> int | None:
     """Find the largest power of 4 group size >= min_group_size that divides in_features."""
     if in_features < min_group_size:

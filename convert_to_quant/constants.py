@@ -4,6 +4,8 @@ Constants and configuration values for convert_to_quant.
 Contains model-specific key name filters and dtype settings.
 """
 
+import re
+
 import torch
 
 # --- Model-specific exclusion lists (layers to skip quantization) ---
@@ -74,10 +76,10 @@ ANIMA_LAYER_KEYNAMES = [
     "net.blocks.0.", "net.blocks.1.adaln_modulation", "final_layer", "llm_adapter", "t_embedder", "x_embedder"
 ]
 LENS_LAYER_KEYNAMES = ["time_text_embed", "img_in", "norm_out", "proj_out", "img_mod.1", "txt_mod.1", "txt_in"]
-QWEN35_AVOID_KEY_NAMES = [
-    ".layers.0.", ".layers.63.", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "visual.pos_embed", "visual.patch_embed",
-    "merger", "mtp.fc", "visual.blocks.0."
+QWEN_VLM_AVOID_KEY_NAMES = [
+    ".layers.0.", "lm_head", "embed_tokens", "in_proj_a", "in_proj_b", "visual.", "mtp."
 ]
+QWEN35_AVOID_KEY_NAMES = QWEN_VLM_AVOID_KEY_NAMES
 LTXV2_LAYER_KEYNAMES = [
     "scale_shift_table",
     "text_embedding_projection",
@@ -112,6 +114,9 @@ BOOGU_LAYER_KEYNAMES = [
     "norm_out.linear_2"
 ]
 IDEOGRAM4_LAYER_KEYNAMES = ["embed_image_indicator", "t_embedding", "llm_cond_proj", "adaln_proj", "final_layer", "input_proj"]
+MINIMAXH3_LAYER_KEYNAMES = [
+    "audio_patch_proj", "condition_proj", "final_layer", "time_embedder", "token_refiner", "video_patch_proj"
+]
 
 # --- Model Filter Registry ---
 # Each entry maps a CLI flag (--radiance, --flux2, etc.) to its layer patterns.
@@ -130,10 +135,19 @@ MODEL_FILTERS = {
         "category": "text",
         "exclude": GEMMA4_AVOID_KEY_NAMES
     },
-    "qwen35": {
-        "help": "Qwen2.5 text/multimodal model: skip first/last layers, embeddings, visual components",
+    "qwen_vlm": {
+        "help": "Qwen VLM family: skip first/last language layers, embeddings, MTP, and the full visual encoder",
         "category": "text",
-        "exclude": QWEN35_AVOID_KEY_NAMES
+        "exclude": QWEN_VLM_AVOID_KEY_NAMES,
+        "exclude_final_language_layer": True,
+        "preserve_dtype": {
+            "bfloat16": [r".*"]
+        },
+    },
+    "qwen35": {
+        "help": "Compatibility alias for --qwen_vlm",
+        "category": "text",
+        "alias_for": "qwen_vlm",
     },
     "t5xxl": {
         "help": "T5-XXL text encoder: skip norms/biases, remove decoder layers",
@@ -199,7 +213,12 @@ MODEL_FILTERS = {
     "krea2": {
         "help": "Krea2: keep firs, las, tml, txtfusion, last.modulation, tpro layers high-precision",
         "category": "diffusion",
-        "highprec": KREA2_LAYER_KEYNAMES
+        "highprec": KREA2_LAYER_KEYNAMES,
+        "preserve_dtype": {
+            "float32": [
+                r"(?:^|\.)(?:first|last\.linear|tmlp\.(?:0|2)|tproj\.1|txtfusion\.projector|txtmlp\.(?:1|3))\.weight$"
+            ]
+        },
     },
     "ideogram4": {
         "help": "Ideogram4: keep embed_image_indicator, t_embedding, adaln_proj, final_layer, input_proj layers high-precision",
@@ -217,6 +236,11 @@ MODEL_FILTERS = {
         "help": "Hunyuan Video 1.5: skip layernorm, attn norms, vision_in",
         "category": "video",
         "exclude": HUNYUAN_AVOID_KEY_NAMES
+    },
+    "minimaxh3": {
+        "help": "MiniMax H3: keep patch/condition/final/time and token-refiner layers high-precision",
+        "category": "video",
+        "highprec": MINIMAXH3_LAYER_KEYNAMES
     },
     # Image Models
     "qwen": {
@@ -250,7 +274,44 @@ MODEL_FILTERS = {
 }
 
 
-def build_exclusion_patterns(active_filters: dict) -> tuple:
+def get_model_filter_config(filter_name: str) -> dict:
+    config = MODEL_FILTERS[filter_name]
+    alias_for = config.get("alias_for")
+    if alias_for:
+        return MODEL_FILTERS[alias_for]
+    return config
+
+
+def resolve_model_filter_patterns(active_filters: dict, tensor_keys=()) -> dict:
+    resolved = {}
+    language_layer_re = re.compile(
+        r"(?:^|\.)(?P<prefix>(?:model\.)?language_model\.layers|model\.layers)\.(?P<index>\d+)\."
+    )
+    tensor_keys = tuple(tensor_keys)
+
+    for name, enabled in active_filters.items():
+        if not enabled or name not in MODEL_FILTERS:
+            continue
+        config = get_model_filter_config(name)
+        patterns = list(config.get("exclude", [])) + list(config.get("highprec", []))
+
+        if config.get("exclude_final_language_layer"):
+            final_indices = {}
+            for key in tensor_keys:
+                match = language_layer_re.search(key)
+                if not match:
+                    continue
+                prefix = match.group("prefix")
+                index = int(match.group("index"))
+                final_indices[prefix] = max(index, final_indices.get(prefix, index))
+            patterns.extend(f"{prefix}.{index}." for prefix, index in final_indices.items())
+
+        resolved[name] = tuple(dict.fromkeys(patterns))
+
+    return resolved
+
+
+def build_exclusion_patterns(active_filters: dict, tensor_keys=()) -> tuple:
     """
     Build layer skip/remove patterns from active filter flags.
 
@@ -268,11 +329,9 @@ def build_exclusion_patterns(active_filters: dict) -> tuple:
     skip = []
     remove = []
 
-    for name, cfg in MODEL_FILTERS.items():
-        if active_filters.get(name, False):
-            skip.extend(cfg.get("exclude", []))
-            skip.extend(cfg.get("highprec", []))
-            remove.extend(cfg.get("remove", []))
+    for name, patterns in resolve_model_filter_patterns(active_filters, tensor_keys).items():
+        skip.extend(patterns)
+        remove.extend(get_model_filter_config(name).get("remove", []))
 
     return skip, skip, remove
 
