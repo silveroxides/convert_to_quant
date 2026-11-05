@@ -974,6 +974,12 @@ QUANT_ALGOS = {
         "asymmetric_layout": True,
     },
     "int8_tensorwise": {"storage_t": torch.int8, "parameters": {"weight_scale", "input_scale"}, "comfy_tensor_layout": "TensorWiseINT8Layout"},
+    "convrot_w4a4": {
+        "storage_t": torch.int8,
+        "parameters": {"weight_scale"},
+        "comfy_tensor_layout": "TensorCoreConvRotW4A4Layout",
+        "quantize_input": False,
+    },
 }
 
 LAYOUTS = {"TensorCoreFP8Layout": TensorCoreFP8Layout, "RowWiseFP8Layout": RowWiseFP8Layout, "BlockWiseFP8Layout": BlockWiseFP8Layout, "BlockWiseINT8Layout": BlockWiseINT8Layout, "TensorWiseINT8Layout": TensorWiseINT8Layout}
