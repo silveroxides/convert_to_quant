@@ -282,6 +282,10 @@ def get_parser() -> MultiHelpArgumentParser:
         "Store calibration data cache on CPU instead of disk (when using --low-memory). Always True if --low-memory is not used."
     )
     parser.add_argument(
+        "--calib-scale", "--calib_scale", type=float, default=1.0, dest="calib_scale",
+        help="Calibration sample scaling multiplier."
+    )
+    parser.add_argument(
         "--manual_seed", "--manual-seed", type=int, default=-1, dest="manual_seed",
         help="Set a manual seed for reproducibility. Use -1 for random."
     )
@@ -874,9 +878,9 @@ def run_conversion(args):
                 preserve_layers=args.preserve_layers,
                 simple=args.simple,
                 convrot=True,
-                convrot_group_size=args.convrot_group_size if args.convrot_group_size != 256 else 64,
+                convrot_group_size=args.convrot_group_size,
                 dynamic_convrot=args.dynamic_convrot,
-                calib_scale=args.calib_scale,
+                calib_scale=getattr(args, "calib_scale", 1.0),
                 device=args.device,
                 calib_samples=args.calib_samples,
                 seed=seed,
