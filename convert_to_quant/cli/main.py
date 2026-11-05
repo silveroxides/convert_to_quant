@@ -886,8 +886,7 @@ def run_conversion(args):
                 seed=seed,
                 comfy_quant=args.comfy_quant,
                 save_quant_metadata=args.save_quant_metadata,
-                full_precision_mm=args.full_precision_mm,
-                hp_filter=args.hp_filter,
+                full_precision_matrix_mult=args.full_precision_matrix_mult,
                 low_memory=args.low_memory,
             )
             return

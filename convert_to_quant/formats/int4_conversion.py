@@ -48,8 +48,7 @@ def convert_to_int4(
     # Metadata & preservation
     comfy_quant: bool = True,
     save_quant_metadata: bool = True,
-    full_precision_mm: bool = False,
-    hp_filter: bool = False,
+    full_precision_matrix_mult: bool = False,
     low_memory: bool = False,
     output_dtype: str = "bfloat16",
     preserve_layers: Optional[str] = None,
@@ -192,7 +191,7 @@ def convert_to_int4(
                 "convrot_w4a4",
                 convrot=True,
                 convrot_groupsize=used_group_size,
-                full_precision_matrix_mult=full_precision_mm if full_precision_mm else None,
+                full_precision_matrix_mult=full_precision_matrix_mult if full_precision_matrix_mult else None,
             )
             new_tensors[f"{base_name}.comfy_quant"] = comfy_meta
 
