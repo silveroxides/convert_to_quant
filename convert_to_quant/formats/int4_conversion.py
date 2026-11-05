@@ -115,6 +115,7 @@ def convert_to_int4(
         no_learned_rounding=simple,
         calib_scale=calib_scale,
         has_bias=True,
+        **kwargs,
     )
 
     weight_keys = sorted([k for k in all_keys if k.endswith(".weight") and loader.get_ndim(k) == 2])

@@ -266,16 +266,14 @@ def convert_to_fp8_scaled(
                 grp_size = 64
 
             int4_kwargs = {
-                "convrot": kwargs.get("convrot", True),
-                "convrot_group_size": grp_size,
-                "dynamic_convrot": kwargs.get("dynamic_convrot", True),
-                "device": kwargs.get("device"),
-                "no_learned_rounding": kwargs.get("no_learned_rounding", True),
-                "calib_scale": kwargs.get("calib_scale", 1.0),
-                "has_bias": True,
+                k: v for k, v in kwargs.items()
+                if k not in ("target_format", "scaling_mode", "block_size", "primary_int8_convrot_compat")
             }
+            int4_kwargs["convrot"] = True
+            int4_kwargs["convrot_group_size"] = grp_size
+            int4_kwargs["has_bias"] = True
             if overrides:
-                int4_kwargs.update({k: v for k, v in overrides.items() if k in int4_kwargs and k != "convrot_group_size"})
+                int4_kwargs.update({k: v for k, v in overrides.items() if k != "primary_int8_convrot_compat"})
             return INT4Converter(**int4_kwargs)
         else:
             return LearnedRoundingConverter(**kwargs)
