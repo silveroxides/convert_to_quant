@@ -392,6 +392,55 @@ class TestW4A8SkipExclusions(unittest.TestCase):
             base = "model.layers.0.mlp.up_proj"
             self.assertNotEqual(tuple(out[f"{base}.weight"].shape), (8, 256))
 
+    def test_vlm_pos_embed_left_unquantized(self):
+        """VLM pos_embed (SHAPE_PACKED_AVOID_KEY_NAMES) must stay raw in w4a8
+        even WITHOUT any filter flag, while a Linear weight is quantized.
+
+        Regression: Qwen3.5-VL model.visual.pos_embed.weight is a 2D Embedding
+        Parameter ([2304, 1024]) that AVOID_KEY_NAMES does not cover ("pos_embed"
+        absent) -> W4A8 packed it to [2304, 512] and ComfyUI failed to load.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = os.path.join(tmpdir, "input.safetensors")
+            output_path = os.path.join(tmpdir, "output.safetensors")
+            g = torch.Generator().manual_seed(7)
+            tensors = {
+                # VLM embedding-like 2D weights not covered by AVOID_KEY_NAMES
+                "model.visual.pos_embed.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "model.visual.pos_emb.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "model.visual.patch_embed.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "model.visual.patch_embedder.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                # Linear weight: must still be W4A8-quantized
+                "model.visual.blocks.0.mlp.up_proj.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+            }
+            save_file(tensors, input_path)
+            # No filter_flags: generic hardening must apply on its own
+            self._convert(input_path, output_path)
+            out = load_file(output_path)
+
+            # Embedding-like weights: raw passthrough (original dtype + FULL shape),
+            # no comfy_quant / contract side-tensors
+            for base in ("model.visual.pos_embed", "model.visual.pos_emb",
+                         "model.visual.patch_embed", "model.visual.patch_embedder"):
+                self.assertEqual(
+                    out[f"{base}.weight"].dtype, torch.bfloat16, f"{base}.weight must stay bfloat16"
+                )
+                self.assertEqual(
+                    tuple(out[f"{base}.weight"].shape), (8, 512), f"{base}.weight shape must be preserved"
+                )
+                self.assertNotIn(f"{base}.comfy_quant", out, f"{base} must not be quantized")
+                self.assertNotIn(f"{base}.weight_s_rel", out)
+
+            # Linear weight inside the visual tower is still W4A8-quantized:
+            # packed INT8 [N, K/2] + contract tensors
+            base = "model.visual.blocks.0.mlp.up_proj"
+            self.assertEqual(out[f"{base}.weight"].dtype, torch.int8)
+            self.assertEqual(tuple(out[f"{base}.weight"].shape), (8, 256))
+            config = tensor_to_dict(out[f"{base}.comfy_quant"])
+            self.assertEqual(config["format"], "asym_w4a8_int8")
+
 
 class TestLayerConfigFormatMapping(unittest.TestCase):
     def test_w4a8_in_valid_formats(self):

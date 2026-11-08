@@ -25,6 +25,7 @@ from ..constants import (
     INT8_SYMMETRIC_MAX,
     NORMALIZE_SCALES_ENABLED,
     SCALE_DTYPE,
+    SHAPE_PACKED_AVOID_KEY_NAMES,
     SHAPE_PACKED_FORMATS,
     T5XXL_REMOVE_KEY_NAMES,
     TARGET_FP8_DTYPE,
@@ -189,10 +190,12 @@ def convert_to_fp8_scaled(
     # can only be applied to Linear weights: seed AVOID_KEY_NAMES as base
     # exclusions for them (mirrors nvfp4/mxfp8 dedicated paths). Non-Linear
     # tensors (embeddings, norms, heads...) must never be packed, or the
-    # runtime cannot load the weights (size mismatch).
+    # runtime cannot load the weights (size mismatch). VLM embedding-like
+    # weights (pos_embed/pos_emb/patch_embed...) are covered by
+    # SHAPE_PACKED_AVOID_KEY_NAMES on top of AVOID_KEY_NAMES.
     if target_format in SHAPE_PACKED_FORMATS:
         resolved_filter_patterns = {
-            "avoid_key_names": tuple(AVOID_KEY_NAMES),
+            "avoid_key_names": tuple(AVOID_KEY_NAMES) + tuple(SHAPE_PACKED_AVOID_KEY_NAMES),
             **resolved_filter_patterns,
         }
 

@@ -404,6 +404,17 @@ ADAPTIVE_LR_TIERS_DECAY = [
 # Conversion paths must seed AVOID_KEY_NAMES as base exclusions for these.
 SHAPE_PACKED_FORMATS = {"w4a8"}
 
+# Embedding-like patterns that appear in VLM checkpoints (e.g. Qwen-VL
+# model.visual.pos_embed.weight, loaded as a raw Embedding Parameter by the
+# runtime) but are NOT covered by AVOID_KEY_NAMES. Seeded alongside
+# AVOID_KEY_NAMES as base exclusions for shape-packed formats only.
+SHAPE_PACKED_AVOID_KEY_NAMES = [
+    "pos_embed",
+    "pos_emb",
+    "patch_embed",
+    "patch_embedder",
+]
+
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
 VALID_QUANT_FORMATS = {
     "float8_e4m3fn",
