@@ -18,7 +18,11 @@ from .logging import error, info, minimal, verbose, warning
 from .tensor_utils import dict_to_tensor, normalize_tensorwise_scales, tensor_to_dict
 
 # Block-based formats that require group_size
-BLOCK_BASED_FORMATS = ("int8_blockwise", "float8_e4m3fn_blockwise")
+BLOCK_BASED_FORMATS = ("int8_blockwise", "float8_e4m3fn_blockwise", "asym_w4a8_int8")
+
+# Formats whose comfy_quant JSON must match a fixed runtime contract verbatim
+# (no extra keys like orig_dtype; see search-results/w4a8-convrot-contract-20261108.md)
+FIXED_CONTRACT_FORMATS = ("asym_w4a8_int8",)
 
 
 def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None, convrot: Optional[bool] = None, convrot_groupsize: Optional[int] = None, per_row: Optional[bool] = None, orig_dtype: Optional[str] = None) -> torch.Tensor:
@@ -39,14 +43,15 @@ def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None
     """
     comfy_quant = {"format": format_type}
 
-    if orig_dtype is not None:
+    if orig_dtype is not None and format_type not in FIXED_CONTRACT_FORMATS:
         comfy_quant["orig_dtype"] = orig_dtype
 
     # Add group_size directly (not nested in params) for block-based formats
     if block_size is not None and format_type in BLOCK_BASED_FORMATS:
         comfy_quant["group_size"] = block_size
 
-    if full_precision_matrix_mult is True:
+    if full_precision_matrix_mult is True and format_type not in FIXED_CONTRACT_FORMATS:
+        # Fixed-contract formats (asym_w4a8_int8) must stay byte-exact: no extra keys.
         comfy_quant["full_precision_matrix_mult"] = True
 
     if convrot is True:

@@ -17,10 +17,24 @@ import torch
 from safetensors.torch import save_file
 
 from ..config.layer_config import get_layer_settings
-from ..constants import COMPUTE_DTYPE, FP8_MAX, FP8_MIN, INT8_SYMMETRIC_MAX, NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, T5XXL_REMOVE_KEY_NAMES, TARGET_FP8_DTYPE, TARGET_INT8_DTYPE, resolve_model_filter_patterns
+from ..constants import (
+    AVOID_KEY_NAMES,
+    COMPUTE_DTYPE,
+    FP8_MAX,
+    FP8_MIN,
+    INT8_SYMMETRIC_MAX,
+    NORMALIZE_SCALES_ENABLED,
+    SCALE_DTYPE,
+    SHAPE_PACKED_FORMATS,
+    T5XXL_REMOVE_KEY_NAMES,
+    TARGET_FP8_DTYPE,
+    TARGET_INT8_DTYPE,
+    resolve_model_filter_patterns,
+)
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..converters.learned_rounding import LearnedRoundingConverter
+from ..converters.w4a8_convrot_converter import W4A8ConvRotConverter
 from ..utils.comfy_quant import create_comfy_quant_tensor, should_skip_layer_for_performance
 from ..utils.logging import error, info, log_debug, minimal, verbose, warning
 from ..utils.memory_efficient_loader import MemoryEfficientSafeOpen
@@ -39,6 +53,8 @@ def resolve_layer_config_format(fmt: str) -> str:
         return "nvfp4"
     elif fmt == "mxfp8":
         return "mxfp8"
+    elif fmt == "w4a8":
+        return "w4a8"
     else:
         return "fp8"  # fallback
 
@@ -169,6 +185,17 @@ def convert_to_fp8_scaled(
     all_keys = loader.keys()
     resolved_filter_patterns = resolve_model_filter_patterns(filter_flags, all_keys)
 
+    # Shape-packed formats (e.g. w4a8 packs two 4-bit codes per byte -> [N, K/2])
+    # can only be applied to Linear weights: seed AVOID_KEY_NAMES as base
+    # exclusions for them (mirrors nvfp4/mxfp8 dedicated paths). Non-Linear
+    # tensors (embeddings, norms, heads...) must never be packed, or the
+    # runtime cannot load the weights (size mismatch).
+    if target_format in SHAPE_PACKED_FORMATS:
+        resolved_filter_patterns = {
+            "avoid_key_names": tuple(AVOID_KEY_NAMES),
+            **resolved_filter_patterns,
+        }
+
     # Read original file metadata to preserve during conversion
     original_metadata = loader.metadata()
 
@@ -195,7 +222,7 @@ def convert_to_fp8_scaled(
 
     # Get format-aware block_size default (converters handle their own fixed sizes)
     # This is only used for metadata/display; converters use their __init__ defaults
-    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64}
+    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64, "w4a8": 16}
     block_size = converter_kwargs.get("block_size") or format_block_sizes.get(target_format, 64)
 
     # Helper function to create converter for a specific format type
@@ -241,6 +268,17 @@ def convert_to_fp8_scaled(
                 if k not in ("target_format", "scaling_mode", "block_size", "primary_int8_convrot_compat")
             }
             return LearnedNVFP4Converter(**nvfp4_kwargs)
+        elif fmt == "w4a8":
+            # W4A8-ConvRot has fixed group_size=16 and inherent ConvRot rotation;
+            # remove incompatible kwargs (learned rounding is out of scope)
+            w4a8_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in (
+                    "target_format", "scaling_mode", "block_size", "primary_int8_convrot_compat",
+                    "no_learned_rounding", "optimizer", "lr",
+                )
+            }
+            return W4A8ConvRotConverter(**w4a8_kwargs)
         else:
             return LearnedRoundingConverter(**kwargs)
 
@@ -263,6 +301,10 @@ def convert_to_fp8_scaled(
             "nvfp4": {
                 "dtype": torch.uint8,
                 "name": "NVFP4"
+            },
+            "w4a8": {
+                "dtype": torch.int8,
+                "name": "W4A8"
             }
         }
         return format_map.get(fmt, format_map["fp8"])
@@ -417,8 +459,21 @@ def convert_to_fp8_scaled(
                     exclusion_reason = f"{filter_name} skip"
                     break
 
-        # Handle excluded layers: use fallback if available, otherwise skip
+        # Handle excluded layers: use fallback if available, otherwise skip.
+        # Shape-packed fallbacks (e.g. w4a8) are rejected here: excluded layers
+        # are usually non-Linear (embeddings, norms, heads...) whose weights
+        # must keep their original shape to remain loadable.
         if exclusion_reason and not use_custom and not use_layer_config:
+            if fallback in SHAPE_PACKED_FORMATS:
+                info(
+                    f"({i + 1}/{total_weights}) Skipping tensor: {key} "
+                    f"(Reason: {exclusion_reason}; fallback {fallback} is shape-packed and unsafe for non-Linear layers)"
+                )
+                original_tensor = loader.get_tensor(key)
+                new_tensors[key] = original_tensor.to(device="cpu", dtype=original_tensor.dtype)
+                loader.mark_processed(key)
+                skipped_count += 1
+                continue
             if fallback:
                 use_fallback = True
                 layer_format = fallback
@@ -501,6 +556,7 @@ def convert_to_fp8_scaled(
         is_int8 = layer_format == "int8"
         is_mxfp8 = layer_format == "mxfp8"
         is_nvfp4 = layer_format == "nvfp4"
+        is_w4a8 = layer_format == "w4a8"
 
         # Extract block depth from key (look for .0. .1. etc patterns)
         depth = -1
@@ -553,6 +609,12 @@ def convert_to_fp8_scaled(
                 original_tensor, key=key, depth=depth, has_bias=has_bias
             )
             dequant_s = block_scales  # For bias correction compatibility
+        elif is_w4a8:
+            # W4A8: (packed_codes_int8, s_rel_fp8, s_channel_f32, codebook_f32, dequant_w, extra_tensors)
+            q_tensor, s_rel, s_channel, codebook, dequant_w, extra_tensors = converter.convert(
+                original_tensor, key=key, depth=depth, has_bias=has_bias
+            )
+            dequant_s = s_channel.view(-1, 1)  # For logging/bias correction compatibility
         else:
             # FP8/INT8: (q_tensor, scale, dequant_w, extra_tensors)
             in_features = original_tensor.shape[1]
@@ -626,6 +688,21 @@ def convert_to_fp8_scaled(
                     full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
                     orig_dtype=quantized_orig_dtype,
                 )
+            elif is_w4a8:
+                # W4A8-ConvRot (asym_w4a8_int8): packed INT8 codes + 3 extra tensors
+                # (contract: weight_s_rel F8E4M3, weight_s_channel F32, weight_codebook F32)
+                # Note: clone the codebook so each layer owns its storage
+                # (safetensors rejects tensors that share memory across keys).
+                new_tensors[f"{base_name}.weight_s_rel"] = s_rel.to(device="cpu").clone()
+                new_tensors[f"{base_name}.weight_s_channel"] = s_channel.to(device="cpu", dtype=torch.float32).clone()
+                new_tensors[f"{base_name}.weight_codebook"] = codebook.to(device="cpu", dtype=torch.float32).clone()
+                comfy_quant_format = "asym_w4a8_int8"
+                block_size_for_meta = 16  # W4A8 fixed codebook group size
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    "asym_w4a8_int8", block_size=16,
+                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    convrot=True, convrot_groupsize=converter.convrot_group_size,
+                )
             elif is_int8:
                 new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                 if converter.scaling_mode in ("tensor", "row"):
@@ -694,7 +771,7 @@ def convert_to_fp8_scaled(
                 # Reconstruct the dict that was used to create the tensor
                 meta_entry = {"format": comfy_quant_format}
                 meta_entry["orig_dtype"] = quantized_orig_dtype
-                block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise", "mxfp8", "nvfp4"}
+                block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise", "mxfp8", "nvfp4", "asym_w4a8_int8"}
                 if block_size_for_meta is not None and comfy_quant_format in block_based_formats:
                     meta_entry["group_size"] = block_size_for_meta
                 if layer_full_precision_mm:

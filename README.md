@@ -86,6 +86,9 @@ ctq -i model.safetensors -o model-int8mixedrow.safetensors --int8 --scaling_mode
 
 # Blackwell MXFP8 quantization without learned rounding
 ctq -i model.safetensors -o model-mxfp8mixed.safetensors --mxfp8 --comfy_quant --save-quant-metadata --simple --low-memory
+
+# W4A8-ConvRot (asym_w4a8_int8) quantization
+ctq -i model.safetensors -o model-w4a8.safetensors --w4a8 --comfy_quant --save-quant-metadata --low-memory
 ```
 
 ## Use In Code As Module
@@ -124,6 +127,7 @@ Load the output `.safetensors` file in ComfyUI like any other model.
 | **INT8 Tensor-wise**| `--int8 --scaling_mode tensor` | Any GPU |
 | **NVFP4 (4-bit)** | `--nvfp4` | Blackwell |
 | **MXFP8** | `--mxfp8` | Blackwell |
+| **W4A8-ConvRot** | `--w4a8` | SM >= 80 (CUDA) / any GPU (eager/Triton) |
 
 ### INT8 ConvRot
 
@@ -143,6 +147,30 @@ Group 256 remains the default when it divides the layer input width. Primary
 INT8 ConvRot layers otherwise use regular group 64 when compatible, including
 widths such as 2688.
 
+### W4A8-ConvRot (`asym_w4a8_int8`)
+
+4-bit codebook weights with 8-bit dynamically-quantized activations (format
+`asym_w4a8_int8`, ComfyUI `_GROUPED_INT8_FORMATS`). Weights get an offline
+group-wise Hadamard rotation (ConvRot, group 256) plus per-16-group symmetric
+codebook quantization against a frozen 16-entry Lloyd-Max LUT, with two-level
+scales (`weight_s_rel` FP8 per group, `weight_s_channel` FP32 per channel) and
+codes re-assigned through the decoded INT8 grid. Activations are rotated and
+quantized dynamically at runtime by ComfyUI — no activation calibration is
+needed:
+
+```bash
+ctq -i model.safetensors -o model-w4a8.safetensors --comfy_quant --save-quant-metadata --w4a8 --low-memory
+```
+
+Notes:
+- ConvRot is always on for this format (group 256 by default, matching the
+  reference MiniMax-H3 W4A8 checkpoint). Requires K divisible by 256; use
+  `--convrot-group-size 64` for other layer widths.
+- `w4a8` can also be used per-layer via `--layer-config`, and as
+  `--custom-type w4a8` / `--fallback w4a8`.
+- Inference needs ComfyUI with `asym_w4a8_int8` in `QUANT_ALGOS` and
+  comfy-kitchen >= 0.2.41 (CUDA backend needs SM >= 80; eager/Triton paths
+  compute identical math).
 
 ---
 

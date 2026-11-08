@@ -17,6 +17,7 @@ EXPERIMENTAL_ARGS = {
     "int8",
     "nvfp4",
     "mxfp8",
+    "w4a8",
     "make_hybrid_mxfp8",
     "tensor_scales_path",
     "fallback",
@@ -247,7 +248,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         print("-" * 40)
 
         format_args = [
-            "int8", "nvfp4", "mxfp8", "convrot", "convrot_group_size", "dynamic_convrot", "make_hybrid_mxfp8", "tensor_scales_path", "fallback",
+            "int8", "nvfp4", "mxfp8", "w4a8", "convrot", "convrot_group_size", "dynamic_convrot", "make_hybrid_mxfp8", "tensor_scales_path", "fallback",
             "block_size", "scaling_mode"
         ]
         for action in self._all_actions:
