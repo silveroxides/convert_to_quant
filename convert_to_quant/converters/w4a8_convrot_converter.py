@@ -85,7 +85,9 @@ class W4A8ConvRotConverter:
     3. Nearest-level codebook assignment against the frozen Lloyd-Max LUT.
     4. ALS scale refinement (2 alternating codebook/scale passes).
     5. Two-level scale factorization:
-       s_channel = amax(|W_rot|) / 127 per output channel (F32 [N])
+       s_channel = amax(|W_rot reconstructed post-ALS|) / 127 per output
+       channel (F32 [N]); basing it on the reconstructed weight guarantees
+       no clamping of the max decoded level on the INT8 grid.
        s_rel     = group_scale / s_channel cast to float8_e4m3fn ([N, K/16])
     6. Grid re-assignment: codes re-assigned so the decoded weight
        round(clamp(lut[code] * s_rel, -127, 127)) lands on the INT8 grid
@@ -184,8 +186,12 @@ class W4A8ConvRotConverter:
             group_scale = ((grouped * levels).sum(dim=-1, keepdim=True) / denom).clamp(min=1e-8)
             codes = torch.searchsorted(lut_mids, grouped / group_scale)
 
-        # 5. Two-level scale factorization
-        s_channel = (grouped.abs().amax(dim=(1, 2)) / W4A8_INT8_GRID_MAX).clamp(min=1e-8)  # [N] F32
+        # 5. Two-level scale factorization. s_channel is based on the RECONSTRUCTED
+        #    post-ALS weight (lut[codes] * group_scale, matching comfy-kitchen's
+        #    shifted_weight), which guarantees the max decoded level does not clamp
+        #    on the INT8 grid (the raw-rotated amax could exceed it).
+        shifted_weight = lut[codes] * group_scale
+        s_channel = (shifted_weight.abs().amax(dim=(1, 2)) / W4A8_INT8_GRID_MAX).clamp(min=1e-8)  # [N] F32
         s_rel_f32 = group_scale.squeeze(-1) / s_channel.unsqueeze(1)  # [N, K/gs]
         s_rel = s_rel_f32.to(torch.float8_e4m3fn).contiguous()
         s_rel_dec = s_rel.to(torch.float32)  # decoded (stored-precision) relative scale
@@ -213,7 +219,7 @@ class W4A8ConvRotConverter:
         s_channel_out = s_channel.to(device="cpu", dtype=torch.float32).contiguous()
         s_rel_out = s_rel.to(device="cpu")
 
-        del W_rot, grouped, grid, grid_mids, target, codes
+        del W_rot, grouped, grid, grid_mids, target, codes, shifted_weight
 
         return packed, s_rel_out, s_channel_out, codebook_out, dequantized, {}
 
