@@ -413,6 +413,15 @@ SHAPE_PACKED_AVOID_KEY_NAMES = [
     "pos_emb",
     "patch_embed",
     "patch_embedder",
+    # Embeddings are not Linears; label_emb/attn2.to_k drive ComfyUI's config
+    # detection (raw shape read); text encoders and VAE never get quant ops.
+    "token_embedding",
+    "position_embedding",
+    "label_emb",
+    "attn2.to_k",
+    "conditioner.embedders",
+    "first_stage_model",
+    "vae.",
 ]
 
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)

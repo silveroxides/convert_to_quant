@@ -598,6 +598,16 @@ def convert_to_fp8_scaled(
         temp_base_name = key[:key.rfind(".weight")]
         has_bias = f"{temp_base_name}.bias" in all_keys
 
+        # ConvRot requires K % group == 0; keep original precision otherwise.
+        if is_w4a8:
+            K = original_tensor.shape[-1]
+            if K % converter.convrot_group_size != 0:
+                info(f"  - K={K} not divisible by convrot_group_size={converter.convrot_group_size}, keeping original precision (W4A8 skipped)")
+                new_tensors[key] = original_tensor.to(device="cpu", dtype=original_tensor.dtype)
+                loader.mark_processed(key)
+                skipped_count += 1
+                continue
+
         # Call converter and unpack based on format type
         # Different converters have different return signatures
         if is_mxfp8:

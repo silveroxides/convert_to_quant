@@ -392,14 +392,48 @@ class TestW4A8SkipExclusions(unittest.TestCase):
             base = "model.layers.0.mlp.up_proj"
             self.assertNotEqual(tuple(out[f"{base}.weight"].shape), (8, 256))
 
-    def test_vlm_pos_embed_left_unquantized(self):
-        """VLM pos_embed (SHAPE_PACKED_AVOID_KEY_NAMES) must stay raw in w4a8
-        even WITHOUT any filter flag, while a Linear weight is quantized.
-
-        Regression: Qwen3.5-VL model.visual.pos_embed.weight is a 2D Embedding
-        Parameter ([2304, 1024]) that AVOID_KEY_NAMES does not cover ("pos_embed"
-        absent) -> W4A8 packed it to [2304, 512] and ComfyUI failed to load.
+    def test_k_not_divisible_by_convrot_group_kept_original(self):
+        """SDXL skip-connection dims (K=640, 640 % 256 != 0) must be skipped
+        and kept at original precision instead of raising ValueError, while
+        divisible Linear weights are still W4A8-quantized. The bias of the
+        skipped layer must pass through untouched (no weight change -> no
+        bias correction).
         """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = os.path.join(tmpdir, "input.safetensors")
+            output_path = os.path.join(tmpdir, "output.safetensors")
+            g = torch.Generator().manual_seed(9)
+            bias = torch.randn(8, generator=g, dtype=torch.bfloat16)
+            tensors = {
+                # SDXL-style K=640 Linear: not divisible by convrot_group_size 256
+                "input_blocks.4.1.proj_in.weight": torch.randn(8, 640, generator=g, dtype=torch.bfloat16),
+                "input_blocks.4.1.proj_in.bias": bias.clone(),
+                # Divisible Linear weight: must be W4A8-quantized
+                "input_blocks.1.1.proj_in.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+            }
+            save_file(tensors, input_path)
+            self._convert(input_path, output_path)
+            out = load_file(output_path)
+
+            # K=640 layer: raw passthrough (same dtype, FULL [N, K] shape),
+            # no comfy_quant / contract side-tensors
+            base = "input_blocks.4.1.proj_in"
+            self.assertEqual(out[f"{base}.weight"].dtype, torch.bfloat16)
+            self.assertEqual(tuple(out[f"{base}.weight"].shape), (8, 640))
+            self.assertNotIn(f"{base}.comfy_quant", out)
+            self.assertNotIn(f"{base}.weight_s_rel", out)
+            # Bias untouched (bitwise) since no weight change occurred
+            self.assertTrue(torch.equal(out[f"{base}.bias"], bias))
+
+            # Divisible layer still W4A8-quantized: packed INT8 [N, K/2]
+            base = "input_blocks.1.1.proj_in"
+            self.assertEqual(out[f"{base}.weight"].dtype, torch.int8)
+            self.assertEqual(tuple(out[f"{base}.weight"].shape), (8, 256))
+
+    def test_vlm_pos_embed_left_unquantized(self):
+        """Regression: pos_embed packed to half-K broke ComfyUI load; must stay raw."""
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -440,6 +474,83 @@ class TestW4A8SkipExclusions(unittest.TestCase):
             self.assertEqual(tuple(out[f"{base}.weight"].shape), (8, 256))
             config = tensor_to_dict(out[f"{base}.comfy_quant"])
             self.assertEqual(config["format"], "asym_w4a8_int8")
+
+    def test_sdxl_detection_critical_tensors_left_unquantized(self):
+        """Regression: packed label_emb/attn2.to_k broke ComfyUI config detection (adm_in_channels 1408 vs 2816)."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = os.path.join(tmpdir, "input.safetensors")
+            output_path = os.path.join(tmpdir, "output.safetensors")
+            g = torch.Generator().manual_seed(11)
+            # K=512 divisible by convrot_group_size=256: only the
+            # SHAPE_PACKED_AVOID_KEY_NAMES exclusion can skip these tensors.
+            tensors = {
+                # SDXL UNet detection-critical linears (shapes feed unet_config)
+                "model.diffusion_model.label_emb.0.0.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "model.diffusion_model.label_emb.0.2.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                # CLIP text encoder nn.Embedding weights (non-Linear)
+                "conditioner.embedders.0.transformer.text_model.embeddings.token_embedding.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "conditioner.embedders.0.transformer.text_model.embeddings.position_embedding.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                # CLIP-L / CLIP-G text-encoder Linear weights: ComfyUI never wraps
+                # text encoders with quant ops (sd1_clip.py falls back to
+                # manual_cast -> plain F.linear), so they must never be packed.
+                "conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.out_proj.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "conditioner.embedders.0.transformer.text_model.encoder.layers.0.mlp.fc1.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "conditioner.embedders.1.model.transformer.resblocks.0.attn.out_proj.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "conditioner.embedders.1.model.transformer.resblocks.0.mlp.c_fc.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                # VAE (defensive: no 2D linears in SDXL VAE, but must never pack)
+                "first_stage_model.decoder.conv_in.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "vae.decoder.mid.attn_1.to_q.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                # Regular Linear weights: must still be W4A8-quantized
+                "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_out.0.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+                "model.diffusion_model.time_embed.2.weight": torch.randn(8, 512, generator=g, dtype=torch.bfloat16),
+            }
+            save_file(tensors, input_path)
+            # No filter_flags: generic hardening must apply on its own
+            self._convert(input_path, output_path)
+            out = load_file(output_path)
+
+            # Detection-critical / Embedding tensors: raw passthrough
+            # (original dtype + FULL shape), no comfy_quant / contract tensors
+            raw_bases = (
+                "model.diffusion_model.label_emb.0.0",
+                "model.diffusion_model.label_emb.0.2",
+                "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k",
+                "conditioner.embedders.0.transformer.text_model.embeddings.token_embedding",
+                "conditioner.embedders.0.transformer.text_model.embeddings.position_embedding",
+                # Text-encoder Linears (CLIP-L + CLIP-G): runtime executes them
+                # with plain nn.Linear -> packed weights would crash
+                # (77x1280 @ 640x1280 style matmul shape error).
+                "conditioner.embedders.0.transformer.text_model.encoder.layers.0.self_attn.out_proj",
+                "conditioner.embedders.0.transformer.text_model.encoder.layers.0.mlp.fc1",
+                "conditioner.embedders.1.model.transformer.resblocks.0.attn.out_proj",
+                "conditioner.embedders.1.model.transformer.resblocks.0.mlp.c_fc",
+                # VAE prefixes
+                "first_stage_model.decoder.conv_in",
+                "vae.decoder.mid.attn_1.to_q",
+            )
+            for base in raw_bases:
+                self.assertEqual(
+                    out[f"{base}.weight"].dtype, torch.bfloat16, f"{base}.weight must stay bfloat16"
+                )
+                self.assertEqual(
+                    tuple(out[f"{base}.weight"].shape), (8, 512), f"{base}.weight shape must be preserved"
+                )
+                self.assertNotIn(f"{base}.comfy_quant", out, f"{base} must not be quantized")
+                self.assertNotIn(f"{base}.weight_s_rel", out)
+
+            # Regular Linears (incl. attn2.to_out.0 and time_embed.2) are still
+            # W4A8-quantized: packed INT8 [N, K/2] + contract tensors
+            for base in (
+                "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_out.0",
+                "model.diffusion_model.time_embed.2",
+            ):
+                self.assertEqual(out[f"{base}.weight"].dtype, torch.int8, f"{base}.weight must be packed int8")
+                self.assertEqual(tuple(out[f"{base}.weight"].shape), (8, 256))
+                config = tensor_to_dict(out[f"{base}.comfy_quant"])
+                self.assertEqual(config["format"], "asym_w4a8_int8")
 
 
 class TestLayerConfigFormatMapping(unittest.TestCase):
