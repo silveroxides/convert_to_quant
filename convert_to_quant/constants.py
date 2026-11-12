@@ -397,6 +397,33 @@ ADAPTIVE_LR_TIERS_DECAY = [
     (301, 0.995, 5e-9),  # counter >= 301
 ]
 
+# Formats whose serialized weight tensor has a DIFFERENT shape than the source
+# (e.g. w4a8 packs two 4-bit codes per byte -> [N, K/2]). These can only be
+# applied to Linear weights: non-Linear tensors (embeddings, norms, heads...)
+# must never be quantized with them or the runtime cannot load the weights.
+# Conversion paths must seed AVOID_KEY_NAMES as base exclusions for these.
+SHAPE_PACKED_FORMATS = {"w4a8"}
+
+# Embedding-like patterns that appear in VLM checkpoints (e.g. Qwen-VL
+# model.visual.pos_embed.weight, loaded as a raw Embedding Parameter by the
+# runtime) but are NOT covered by AVOID_KEY_NAMES. Seeded alongside
+# AVOID_KEY_NAMES as base exclusions for shape-packed formats only.
+SHAPE_PACKED_AVOID_KEY_NAMES = [
+    "pos_embed",
+    "pos_emb",
+    "patch_embed",
+    "patch_embedder",
+    # Embeddings are not Linears; label_emb/attn2.to_k drive ComfyUI's config
+    # detection (raw shape read); text encoders and VAE never get quant ops.
+    "token_embedding",
+    "position_embedding",
+    "label_emb",
+    "attn2.to_k",
+    "conditioner.embedders",
+    "first_stage_model",
+    "vae.",
+]
+
 # Valid quantization formats (maps to QUANT_ALGOS in quant_ops.py)
 VALID_QUANT_FORMATS = {
     "float8_e4m3fn",
@@ -408,6 +435,7 @@ VALID_QUANT_FORMATS = {
     "nvfp4",  # NVIDIA FP4 E2M1 block quantization
     "mxfp8",  # Microscaling FP8 block quantization
     "hybrid_mxfp8",  # Hybrid MXFP8 (MXFP8 + tensorwise fallback)
+    "w4a8",  # W4A8-ConvRot (asym_w4a8_int8) 4-bit codebook + INT8 dynamic activations
 }
 
 # Global config: normalize 1-element scale arrays to scalars (set from CLI)

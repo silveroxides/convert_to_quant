@@ -133,6 +133,10 @@ def get_parser() -> MultiHelpArgumentParser:
     )
     parser.add_argument("--int8", action="store_true", help="Use INT8 block-wise quantization instead of FP8.")
     parser.add_argument(
+        "--w4a8", action="store_true",
+        help="Use W4A8-ConvRot (asym_w4a8_int8) quantization: 4-bit codebook weights + 8-bit dynamic activations with Hadamard rotation (group 256)."
+    )
+    parser.add_argument(
         "--convrot", action="store_true",
         help="Enable group-wise Hadamard rotation (ConvRot) for INT8 row-wise quantization to improve quality."
     )
@@ -161,7 +165,7 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Path to tensorwise FP8 model to steal scales from (for --make-hybrid-mxfp8)."
     )
     parser.add_argument(
-        "--fallback", type=str, default=None, choices=["fp8", "int8", "mxfp8", "nvfp4"],
+        "--fallback", type=str, default=None, choices=["fp8", "int8", "mxfp8", "nvfp4", "w4a8"],
         help="Fallback quantization type for excluded layers (instead of keeping original precision)."
     )
     parser.add_argument(
@@ -182,7 +186,7 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Regex for unquantized 2D weight keys that must retain their source dtype."
     )
     parser.add_argument(
-        "--custom-type", "--custom_type", type=str, default=None, dest="custom_type", choices=["fp8", "int8", "mxfp8", "nvfp4"],
+        "--custom-type", "--custom_type", type=str, default=None, dest="custom_type", choices=["fp8", "int8", "mxfp8", "nvfp4", "w4a8"],
         help="Quantization type for custom layer matches."
     )
     # Custom-type parameter overrides
@@ -982,8 +986,8 @@ def run_conversion(args):
         print("Note: --comfy_quant auto-enabled (required for --custom-type mixed precision)")
         args.comfy_quant = True
 
-    # Only check FP8 support if not using INT8
-    if not args.int8:
+    # Only check FP8 support if not using INT8/W4A8
+    if not args.int8 and not args.w4a8:
         try:
             _ = torch.zeros(1, dtype=TARGET_FP8_DTYPE, device="cuda" if torch.cuda.is_available() else "cpu")
         except (RuntimeError, TypeError):
@@ -994,8 +998,12 @@ def run_conversion(args):
         base = os.path.splitext(args.input)[0]
         # Build filename: {simple_|learned_}{format}[mixed]_{scaling}
         # TODO: SVD stats (k, top_p, lr) should be saved to _convert_to_quant_stats metadata entry
-        prefix = "simple_" if args.simple else "learned_"
-        if args.int8:
+        # W4A8 is always simple (RTN + ALS refinement); learned rounding out of scope
+        prefix = "simple_" if (args.simple or args.w4a8) else "learned_"
+        if args.w4a8:
+            format_str = "w4a8"
+            scaling_str = f"_convrot{args.convrot_group_size}"
+        elif args.int8:
             format_str = "int8"
             if args.scaling_mode == "tensor":
                 scaling_str = "_tensorwise"
@@ -1033,12 +1041,14 @@ def run_conversion(args):
         layer_config_data = load_layer_config(args.layer_config)
 
     # Call convert_to_fp8_scaled with explicit args (no **kwargs footgun)
-    # Determine primary_format for NVFP4/MXFP8 mixed mode (when they fall through here)
+    # Determine primary_format for NVFP4/MXFP8/W4A8 mode (when they fall through here)
     primary_format = None
     if args.nvfp4 and (args.custom_type or args.fallback):
         primary_format = "nvfp4"
     elif args.mxfp8 and (args.custom_type or args.fallback):
         primary_format = "mxfp8"
+    elif args.w4a8:
+        primary_format = "w4a8"
 
     convert_to_fp8_scaled(
         args.input,

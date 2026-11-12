@@ -1197,7 +1197,17 @@ class LearnedRoundingConverter(BaseLearnedConverter):
 
             # --- Discretization and Convergence early stopping check ---
             # Track the true physical percentage of parameters converged to strict integer boundaries (temp=1.0)
-            converged_ratio = ((torch.sigmoid(V) < 0.05) | (torch.sigmoid(V) > 0.95)).float().mean().item()
+            # Monitoring-only metric (no gradient needed): computed in row chunks under no_grad
+            # to avoid allocating multiple full-size intermediates (sigmoid, comparisons, .float())
+            # that can trigger CUDA OOM on very large layers (e.g. embed_tokens [151936, 2560]).
+            with torch.no_grad():
+                num_elements = V.numel()
+                chunk_rows = max(1, int(2 ** 22 // max(1, V.shape[1])))  # ~4M elements per chunk
+                converged_count = 0
+                for start in range(0, V.shape[0], chunk_rows):
+                    chunk = torch.sigmoid(V[start:start + chunk_rows])
+                    converged_count += (chunk.lt(0.05) | chunk.gt(0.95)).sum().item()
+                converged_ratio = converged_count / num_elements
 
             # Loss 1: Output activation MSE on soft dequantized weights
             Y_pred = X_rot @ W_dequant.T
