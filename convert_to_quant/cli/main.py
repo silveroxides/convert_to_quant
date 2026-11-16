@@ -133,6 +133,10 @@ def get_parser() -> MultiHelpArgumentParser:
     )
     parser.add_argument("--int8", action="store_true", help="Use INT8 block-wise quantization instead of FP8.")
     parser.add_argument(
+        "--int4", action="store_true",
+        help="Use INT4 ConvRot W4A4 (4-bit weight, 4-bit activation) quantization with group-wise Hadamard rotation."
+    )
+    parser.add_argument(
         "--convrot", action="store_true",
         help="Enable group-wise Hadamard rotation (ConvRot) for INT8 row-wise quantization to improve quality."
     )
@@ -161,7 +165,7 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Path to tensorwise FP8 model to steal scales from (for --make-hybrid-mxfp8)."
     )
     parser.add_argument(
-        "--fallback", type=str, default=None, choices=["fp8", "int8", "mxfp8", "nvfp4"],
+        "--fallback", type=str, default=None, choices=["fp8", "int8", "mxfp8", "nvfp4", "int4"],
         help="Fallback quantization type for excluded layers (instead of keeping original precision)."
     )
     parser.add_argument(
@@ -182,7 +186,7 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Regex for unquantized 2D weight keys that must retain their source dtype."
     )
     parser.add_argument(
-        "--custom-type", "--custom_type", type=str, default=None, dest="custom_type", choices=["fp8", "int8", "mxfp8", "nvfp4"],
+        "--custom-type", "--custom_type", type=str, default=None, dest="custom_type", choices=["fp8", "int8", "mxfp8", "nvfp4", "int4"],
         help="Quantization type for custom layer matches."
     )
     # Custom-type parameter overrides
@@ -276,6 +280,10 @@ def get_parser() -> MultiHelpArgumentParser:
     parser.add_argument(
         "--calib_cpu", "--calib-cpu", action="store_true", dest="calib_cpu", help=
         "Store calibration data cache on CPU instead of disk (when using --low-memory). Always True if --low-memory is not used."
+    )
+    parser.add_argument(
+        "--calib-scale", "--calib_scale", type=float, default=1.0, dest="calib_scale",
+        help="Calibration sample scaling multiplier."
     )
     parser.add_argument(
         "--manual_seed", "--manual-seed", type=int, default=-1, dest="manual_seed",
@@ -829,6 +837,79 @@ def run_conversion(args):
             )
             return
 
+    # Handle INT4 ConvRot W4A4 quantization mode
+    if args.int4:
+        needs_mixing = args.custom_type or args.fallback or args.layer_config
+        if needs_mixing:
+            print("INT4 with custom/fallback/layer_config: using unified quantization path")
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                args.output = f"{base}_int4_convrot_mixed.safetensors"
+            args.int8 = False
+        else:
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                prefix = "simple_" if args.simple else "learned_"
+                filter_flags = extract_filter_flags(args)
+                has_filters = any(filter_flags.values())
+                has_custom = bool(args.custom_layers)
+                mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+                args.output = f"{base}_{prefix}int4_convrot_w4a4{mixed_suffix}.safetensors"
+
+            if not os.path.exists(args.input):
+                print(f"Error: Input file not found: {args.input}")
+                return
+
+            if os.path.abspath(args.input) == os.path.abspath(args.output):
+                print("Error: Output file cannot be same as input.")
+                return
+
+            seed = int(torch.randint(0, 2**32 - 1, ()).item()) if args.manual_seed == -1 else args.manual_seed
+            print(f"Using seed: {seed}")
+            filter_flags = extract_filter_flags(args)
+
+            from ..formats.int4_conversion import convert_to_int4
+            convert_to_int4(
+                args.input,
+                args.output,
+                filter_flags=filter_flags,
+                exclude_layers=args.exclude_layers,
+                output_dtype=args.output_dtype,
+                preserve_layers=args.preserve_layers,
+                simple=args.simple,
+                convrot=True,
+                convrot_group_size=args.convrot_group_size,
+                dynamic_convrot=args.dynamic_convrot,
+                calib_scale=getattr(args, "calib_scale", 1.0),
+                device=args.device,
+                calib_samples=args.calib_samples,
+                seed=seed,
+                comfy_quant=args.comfy_quant,
+                save_quant_metadata=args.save_quant_metadata,
+                full_precision_matrix_mult=args.full_precision_matrix_mult,
+                low_memory=args.low_memory,
+                optimizer=args.optimizer,
+                num_iter=args.num_iter,
+                lr=args.lr,
+                lr_schedule=args.lr_schedule,
+                top_p=args.top_p,
+                min_k=args.min_k,
+                max_k=args.max_k,
+                full_matrix=args.full_matrix,
+                scale_optimization=args.scale_optimization,
+                use_speed=args.use_speed,
+                lr_gamma=args.lr_gamma,
+                lr_patience=args.lr_patience,
+                lr_factor=args.lr_factor,
+                lr_min=args.lr_min,
+                lr_cooldown=args.lr_cooldown,
+                lr_threshold=args.lr_threshold,
+                early_stop_loss=args.early_stop_loss,
+                early_stop_lr=args.early_stop_lr,
+                early_stop_stall=args.early_stop_stall,
+            )
+            return
+
     # Handle legacy input scale addition mode (separate workflow)
     if args.legacy_input_add:
         if not args.output:
@@ -1035,7 +1116,9 @@ def run_conversion(args):
     # Call convert_to_fp8_scaled with explicit args (no **kwargs footgun)
     # Determine primary_format for NVFP4/MXFP8 mixed mode (when they fall through here)
     primary_format = None
-    if args.nvfp4 and (args.custom_type or args.fallback):
+    if args.int4:
+        primary_format = "int4"
+    elif args.nvfp4 and (args.custom_type or args.fallback):
         primary_format = "nvfp4"
     elif args.mxfp8 and (args.custom_type or args.fallback):
         primary_format = "mxfp8"

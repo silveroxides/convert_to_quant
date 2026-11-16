@@ -352,6 +352,13 @@ INT8_MIN = int(torch.iinfo(TARGET_INT8_DTYPE).min)  # -128
 INT8_MAX = int(torch.iinfo(TARGET_INT8_DTYPE).max)  # 127
 INT8_SYMMETRIC_MAX = min(abs(INT8_MIN), INT8_MAX)  # 127 (symmetric range)
 
+# INT4 constants (using symmetric range [-7, 7] for symmetric quantization)
+TARGET_INT4_DTYPE = torch.int8  # Packed format (2 signed 4-bit values per byte, stored as int8)
+INT4_MIN = -8
+INT4_MAX = 7
+INT4_SYMMETRIC_MAX = 7  # [-7, 7] symmetric range, matches comfy-kitchen
+INT4_QUANT_GROUP_SIZE = 64  # Default INT4 ConvRot group size
+
 # FP4 NVFP4 E2M1 constants
 TARGET_FP4_DTYPE = torch.uint8  # Packed format (2 values per byte)
 FP4_E2M1_MAX = 6.0
@@ -405,6 +412,8 @@ VALID_QUANT_FORMATS = {
     "float8_e4m3fn_block3d",
     "int8_blockwise",
     "int8_tensorwise",
+    "int4_convrot_w4a4",  # INT4 W4A4 ConvRot quantization
+    "convrot_w4a4",  # ComfyUI metadata format name
     "nvfp4",  # NVIDIA FP4 E2M1 block quantization
     "mxfp8",  # Microscaling FP8 block quantization
     "hybrid_mxfp8",  # Hybrid MXFP8 (MXFP8 + tensorwise fallback)

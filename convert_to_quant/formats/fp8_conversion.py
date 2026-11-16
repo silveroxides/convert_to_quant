@@ -17,7 +17,19 @@ import torch
 from safetensors.torch import save_file
 
 from ..config.layer_config import get_layer_settings
-from ..constants import COMPUTE_DTYPE, FP8_MAX, FP8_MIN, INT8_SYMMETRIC_MAX, NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, T5XXL_REMOVE_KEY_NAMES, TARGET_FP8_DTYPE, TARGET_INT8_DTYPE, resolve_model_filter_patterns
+from ..constants import (
+    COMPUTE_DTYPE,
+    FP8_MAX,
+    FP8_MIN,
+    INT8_SYMMETRIC_MAX,
+    NORMALIZE_SCALES_ENABLED,
+    SCALE_DTYPE,
+    T5XXL_REMOVE_KEY_NAMES,
+    TARGET_FP8_DTYPE,
+    TARGET_INT4_DTYPE,
+    TARGET_INT8_DTYPE,
+    resolve_model_filter_patterns,
+)
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
 from ..converters.learned_nvfp4 import LearnedNVFP4Converter
 from ..converters.learned_rounding import LearnedRoundingConverter
@@ -35,6 +47,8 @@ def resolve_layer_config_format(fmt: str) -> str:
         return "fp8"
     elif fmt.startswith("int8"):
         return "int8"
+    elif fmt.startswith("int4") or fmt == "convrot_w4a4":
+        return "int4"
     elif fmt == "nvfp4":
         return "nvfp4"
     elif fmt == "mxfp8":
@@ -195,7 +209,7 @@ def convert_to_fp8_scaled(
 
     # Get format-aware block_size default (converters handle their own fixed sizes)
     # This is only used for metadata/display; converters use their __init__ defaults
-    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64}
+    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64, "int4": 64}
     block_size = converter_kwargs.get("block_size") or format_block_sizes.get(target_format, 64)
 
     # Helper function to create converter for a specific format type
@@ -208,7 +222,7 @@ def convert_to_fp8_scaled(
         """Create appropriate converter instance for the given format.
 
         Args:
-            fmt: Format string (fp8, int8, mxfp8, nvfp4)
+            fmt: Format string (fp8, int8, mxfp8, nvfp4, int4)
             overrides: Parameter overrides for this specific converter
             is_primary: If True, inherit no_learned_rounding from global --simple.
                         If False (custom/fallback), only use override value.
@@ -241,6 +255,26 @@ def convert_to_fp8_scaled(
                 if k not in ("target_format", "scaling_mode", "block_size", "primary_int8_convrot_compat")
             }
             return LearnedNVFP4Converter(**nvfp4_kwargs)
+        elif fmt == "int4":
+            from ..converters.int4_converter import INT4Converter
+            grp_size = None
+            if overrides and "convrot_group_size" in overrides:
+                grp_size = overrides["convrot_group_size"]
+            elif kwargs.get("convrot_group_size") and kwargs.get("convrot_group_size") != 256:
+                grp_size = kwargs.get("convrot_group_size")
+            else:
+                grp_size = 64
+
+            int4_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ("target_format", "scaling_mode", "block_size", "primary_int8_convrot_compat")
+            }
+            int4_kwargs["convrot"] = True
+            int4_kwargs["convrot_group_size"] = grp_size
+            int4_kwargs["has_bias"] = True
+            if overrides:
+                int4_kwargs.update({k: v for k, v in overrides.items() if k != "primary_int8_convrot_compat"})
+            return INT4Converter(**int4_kwargs)
         else:
             return LearnedRoundingConverter(**kwargs)
 
@@ -248,6 +282,10 @@ def convert_to_fp8_scaled(
     def get_format_info(fmt: str) -> dict:
         """Returns dtype and format name for a quantization format."""
         format_map = {
+            "int4": {
+                "dtype": TARGET_INT4_DTYPE,
+                "name": "INT4"
+            },
             "int8": {
                 "dtype": TARGET_INT8_DTYPE,
                 "name": "INT8"
@@ -499,6 +537,7 @@ def convert_to_fp8_scaled(
 
         # Determine format type for this layer
         is_int8 = layer_format == "int8"
+        is_int4 = layer_format == "int4"
         is_mxfp8 = layer_format == "mxfp8"
         is_nvfp4 = layer_format == "nvfp4"
 
@@ -534,6 +573,9 @@ def convert_to_fp8_scaled(
                 convrot_group_size = getattr(converter, "convrot_group_size", 256)
                 if in_features % convrot_group_size == 0:
                     convrot_applied = True
+        elif is_int4:
+            convrot_applied = getattr(converter, "convrot", True)
+            convrot_group_size = getattr(converter, "last_group_size", None) or getattr(converter, "convrot_group_size", 64)
 
         # Check if the layer actually has a bias in the original model
         temp_base_name = key[:key.rfind(".weight")]
@@ -591,7 +633,7 @@ def convert_to_fp8_scaled(
 
         if comfy_quant is True:
             # Use the converter's block_size (respects custom/fallback overrides)
-            layer_block_size = converter.block_size
+            layer_block_size = getattr(converter, "block_size", None) or block_size
 
             # Determine full_precision_matrix_mult: per-layer config takes priority over global, then custom layers
             layer_full_precision_mm = full_precision_matrix_mult
@@ -623,6 +665,18 @@ def convert_to_fp8_scaled(
                 block_size_for_meta = 16  # NVFP4 fixed block size
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     "nvfp4", block_size=16,
+                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    orig_dtype=quantized_orig_dtype,
+                )
+            elif is_int4:
+                new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                comfy_quant_format = "convrot_w4a4"
+                block_size_for_meta = None
+                resolved_groupsize = getattr(converter, "last_group_size", None) or cfg_overrides.get("convrot_group_size", convrot_group_size)
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    "convrot_w4a4",
+                    convrot=True,
+                    convrot_groupsize=resolved_groupsize,
                     full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
                     orig_dtype=quantized_orig_dtype,
                 )
