@@ -359,6 +359,13 @@ INT4_MAX = 7
 INT4_SYMMETRIC_MAX = 7  # [-7, 7] symmetric range, matches comfy-kitchen
 INT4_QUANT_GROUP_SIZE = 64  # Default INT4 ConvRot group size
 
+# W6A8 (6-bit uniform ConvRot weights, INT8 activations) constants
+TARGET_W6A8_DTYPE = torch.int8  # Packed format: K/2 low-nibble + K/4 high-2-bit bytes per row
+W6A8_LEVELS = 31  # Symmetric uniform integer levels [-31, 31], stored as q + 32 in [1, 63]
+W6A8_DEFAULT_GROUP_SIZE = 16  # Default per-group s_rel size (must be >= 16 and multiple of 16)
+W6A8_DEFAULT_CONVROT_GROUP_SIZE = 256  # Default ConvRot Hadamard rotation group size
+W6A8_SCALE_REL_DTYPE = torch.float8_e4m3fn  # Per-group relative scale dtype (required for fast CUDA paths)
+
 # FP4 NVFP4 E2M1 constants
 TARGET_FP4_DTYPE = torch.uint8  # Packed format (2 values per byte)
 FP4_E2M1_MAX = 6.0
@@ -414,6 +421,8 @@ VALID_QUANT_FORMATS = {
     "int8_tensorwise",
     "int4_convrot_w4a4",  # INT4 W4A4 ConvRot quantization
     "convrot_w4a4",  # ComfyUI metadata format name
+    "w6a8_int8",  # W6A8 uniform 6-bit ConvRot quantization (ComfyUI format name)
+    "w6a8",  # Alias for w6a8_int8
     "nvfp4",  # NVIDIA FP4 E2M1 block quantization
     "mxfp8",  # Microscaling FP8 block quantization
     "hybrid_mxfp8",  # Hybrid MXFP8 (MXFP8 + tensorwise fallback)

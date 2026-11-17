@@ -18,7 +18,7 @@ from .logging import error, info, minimal, verbose, warning
 from .tensor_utils import dict_to_tensor, normalize_tensorwise_scales, tensor_to_dict
 
 # Block-based formats that require group_size
-BLOCK_BASED_FORMATS = ("int8_blockwise", "float8_e4m3fn_blockwise")
+BLOCK_BASED_FORMATS = ("int8_blockwise", "float8_e4m3fn_blockwise", "w6a8_int8", "asym_w4a8_int8")
 
 
 def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None, full_precision_matrix_mult: Optional[bool] = None, convrot: Optional[bool] = None, convrot_groupsize: Optional[int] = None, per_row: Optional[bool] = None, orig_dtype: Optional[str] = None) -> torch.Tensor:
@@ -27,7 +27,7 @@ def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None
 
     Args:
         format_type: One of "float8_e4m3fn", "float8_e4m3fn_rowwise", "float8_e4m3fn_blockwise",
-                     "int8_tensorwise", or "int8_blockwise"
+                     "int8_tensorwise", "int8_blockwise", "convrot_w4a4", or "w6a8_int8"
         block_size: Block/group size for quantization (for block-based formats)
         full_precision_matrix_mult: If True, adds "full_precision_matrix_mult": True.
                                     If False or None, this key is omitted.
@@ -53,6 +53,8 @@ def create_comfy_quant_tensor(format_type: str, block_size: Optional[int] = None
         comfy_quant["convrot"] = True
         if convrot_groupsize is not None:
             comfy_quant["convrot_groupsize"] = convrot_groupsize
+    elif convrot_groupsize is not None and format_type in ("w6a8_int8", "asym_w4a8_int8", "convrot_w4a4"):
+        comfy_quant["convrot_groupsize"] = convrot_groupsize
 
     if per_row is True:
         comfy_quant["per_row"] = True
@@ -328,7 +330,7 @@ def edit_comfy_quant(input_file: str, output_file: str, remove_keys: Optional[Li
                     continue  # Can't determine format
 
             # Copy relevant keys from metadata
-            for key in ["group_size", "full_precision_matrix_mult", "orig_dtype"]:
+            for key in ["group_size", "convrot", "convrot_groupsize", "full_precision_matrix_mult", "orig_dtype"]:
                 if key in meta_entry:
                     config[key] = meta_entry[key]
 
@@ -397,6 +399,10 @@ def edit_comfy_quant(input_file: str, output_file: str, remove_keys: Optional[Li
                 meta_entry = {"format": config.get("format", "unknown")}
                 if "group_size" in config:
                     meta_entry["group_size"] = config["group_size"]
+                if config.get("convrot"):
+                    meta_entry["convrot"] = True
+                if "convrot_groupsize" in config:
+                    meta_entry["convrot_groupsize"] = config["convrot_groupsize"]
                 if config.get("full_precision_matrix_mult"):
                     meta_entry["full_precision_matrix_mult"] = True
                 if "orig_dtype" in config:

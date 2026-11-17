@@ -28,6 +28,9 @@ from ..constants import (
     TARGET_FP8_DTYPE,
     TARGET_INT4_DTYPE,
     TARGET_INT8_DTYPE,
+    TARGET_W6A8_DTYPE,
+    W6A8_DEFAULT_CONVROT_GROUP_SIZE,
+    W6A8_DEFAULT_GROUP_SIZE,
     resolve_model_filter_patterns,
 )
 from ..converters.learned_mxfp8 import LearnedMXFP8Converter
@@ -49,6 +52,8 @@ def resolve_layer_config_format(fmt: str) -> str:
         return "int8"
     elif fmt.startswith("int4") or fmt == "convrot_w4a4":
         return "int4"
+    elif fmt in ("w6a8_int8", "w6a8"):
+        return "w6a8"
     elif fmt == "nvfp4":
         return "nvfp4"
     elif fmt == "mxfp8":
@@ -130,7 +135,11 @@ def convert_to_fp8_scaled(
 
     info(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
     info("-" * 60)
-    if int8:
+    if target_format == "w6a8":
+        info("Target format: W6A8 (w6a8_int8, uniform 6-bit ConvRot + INT8 activations)")
+    elif target_format == "int4":
+        info("Target format: INT4 ConvRot W4A4 (convrot_w4a4)")
+    elif int8:
         scaling_mode = converter_kwargs.get("scaling_mode", "block")
         if scaling_mode == "row":
             info("Target format: INT8 (row-wise quantization)")
@@ -209,7 +218,7 @@ def convert_to_fp8_scaled(
 
     # Get format-aware block_size default (converters handle their own fixed sizes)
     # This is only used for metadata/display; converters use their __init__ defaults
-    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64, "int4": 64}
+    format_block_sizes = {"nvfp4": 16, "mxfp8": 32, "int8": 128, "fp8": 64, "int4": 64, "w6a8": W6A8_DEFAULT_GROUP_SIZE}
     block_size = converter_kwargs.get("block_size") or format_block_sizes.get(target_format, 64)
 
     # Helper function to create converter for a specific format type
@@ -222,7 +231,7 @@ def convert_to_fp8_scaled(
         """Create appropriate converter instance for the given format.
 
         Args:
-            fmt: Format string (fp8, int8, mxfp8, nvfp4, int4)
+            fmt: Format string (fp8, int8, mxfp8, nvfp4, int4, w6a8)
             overrides: Parameter overrides for this specific converter
             is_primary: If True, inherit no_learned_rounding from global --simple.
                         If False (custom/fallback), only use override value.
@@ -275,6 +284,21 @@ def convert_to_fp8_scaled(
             if overrides:
                 int4_kwargs.update({k: v for k, v in overrides.items() if k != "primary_int8_convrot_compat"})
             return INT4Converter(**int4_kwargs)
+        elif fmt == "w6a8":
+            from ..converters.w6a8_converter import W6A8Converter
+            w6a8_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ("target_format", "scaling_mode", "primary_int8_convrot_compat")
+            }
+            w6a8_kwargs["convrot"] = True
+            if w6a8_kwargs.get("convrot_group_size") is None:
+                w6a8_kwargs["convrot_group_size"] = W6A8_DEFAULT_CONVROT_GROUP_SIZE
+            if w6a8_kwargs.get("block_size") is None:
+                w6a8_kwargs["group_size"] = W6A8_DEFAULT_GROUP_SIZE
+            w6a8_kwargs["has_bias"] = True
+            if overrides:
+                w6a8_kwargs.update({k: v for k, v in overrides.items() if k != "primary_int8_convrot_compat"})
+            return W6A8Converter(**w6a8_kwargs)
         else:
             return LearnedRoundingConverter(**kwargs)
 
@@ -282,6 +306,10 @@ def convert_to_fp8_scaled(
     def get_format_info(fmt: str) -> dict:
         """Returns dtype and format name for a quantization format."""
         format_map = {
+            "w6a8": {
+                "dtype": TARGET_W6A8_DTYPE,
+                "name": "W6A8"
+            },
             "int4": {
                 "dtype": TARGET_INT4_DTYPE,
                 "name": "INT4"
@@ -506,7 +534,9 @@ def convert_to_fp8_scaled(
         if use_layer_config:
             # Create converter dynamically from layer_config settings
             cfg_overrides = {}
-            cfg_block_size = layer_settings.get("block_size")
+            cfg_block_size = layer_settings.get("group_size")
+            if cfg_block_size is None:
+                cfg_block_size = layer_settings.get("block_size")
             cfg_scaling_mode = layer_settings.get("scaling_mode")
             cfg_simple = layer_settings.get("simple", False)
             cfg_convrot = layer_settings.get("convrot", False)
@@ -523,6 +553,8 @@ def convert_to_fp8_scaled(
                 cfg_overrides["dynamic_convrot"] = cfg_dynamic_convrot
                 if cfg_convrot_group_size is not None:
                     cfg_overrides["convrot_group_size"] = cfg_convrot_group_size
+            elif cfg_convrot_group_size is not None:
+                cfg_overrides["convrot_group_size"] = cfg_convrot_group_size
             converter = create_converter_for_format(
                 layer_format,
                 cfg_overrides if cfg_overrides else None,
@@ -538,6 +570,7 @@ def convert_to_fp8_scaled(
         # Determine format type for this layer
         is_int8 = layer_format == "int8"
         is_int4 = layer_format == "int4"
+        is_w6a8 = layer_format == "w6a8"
         is_mxfp8 = layer_format == "mxfp8"
         is_nvfp4 = layer_format == "nvfp4"
 
@@ -595,6 +628,28 @@ def convert_to_fp8_scaled(
                 original_tensor, key=key, depth=depth, has_bias=has_bias
             )
             dequant_s = block_scales  # For bias correction compatibility
+        elif is_w6a8:
+            # W6A8: (packed_qdata, s_rel, s_channel, dequant_w, extra_tensors)
+            in_features = original_tensor.shape[1]
+            cache_entry = calibration_data_cache.get(in_features)
+            calib_data_loaded = False
+            if isinstance(cache_entry, str):
+                with MemoryEfficientSafeOpen(cache_entry, low_memory=True) as calib_loader:
+                    calibration_data = calib_loader.get_tensor("calib_data")
+                calib_data_loaded = True
+            else:
+                calibration_data = cache_entry
+
+            q_tensor, w6a8_s_rel, w6a8_s_channel, dequant_w, extra_tensors = converter.convert(
+                original_tensor, key=key, depth=depth, calibration_data=calibration_data, has_bias=has_bias
+            )
+            dequant_s = w6a8_s_rel
+
+            if calib_data_loaded and calibration_data is not None:
+                del calibration_data
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         else:
             # FP8/INT8: (q_tensor, scale, dequant_w, extra_tensors)
             in_features = original_tensor.shape[1]
@@ -672,11 +727,24 @@ def convert_to_fp8_scaled(
                 new_tensors[f"{base_name}.weight_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
                 comfy_quant_format = "convrot_w4a4"
                 block_size_for_meta = None
-                resolved_groupsize = getattr(converter, "last_group_size", None) or cfg_overrides.get("convrot_group_size", convrot_group_size)
+                resolved_groupsize = getattr(converter, "last_group_size", None) or getattr(converter, "convrot_group_size", convrot_group_size)
                 comfy_quant_tensor = create_comfy_quant_tensor(
                     "convrot_w4a4",
                     convrot=True,
                     convrot_groupsize=resolved_groupsize,
+                    full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
+                    orig_dtype=quantized_orig_dtype,
+                )
+            elif is_w6a8:
+                new_tensors[f"{base_name}.weight_s_rel"] = w6a8_s_rel.to(device="cpu").detach().clone()
+                new_tensors[f"{base_name}.weight_s_channel"] = w6a8_s_channel.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
+                comfy_quant_format = "w6a8_int8"
+                block_size_for_meta = getattr(converter, "last_quant_group_size", None) or getattr(converter, "group_size", W6A8_DEFAULT_GROUP_SIZE)
+                w6a8_convrot_groupsize = getattr(converter, "last_group_size", None) or getattr(converter, "convrot_group_size", W6A8_DEFAULT_CONVROT_GROUP_SIZE)
+                comfy_quant_tensor = create_comfy_quant_tensor(
+                    "w6a8_int8",
+                    block_size=block_size_for_meta,
+                    convrot_groupsize=w6a8_convrot_groupsize,
                     full_precision_matrix_mult=layer_full_precision_mm if layer_full_precision_mm else None,
                     orig_dtype=quantized_orig_dtype,
                 )
@@ -748,12 +816,14 @@ def convert_to_fp8_scaled(
                 # Reconstruct the dict that was used to create the tensor
                 meta_entry = {"format": comfy_quant_format}
                 meta_entry["orig_dtype"] = quantized_orig_dtype
-                block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise", "mxfp8", "nvfp4"}
+                block_based_formats = {"int8_blockwise", "float8_e4m3fn_blockwise", "mxfp8", "nvfp4", "w6a8_int8", "asym_w4a8_int8"}
                 if block_size_for_meta is not None and comfy_quant_format in block_based_formats:
                     meta_entry["group_size"] = block_size_for_meta
                 if layer_full_precision_mm:
                     meta_entry["full_precision_matrix_mult"] = True
-                if convrot_applied:
+                if is_w6a8:
+                    meta_entry["convrot_groupsize"] = w6a8_convrot_groupsize
+                elif convrot_applied:
                     meta_entry["convrot"] = True
                     meta_entry["convrot_groupsize"] = convrot_group_size
 
@@ -870,7 +940,7 @@ def convert_to_fp8_scaled(
                 new_tensors[bias_key] = loader.get_tensor(bias_key)
 
         # T5XXL/Mistral fallback: ensure input scale exists with correct key format
-        if text_encoder_filter:
+        if text_encoder_filter and not (is_w6a8 or is_int4 or is_mxfp8 or is_nvfp4):
             if comfy_quant and f"{base_name}.input_scale" not in new_tensors:
                 new_tensors[f"{base_name}.input_scale"] = dequant_s.to(device="cpu", dtype=SCALE_DTYPE).detach().clone()
             elif not comfy_quant and f"{base_name}.scale_input" not in new_tensors:
@@ -884,11 +954,19 @@ def convert_to_fp8_scaled(
                 info(f"    - Final Dequant Scale value: {new_scale}\n    - Final Weight shape       : {q_tensor.shape}")
             else:
                 info(f"    - Final Dequant Scale shape: {new_scale.shape}\n    - Final Weight shape       : {q_tensor.shape}")
+        elif is_w6a8 and f"{base_name}.weight_s_rel" in new_tensors:
+            info(
+                f"    - Final W6A8 s_rel shape    : {new_tensors[f'{base_name}.weight_s_rel'].shape} ({new_tensors[f'{base_name}.weight_s_rel'].dtype})\n"
+                f"    - Final W6A8 s_channel shape: {new_tensors[f'{base_name}.weight_s_channel'].shape}\n"
+                f"    - Final Weight shape        : {q_tensor.shape}"
+            )
         info("-" * 60)
 
         # Immediate VRAM reclamation for low_memory mode
         q_tensor = None
         dequant_s = None
+        w6a8_s_rel = None
+        w6a8_s_channel = None
         dequant_w = None
         extra_tensors = None
         original_tensor = None

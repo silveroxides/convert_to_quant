@@ -6,5 +6,6 @@ from .int4_conversion import convert_to_int4
 from .int8_conversion import convert_int8_to_comfy_quant
 from .legacy_utils import add_legacy_input_scale, cleanup_fp8_scaled
 from .nvfp4_conversion import convert_to_nvfp4
+from .w6a8_conversion import convert_to_w6a8
 
-__all__ = ["convert_to_fp8_scaled", "convert_to_int4", "convert_fp8_scaled_to_comfy_quant", "convert_int8_to_comfy_quant", "add_legacy_input_scale", "cleanup_fp8_scaled", "convert_to_nvfp4"]
+__all__ = ["convert_to_fp8_scaled", "convert_to_int4", "convert_to_w6a8", "convert_fp8_scaled_to_comfy_quant", "convert_int8_to_comfy_quant", "add_legacy_input_scale", "cleanup_fp8_scaled", "convert_to_nvfp4"]

@@ -232,3 +232,238 @@ def dequantize_int4_rowwise(qdata_packed: torch.Tensor, scale: torch.Tensor) -> 
     """
     qdata = unpack_int4_row_major(qdata_packed)
     return qdata.to(torch.float32) * scale.to(torch.float32).unsqueeze(-1)
+
+
+_W6A8_LEVELS = 31
+_W6A8_ALS_ITERS = 2
+_W6A8_SCALE_SEARCH_FP32_STEP = 0.03
+_W6A8_E4M3_MAX_FINITE_BITS = 0x7E
+
+
+def is_power_of_four(value: int) -> bool:
+    """Return True if value >= 4 is an exact power of 4."""
+    if value < 4 or (value & (value - 1)) != 0:
+        return False
+    import math
+    return math.log(value, 4) % 1 == 0
+
+
+def validate_w6a8_shape(k: int, group_size: int, convrot_groupsize: int) -> None:
+    """Validate K, group_size, and convrot_groupsize for W6A8 storage."""
+    if k <= 0 or k % 32 != 0 or group_size < 16 or group_size % 16 != 0 or k % group_size != 0:
+        raise ValueError(
+            "W6A8 storage requires K divisible by 32 and group_size a multiple of 16 "
+            f"dividing K, got K={k}, group_size={group_size}"
+        )
+    if not is_power_of_four(convrot_groupsize) or k % convrot_groupsize != 0:
+        raise ValueError(
+            f"W6A8 ConvRot requires power-of-4 convrot_groupsize dividing K={k}, "
+            f"got convrot_groupsize={convrot_groupsize}"
+        )
+
+
+def resolve_w6a8_convrot_group_size(
+    in_features: int,
+    requested_group_size: int = 256,
+    dynamic: bool = False,
+) -> int | None:
+    """Resolve a valid power-of-4 ConvRot group size dividing in_features for W6A8."""
+    if dynamic:
+        min_grp = min(requested_group_size, 64) if is_power_of_four(requested_group_size) else 64
+        resolved = find_max_compatible_group_size(in_features, min_group_size=min_grp)
+        if resolved is not None:
+            return resolved
+        return find_max_compatible_group_size(in_features, min_group_size=4)
+
+    if is_power_of_four(requested_group_size) and in_features % requested_group_size == 0:
+        return requested_group_size
+
+    for candidate in (256, 64, 16, 4):
+        if candidate <= requested_group_size and in_features % candidate == 0:
+            return candidate
+    return None
+
+
+def pack_int6_w6a8(unsigned_codes: torch.Tensor) -> torch.Tensor:
+    """Pack unsigned 6-bit codes [N, K] (in [0, 63]) into int8 [N, 3*K//4].
+
+    Matches comfy-kitchen's ``_pack_codes(..., bits=6)`` contract:
+    first K/2 bytes hold low nibbles (even col = low nibble, odd col = high nibble),
+    followed by K/4 bytes holding each code's top 2 bits (col c at byte c//4, bits 2*(c%4)).
+    """
+    if unsigned_codes.ndim != 2:
+        raise ValueError(f"pack_int6_w6a8 expects a 2D tensor, got shape {tuple(unsigned_codes.shape)}")
+    k = unsigned_codes.shape[1]
+    if k % 32 != 0:
+        raise ValueError(f"pack_int6_w6a8 requires K divisible by 32, got {k}")
+    u = unsigned_codes.to(torch.int32)
+    low = ((u[:, 0::2] & 0xF) | ((u[:, 1::2] & 0xF) << 4)).to(torch.int8)
+    hi = (u[:, 0::4] >> 4) & 0x3
+    for j in range(1, 4):
+        hi |= ((u[:, j::4] >> 4) & 0x3) << (2 * j)
+    return torch.cat([low, hi.to(torch.int8)], dim=1).contiguous()
+
+
+def unpack_int6_w6a8(qdata_packed: torch.Tensor, k: int) -> torch.Tensor:
+    """Inverse of pack_int6_w6a8: int8 [N, 3*K//4] -> int32 [N, K] unsigned codes."""
+    if qdata_packed.ndim != 2 or qdata_packed.dtype != torch.int8:
+        raise ValueError(f"unpack_int6_w6a8 expects a 2D int8 tensor, got {qdata_packed.dtype} {tuple(qdata_packed.shape)}")
+    n, cols = qdata_packed.shape
+    if k <= 0 or k % 32 != 0 or cols != (3 * k) // 4:
+        raise ValueError(f"unpack_int6_w6a8 expected cols={(3 * k) // 4} for K={k}, got cols={cols}")
+    packed = qdata_packed.view(torch.uint8).to(torch.int32)
+    low = packed[:, : k // 2]
+    codes = torch.empty(n, k, dtype=torch.int32, device=qdata_packed.device)
+    codes[:, 0::2] = low & 0xF
+    codes[:, 1::2] = (low >> 4) & 0xF
+    shifts = torch.tensor([0, 2, 4, 6], device=qdata_packed.device, dtype=torch.int32)
+    hi = (packed[:, k // 2 :].unsqueeze(-1) >> shifts) & 0x3
+    codes |= hi.reshape(n, k) << 4
+    return codes
+
+
+def _w6a8_grid_levels(level_table: torch.Tensor, s_rel: torch.Tensor) -> torch.Tensor:
+    """INT8 values each level of every group decodes to: round(clamp(level * s_rel, -127, 127))."""
+    return (level_table.view(1, 1, -1) * s_rel.float().unsqueeze(-1)).round_().clamp_(-127, 127)
+
+
+def _w6a8_assign_grid(
+    grouped_weight: torch.Tensor,
+    levels: torch.Tensor,
+    s_channel: torch.Tensor,
+    target: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Assign each grouped weight to its nearest decoded INT8 grid level index (0..62)."""
+    n, groups, gsize = grouped_weight.shape
+    last = levels.shape[-1] - 1
+    lv = levels.reshape(n * groups, last + 1).contiguous()
+    if target is None:
+        target = grouped_weight / s_channel.view(-1, 1, 1)
+    tg = target.reshape(n * groups, gsize).contiguous()
+    pos = torch.searchsorted(lv, tg)
+    lo = (pos - 1).clamp(0, last)
+    hi = pos.clamp(0, last)
+    dlo = tg.sub(torch.gather(lv, 1, lo)).abs_()
+    dhi = tg.sub(torch.gather(lv, 1, hi)).abs_()
+    return torch.where(dhi < dlo, hi, lo).to(torch.int32).reshape(n, groups, gsize)
+
+
+def _w6a8_search_group_scale(
+    grouped_weight: torch.Tensor,
+    s_rel: torch.Tensor,
+    s_channel: torch.Tensor,
+    level_table: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Grid-aware group-scale search over stored-dtype neighbours of s_rel."""
+    target = grouped_weight / s_channel.view(-1, 1, 1)
+
+    def score(cand: torch.Tensor):
+        levels = _w6a8_grid_levels(level_table, cand)
+        idx = _w6a8_assign_grid(grouped_weight, levels, s_channel, target=target)
+        err = torch.gather(levels, 2, idx.long()).sub_(target).pow_(2).sum(-1)
+        return cand, err, idx
+
+    if s_rel.dtype == torch.float8_e4m3fn:
+        raw_i16 = s_rel.view(torch.uint8).to(torch.int16)
+        candidates = [
+            s_rel.float(),
+            (raw_i16 - 1).clamp(1, _W6A8_E4M3_MAX_FINITE_BITS).to(torch.uint8).view(torch.float8_e4m3fn).float(),
+            (raw_i16 + 1).clamp(1, _W6A8_E4M3_MAX_FINITE_BITS).to(torch.uint8).view(torch.float8_e4m3fn).float(),
+        ]
+    else:
+        base = s_rel.float()
+        candidates = [
+            base,
+            base * (1 - _W6A8_SCALE_SEARCH_FP32_STEP),
+            base * (1 + _W6A8_SCALE_SEARCH_FP32_STEP),
+        ]
+
+    best_scale, best_err, best_idx = score(candidates[0])
+    for cand in candidates[1:]:
+        cand, err, idx = score(cand)
+        better = err < best_err
+        torch.where(better, err, best_err, out=best_err)
+        torch.where(better, cand, best_scale, out=best_scale)
+        torch.where(better.unsqueeze(-1), idx, best_idx, out=best_idx)
+    return best_scale.to(s_rel.dtype).contiguous(), best_idx
+
+
+def quantize_w6a8_grouped(
+    W_rot: torch.Tensor,
+    group_size: int = 16,
+    scale_dtype: torch.dtype = torch.float8_e4m3fn,
+    scale_search: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Quantize an already ConvRot-rotated weight [N, K] into W6A8 codes and dual scales.
+
+    Matches comfy-kitchen's ``_quantize_rotated_w4a8_int8_weight(..., bits=6)`` exactly.
+
+    Returns:
+        Tuple of (unsigned_codes [N, K] in [1, 63], s_rel [N, K//G], s_channel [N] float32).
+    """
+    if scale_dtype not in (torch.float32, torch.float8_e4m3fn):
+        raise ValueError(f"scale_dtype must be float32 or float8_e4m3fn, got {scale_dtype}")
+    n, k = W_rot.shape
+    if k <= 0 or k % 32 != 0 or group_size < 16 or group_size % 16 != 0 or k % group_size != 0:
+        raise ValueError(f"W6A8 requires K%32==0 and group_size%16==0 dividing K, got K={k}, group_size={group_size}")
+
+    groups = k // group_size
+    grouped_weight = W_rot.float().view(n, groups, group_size)
+    level_table = torch.arange(-_W6A8_LEVELS, _W6A8_LEVELS + 1, device=W_rot.device, dtype=torch.float32)
+
+    amax = grouped_weight.abs().amax(dim=-1, keepdim=True)
+    group_scale = (amax / float(_W6A8_LEVELS)).clamp(min=1e-8)
+
+    def _assign(normalized: torch.Tensor) -> torch.Tensor:
+        return (normalized.round_().clamp_(-_W6A8_LEVELS, _W6A8_LEVELS) + _W6A8_LEVELS).to(torch.int32)
+
+    quantized = _assign(grouped_weight / group_scale)
+    for _ in range(_W6A8_ALS_ITERS):
+        quantized_levels = level_table[quantized]
+        group_scale = (
+            (grouped_weight * quantized_levels).sum(-1, keepdim=True)
+            / (quantized_levels * quantized_levels).sum(-1, keepdim=True).clamp(min=1e-8)
+        ).clamp(min=1e-8)
+        quantized = _assign(grouped_weight / group_scale)
+
+    shifted_weight = level_table[quantized] * group_scale
+    s_channel = (shifted_weight.abs().amax(dim=(1, 2)) / 127.0).clamp(min=1e-8)
+    s_rel = (group_scale.squeeze(-1) / s_channel.unsqueeze(1)).float().contiguous()
+    if scale_dtype != torch.float32:
+        s_rel = s_rel.to(scale_dtype).contiguous()
+
+    if scale_search:
+        s_rel, unsigned = _w6a8_search_group_scale(grouped_weight, s_rel, s_channel, level_table)
+    else:
+        levels = _w6a8_grid_levels(level_table, s_rel)
+        unsigned = _w6a8_assign_grid(grouped_weight, levels, s_channel)
+
+    unsigned = unsigned.clone()
+    unsigned.add_(1)  # level index 0..62 -> stored code q+32 in 1..63
+    return unsigned.view(n, k), s_rel, s_channel.float().contiguous()
+
+
+def dequantize_w6a8_to_int8_grid(
+    qdata_packed: torch.Tensor,
+    s_rel: torch.Tensor,
+    group_size: int = 16,
+) -> torch.Tensor:
+    """Decode packed W6A8 weights to the grouped INT8 grid consumed by the GEMM."""
+    n, _ = qdata_packed.shape
+    k = s_rel.shape[1] * group_size
+    groups = k // group_size
+    codes = unpack_int6_w6a8(qdata_packed, k)
+    values = codes.float() - 32.0
+    values = values.view(n, groups, group_size) * s_rel.float().unsqueeze(-1)
+    return values.view(n, k).round().clamp_(-127, 127).to(torch.int8)
+
+
+def dequantize_w6a8_rotated(
+    qdata_packed: torch.Tensor,
+    s_rel: torch.Tensor,
+    s_channel: torch.Tensor,
+    group_size: int = 16,
+) -> torch.Tensor:
+    """Decode packed W6A8 weights to float32 in the rotated ConvRot basis."""
+    int8_weight = dequantize_w6a8_to_int8_grid(qdata_packed, s_rel, group_size=group_size)
+    return (int8_weight.float() * s_channel.float().view(-1, 1)).contiguous()

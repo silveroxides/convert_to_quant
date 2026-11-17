@@ -137,6 +137,10 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Use INT4 ConvRot W4A4 (4-bit weight, 4-bit activation) quantization with group-wise Hadamard rotation."
     )
     parser.add_argument(
+        "--w6a8", action="store_true",
+        help="Use W6A8 (6-bit uniform ConvRot weight, INT8 activation) quantization (ComfyUI w6a8_int8 format)."
+    )
+    parser.add_argument(
         "--convrot", action="store_true",
         help="Enable group-wise Hadamard rotation (ConvRot) for INT8 row-wise quantization to improve quality."
     )
@@ -165,7 +169,7 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Path to tensorwise FP8 model to steal scales from (for --make-hybrid-mxfp8)."
     )
     parser.add_argument(
-        "--fallback", type=str, default=None, choices=["fp8", "int8", "mxfp8", "nvfp4", "int4"],
+        "--fallback", type=str, default=None, choices=["fp8", "int8", "mxfp8", "nvfp4", "int4", "w6a8"],
         help="Fallback quantization type for excluded layers (instead of keeping original precision)."
     )
     parser.add_argument(
@@ -186,7 +190,7 @@ def get_parser() -> MultiHelpArgumentParser:
         help="Regex for unquantized 2D weight keys that must retain their source dtype."
     )
     parser.add_argument(
-        "--custom-type", "--custom_type", type=str, default=None, dest="custom_type", choices=["fp8", "int8", "mxfp8", "nvfp4", "int4"],
+        "--custom-type", "--custom_type", type=str, default=None, dest="custom_type", choices=["fp8", "int8", "mxfp8", "nvfp4", "int4", "w6a8"],
         help="Quantization type for custom layer matches."
     )
     # Custom-type parameter overrides
@@ -910,6 +914,80 @@ def run_conversion(args):
             )
             return
 
+    # Handle W6A8 (w6a8_int8) ConvRot quantization mode
+    if args.w6a8:
+        needs_mixing = args.custom_type or args.fallback or args.layer_config
+        if needs_mixing:
+            print("W6A8 with custom/fallback/layer_config: using unified quantization path")
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                args.output = f"{base}_w6a8_int8_mixed.safetensors"
+            args.int8 = False
+        else:
+            if not args.output:
+                base = os.path.splitext(args.input)[0]
+                prefix = "simple_" if args.simple else "learned_"
+                filter_flags = extract_filter_flags(args)
+                has_filters = any(filter_flags.values())
+                has_custom = bool(args.custom_layers)
+                mixed_suffix = "mixed" if (has_filters or has_custom) else ""
+                args.output = f"{base}_{prefix}w6a8_int8{mixed_suffix}.safetensors"
+
+            if not os.path.exists(args.input):
+                print(f"Error: Input file not found: {args.input}")
+                return
+
+            if os.path.abspath(args.input) == os.path.abspath(args.output):
+                print("Error: Output file cannot be same as input.")
+                return
+
+            seed = int(torch.randint(0, 2**32 - 1, ()).item()) if args.manual_seed == -1 else args.manual_seed
+            print(f"Using seed: {seed}")
+            filter_flags = extract_filter_flags(args)
+
+            from ..formats.w6a8_conversion import convert_to_w6a8
+            convert_to_w6a8(
+                args.input,
+                args.output,
+                filter_flags=filter_flags,
+                exclude_layers=args.exclude_layers,
+                output_dtype=args.output_dtype,
+                preserve_layers=args.preserve_layers,
+                simple=args.simple,
+                convrot=True,
+                group_size=args.block_size if args.block_size is not None else 16,
+                convrot_group_size=args.convrot_group_size,
+                dynamic_convrot=args.dynamic_convrot,
+                calib_scale=getattr(args, "calib_scale", 1.0),
+                device=args.device,
+                calib_samples=args.calib_samples,
+                seed=seed,
+                comfy_quant=args.comfy_quant,
+                save_quant_metadata=args.save_quant_metadata,
+                full_precision_matrix_mult=args.full_precision_matrix_mult,
+                low_memory=args.low_memory,
+                optimizer=args.optimizer,
+                num_iter=args.num_iter,
+                lr=args.lr,
+                lr_schedule=args.lr_schedule,
+                top_p=args.top_p,
+                min_k=args.min_k,
+                max_k=args.max_k,
+                full_matrix=args.full_matrix,
+                scale_optimization=args.scale_optimization,
+                use_speed=args.use_speed,
+                lr_gamma=args.lr_gamma,
+                lr_patience=args.lr_patience,
+                lr_factor=args.lr_factor,
+                lr_min=args.lr_min,
+                lr_cooldown=args.lr_cooldown,
+                lr_threshold=args.lr_threshold,
+                early_stop_loss=args.early_stop_loss,
+                early_stop_lr=args.early_stop_lr,
+                early_stop_stall=args.early_stop_stall,
+            )
+            return
+
     # Handle legacy input scale addition mode (separate workflow)
     if args.legacy_input_add:
         if not args.output:
@@ -1063,8 +1141,8 @@ def run_conversion(args):
         print("Note: --comfy_quant auto-enabled (required for --custom-type mixed precision)")
         args.comfy_quant = True
 
-    # Only check FP8 support if not using INT8
-    if not args.int8:
+    # Only check FP8 support if not using INT8/INT4/W6A8
+    if not args.int8 and not args.int4 and not args.w6a8:
         try:
             _ = torch.zeros(1, dtype=TARGET_FP8_DTYPE, device="cuda" if torch.cuda.is_available() else "cpu")
         except (RuntimeError, TypeError):
@@ -1118,6 +1196,8 @@ def run_conversion(args):
     primary_format = None
     if args.int4:
         primary_format = "int4"
+    elif args.w6a8:
+        primary_format = "w6a8"
     elif args.nvfp4 and (args.custom_type or args.fallback):
         primary_format = "nvfp4"
     elif args.mxfp8 and (args.custom_type or args.fallback):
