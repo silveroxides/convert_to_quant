@@ -209,3 +209,6 @@ __marimo__/
 # Test artifacts
 flux2-dev-testlayers.safetensors
 out_*.safetensors
+
+# Local Only
+references/
