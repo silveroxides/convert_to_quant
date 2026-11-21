@@ -37,7 +37,9 @@ from .constants import (  # New registry
     SCALE_DTYPE,
     T5XXL_REMOVE_KEY_NAMES,
     TARGET_FP8_DTYPE,
+    TARGET_INT4_DTYPE,
     TARGET_INT8_DTYPE,
+    TARGET_W6A8_DTYPE,
     VALID_QUANT_FORMATS,
     VISUAL_AVOID_KEY_NAMES,
     WAN_LAYER_KEYNAMES,
@@ -48,13 +50,14 @@ from .constants import (  # New registry
 )
 
 # Re-export converters
-from .converters import LearnedRoundingConverter
+from .converters import INT4Converter, LearnedRoundingConverter, W6A8Converter
 
 # Re-export formats
-from .formats import add_legacy_input_scale, cleanup_fp8_scaled, convert_fp8_scaled_to_comfy_quant, convert_int8_to_comfy_quant, convert_to_fp8_scaled
+from .formats import add_legacy_input_scale, cleanup_fp8_scaled, convert_fp8_scaled_to_comfy_quant, convert_int8_to_comfy_quant, convert_to_fp8_scaled, convert_to_int4, convert_to_w6a8
 
 # Re-export utils
 from .utils import create_comfy_quant_tensor, dict_to_tensor, edit_comfy_quant, fix_comfy_quant_params_structure, normalize_tensorwise_scales, parse_add_keys_string, should_skip_layer_for_performance, tensor_to_dict
+
 
 def quantize(input: str, output: str = None, **kwargs):
     """
@@ -67,6 +70,7 @@ def quantize(input: str, output: str = None, **kwargs):
         **kwargs: Additional arguments matching CLI flags (e.g., int8=True, block_size=128, etc.).
     """
     import argparse
+
     from .cli.main import get_parser, run_conversion
 
     parser = get_parser()
@@ -116,6 +120,8 @@ __all__ = [
     "ZIMAGE_REFINER_LAYER_KEYNAMES",
     "TARGET_FP8_DTYPE",
     "TARGET_INT8_DTYPE",
+    "TARGET_INT4_DTYPE",
+    "TARGET_W6A8_DTYPE",
     "COMPUTE_DTYPE",
     "SCALE_DTYPE",
     "FP8_MIN",
@@ -145,8 +151,12 @@ __all__ = [
     "generate_config_template",
     # Converters
     "LearnedRoundingConverter",
+    "INT4Converter",
+    "W6A8Converter",
     # Formats
     "convert_to_fp8_scaled",
+    "convert_to_int4",
+    "convert_to_w6a8",
     "convert_fp8_scaled_to_comfy_quant",
     "convert_int8_to_comfy_quant",
     "add_legacy_input_scale",

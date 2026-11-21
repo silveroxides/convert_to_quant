@@ -520,7 +520,7 @@ class MultiHelpArgumentParser(argparse.ArgumentParser):
         formatter.add_text("  --help-learned, -hl         Show learned rounding optimization options")
         formatter.add_text("                              (optimizer, num_iter, lr, top_p, etc.)")
         formatter.add_text("  --help-experimental, -he    Show experimental quantization options")
-        formatter.add_text("                              (int8, nvfp4, mxfp8, custom-layers, etc.)")
+        formatter.add_text("                              (int8, int4, w6a8, nvfp4, mxfp8, custom-layers, etc.)")
         formatter.add_text("  --help-filters, -hf         Show model-specific exclusion filters")
         formatter.add_text("                              (t5xxl, hunyuan, wan, qwen, etc.)")
         formatter.add_text("  --help-advanced, -ha        Show advanced LR tuning and early stopping")

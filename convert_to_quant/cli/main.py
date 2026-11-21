@@ -112,9 +112,9 @@ def get_parser() -> MultiHelpArgumentParser:
     """Create and return the argument parser."""
     parser = MultiHelpArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Convert safetensors weights to Scaled FP8 format.\n\n"
+        description="Convert safetensors weights to quantized formats (FP8, INT8, INT4, W6A8, NVFP4, MXFP8).\n\n"
         "Default behavior: FP8 quantization with per-tensor scaling.\n"
-        "For INT8 and other experimental options, see --help-experimental.\n"
+        "For INT8, INT4, W6A8, and other experimental options, see --help-experimental.\n"
         "For model-specific layer exclusions, see --help-filters.\n"
         "For advanced LR tuning and early stopping, see --help-advanced.\n"
         "For conversion and utility modes, see --help-modes.",
