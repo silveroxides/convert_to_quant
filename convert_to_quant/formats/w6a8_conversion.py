@@ -6,19 +6,23 @@ format with group-wise Hadamard rotation and dual scaling (weight_s_rel + weight
 for ComfyUI w6a8_int8 (AsymW4A8Int8Layout) inference.
 """
 
+import gc
 import json
 import os
 import re
-from typing import Dict, Optional
+import shutil
+import tempfile
+from typing import Any, Dict, Optional
 
 import torch
+from safetensors import safe_open
 from safetensors.torch import save_file
 
-from ..constants import COMPUTE_DTYPE, NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, W6A8_DEFAULT_CONVROT_GROUP_SIZE, W6A8_DEFAULT_GROUP_SIZE, W6A8_SCALE_REL_DTYPE, resolve_model_filter_patterns
+from ..constants import COMPUTE_DTYPE, NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, T5XXL_REMOVE_KEY_NAMES, W6A8_DEFAULT_CONVROT_GROUP_SIZE, W6A8_DEFAULT_GROUP_SIZE, W6A8_SCALE_REL_DTYPE, resolve_model_filter_patterns
 from ..converters.w6a8_converter import W6A8Converter
 from ..utils.comfy_quant import create_comfy_quant_tensor
 from ..utils.convrot import resolve_w6a8_convrot_group_size
-from ..utils.logging import error, info, log_debug, minimal
+from ..utils.logging import error, info, log_debug, minimal, verbose
 from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
 from ..utils.output_dtype import cast_unquantized_weights, compile_preserve_layers, resolve_output_dtype
 from ..utils.tensor_utils import normalize_tensorwise_scales
@@ -43,6 +47,7 @@ def convert_to_w6a8(
     device: Optional[str] = None,
     # Calibration options for bias correction
     calib_samples: int = 256,
+    calib_cpu: bool = False,
     seed: int = 42,
     # Metadata & preservation
     comfy_quant: bool = True,
@@ -94,8 +99,16 @@ def convert_to_w6a8(
     resolved_filter_patterns = resolve_model_filter_patterns(filter_flags, all_keys)
     existing_meta = loader.metadata()
 
+    # Calibration cache configuration
+    calib_cache_dir = None
+    if low_memory and not calib_cpu:
+        out_dir = os.path.dirname(os.path.abspath(output_file)) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        calib_cache_dir = tempfile.mkdtemp(prefix="ctq_calib_", dir=out_dir)
+        info(f"Using disk-based calibration cache: {calib_cache_dir}")
+
     # Pre-generate simulated calibration data by in_features if needed
-    calibration_data_cache: Dict[int, torch.Tensor] = {}
+    calibration_data_cache: Dict[int, Any] = {}
     torch.manual_seed(seed)
     seed_generator = torch.Generator(device="cpu")
     seed_generator.manual_seed(seed)
@@ -105,6 +118,7 @@ def convert_to_w6a8(
             shape = loader.get_shape(key)
             in_features = shape[1]
             if in_features not in calibration_data_cache:
+                verbose(f"  - Found new input dimension: {in_features}.")
                 calib_tensor = torch.randn(
                     calib_samples,
                     in_features,
@@ -112,7 +126,14 @@ def convert_to_w6a8(
                     generator=seed_generator,
                     device="cpu",
                 )
-                calibration_data_cache[in_features] = calib_tensor
+                if calib_cache_dir:
+                    cache_path = os.path.join(calib_cache_dir, f"calib_{in_features}.safetensors")
+                    save_file({"calib_data": calib_tensor}, cache_path)
+                    calibration_data_cache[in_features] = cache_path
+                    del calib_tensor
+                else:
+                    calibration_data_cache[in_features] = calib_tensor
+    info("Simulated calibration data generated.\n")
 
     converter = W6A8Converter(
         convrot=convrot,
@@ -142,6 +163,12 @@ def convert_to_w6a8(
         base_name = key[:-7]  # strip '.weight'
         bias_key = f"{base_name}.bias"
         has_bias = bias_key in all_keys
+
+        # T5XXL decoder tensors are always removed (not quantized, not kept)
+        if filter_flags.get("t5xxl") and any(n in key for n in T5XXL_REMOVE_KEY_NAMES):
+            info(f"({i + 1}/{total_weights}) Removing T5XXL decoder tensor: {key}")
+            skipped_count += 1
+            continue
 
         # Check explicit layer config skip
         if layer_config:
@@ -197,7 +224,14 @@ def convert_to_w6a8(
             skipped_count += 1
             continue
 
-        calib_data = calibration_data_cache.get(in_features)
+        calib_entry = calibration_data_cache.get(in_features)
+        calib_data_loaded = False
+        if isinstance(calib_entry, str):
+            with safe_open(calib_entry, framework="pt", device="cpu") as f:
+                calib_data = f.get_tensor("calib_data")
+            calib_data_loaded = True
+        else:
+            calib_data = calib_entry
 
         info(f"({i + 1}/{total_weights}) Processing (W6A8 w6a8_int8): {key}")
         q_tensor, s_rel, s_channel, dequant_w, extra_tensors = converter.convert(
@@ -207,6 +241,9 @@ def convert_to_w6a8(
             calibration_data=calib_data,
             has_bias=has_bias,
         )
+
+        if calib_data_loaded and calib_data is not None:
+            del calib_data
 
         new_tensors[key] = q_tensor.to(device="cpu")
         new_tensors[f"{base_name}.weight_s_rel"] = s_rel.to(device="cpu")
@@ -253,14 +290,22 @@ def convert_to_w6a8(
                 new_tensors[bias_key] = corrected_bias.cpu()
                 loader.mark_processed(bias_key)
                 info(f"  - Applied residual bias correction to: {bias_key}")
+                verbose(
+                    f"    - Original bias mean : {original_bias.mean().item():.6f}\n"
+                    f"    - Corrected bias mean: {corrected_bias.mean().item():.6f}"
+                )
 
         loader.mark_processed(key)
         del original_tensor, q_tensor, s_rel, s_channel, dequant_w
+        if low_memory:
+            gc.collect()
         if target_device == "cuda":
             torch.cuda.empty_cache()
 
     # Copy remaining tensors (bias, norms, embeddings, etc.)
     for key in all_keys:
+        if filter_flags.get("t5xxl") and any(n in key for n in T5XXL_REMOVE_KEY_NAMES):
+            continue
         if key not in new_tensors:
             new_tensors[key] = loader.get_tensor(key)
 
@@ -286,6 +331,9 @@ def convert_to_w6a8(
         final_meta["_quantization_metadata"] = json.dumps(full_metadata)
 
     loader.close()
+    if calib_cache_dir and os.path.exists(calib_cache_dir):
+        shutil.rmtree(calib_cache_dir)
+
     info(f"Saving {len(new_tensors)} tensors to {output_file}...")
     save_file(new_tensors, output_file, metadata=final_meta)
     info(f"Successfully converted model to W6A8 (w6a8_int8): {output_file}")

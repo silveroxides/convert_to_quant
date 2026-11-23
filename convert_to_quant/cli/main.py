@@ -961,6 +961,7 @@ def run_conversion(args):
                 calib_scale=getattr(args, "calib_scale", 1.0),
                 device=args.device,
                 calib_samples=args.calib_samples,
+                calib_cpu=args.calib_cpu,
                 seed=seed,
                 comfy_quant=args.comfy_quant,
                 save_quant_metadata=args.save_quant_metadata,
