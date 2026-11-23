@@ -212,3 +212,4 @@ out_*.safetensors
 
 # Local Only
 references/
+local/
