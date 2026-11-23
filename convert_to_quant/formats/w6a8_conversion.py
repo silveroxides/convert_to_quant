@@ -18,7 +18,7 @@ from ..constants import COMPUTE_DTYPE, NORMALIZE_SCALES_ENABLED, SCALE_DTYPE, W6
 from ..converters.w6a8_converter import W6A8Converter
 from ..utils.comfy_quant import create_comfy_quant_tensor
 from ..utils.convrot import resolve_w6a8_convrot_group_size
-from ..utils.logging import error, info, log_debug, minimal, verbose
+from ..utils.logging import error, info, log_debug, minimal
 from ..utils.memory_efficient_loader import UnifiedSafetensorsLoader
 from ..utils.output_dtype import cast_unquantized_weights, compile_preserve_layers, resolve_output_dtype
 from ..utils.tensor_utils import normalize_tensorwise_scales
@@ -68,7 +68,13 @@ def convert_to_w6a8(
         os.makedirs(out_dir, exist_ok=True)
 
     target_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    info(f"Converting to W6A8 (w6a8_int8) on device: {target_device}")
+    info(f"Processing: {input_file}\nOutput will be saved to: {output_file}")
+    info("-" * 60)
+    info("Target format: W6A8 (w6a8_int8, uniform 6-bit ConvRot + INT8 activations)")
+    info(f"Group size: {group_size}")
+    info(f"ConvRot group size: {convrot_group_size}")
+    info(f"Device: {target_device}")
+    info("-" * 60)
 
     filter_flags = filter_flags or {}
     exclude_pattern = None
@@ -232,6 +238,12 @@ def convert_to_w6a8(
                 meta_entry["full_precision_matrix_mult"] = True
             quant_metadata_layers[base_name] = meta_entry
 
+        # Final shape outputs
+        info(f"    - Final Weight shape        : {list(q_tensor.shape)}")
+        info(f"    - Final W6A8 s_rel shape    : {list(s_rel.shape)} ({s_rel.dtype})")
+        info(f"    - Final W6A8 s_channel shape: {list(s_channel.shape)}")
+        info("-" * 60)
+
         # Apply residual bias correction if generated
         if has_bias and "bias_correction" in extra_tensors:
             with torch.no_grad():
@@ -274,7 +286,14 @@ def convert_to_w6a8(
         final_meta["_quantization_metadata"] = json.dumps(full_metadata)
 
     loader.close()
-    verbose(f"Processed {processed_count} layers, skipped {skipped_count} layers.")
     info(f"Saving {len(new_tensors)} tensors to {output_file}...")
     save_file(new_tensors, output_file, metadata=final_meta)
     info(f"Successfully converted model to W6A8 (w6a8_int8): {output_file}")
+    info("-" * 60)
+    info("Summary:")
+    info(f"  - Original tensor count : {len(all_keys)}")
+    info(f"  - Weights processed     : {processed_count}")
+    info(f"  - Weights skipped       : {skipped_count}")
+    info(f"  - Final tensor count    : {len(new_tensors)}")
+    info("-" * 60)
+    info("Conversion complete!")
