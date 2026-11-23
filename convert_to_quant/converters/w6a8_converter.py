@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from ..constants import COMPUTE_DTYPE, SCALE_DTYPE, TARGET_W6A8_DTYPE, W6A8_DEFAULT_CONVROT_GROUP_SIZE, W6A8_DEFAULT_GROUP_SIZE, W6A8_LEVELS, W6A8_SCALE_REL_DTYPE
 from ..pinned_transfer import transfer_to_gpu_pinned
-from ..utils.convrot import build_hadamard, dequantize_w6a8_rotated, pack_int6_w6a8, quantize_w6a8_grouped, resolve_w6a8_convrot_group_size, rotate_weight, validate_w6a8_shape
+from ..utils.convrot import _w6a8_grid_levels, build_hadamard, dequantize_w6a8_rotated, pack_int6_w6a8, quantize_w6a8_grouped, resolve_w6a8_convrot_group_size, rotate_weight, validate_w6a8_shape
 from ..utils.logging import debug, info, verbose
 from ..utils.tensor_utils import prepare_calibration_data
 from .base_converter import BaseLearnedConverter
@@ -143,25 +143,41 @@ class W6A8Converter(BaseLearnedConverter):
         Y_ref: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Apply SVD-guided AdaRound (learned soft rounding) over rotated W6A8 weights,
-        minimizing local activation reconstruction MSE using cached calibration data.
+        Apply SVD-guided Grid-Level AdaRound (learned soft rounding) over rotated W6A8 weights,
+        directly interpolating between adjacent valid ComfyUI INT8 grid levels.
         """
         M, N = W_rot.shape
+        groups = N // self.group_size
 
         # 1. Compute SVD components of rotated parameter matrix
         U_k, Vh_k, k = self._compute_svd_components(W_rot, verbose=True)
 
-        # 2. Setup soft rounding parameters V
-        eff_scale = self._effective_scale(s_rel, s_channel).clamp_min(1e-12)
-        W_scaled = W_rot / eff_scale
-        W_floor = W_scaled.floor()
+        # 2. Compute exact ComfyUI INT8 grid levels for each group
+        level_table = torch.arange(-W6A8_LEVELS, W6A8_LEVELS + 1, device=self.device, dtype=torch.float32)
+        levels = _w6a8_grid_levels(level_table, s_rel)  # [M, groups, 63]
 
-        target = W_scaled - W_floor
-        target = torch.clamp(target, min=1e-6, max=1.0 - 1e-6)
+        # Target weight in INT8 units
+        s_channel_2d = s_channel.view(-1, 1).to(device=self.device, dtype=COMPUTE_DTYPE)
+        target = (W_rot / s_channel_2d).view(M, groups, self.group_size)
+
+        # Bracket target between adjacent valid grid levels
+        levels_exp = levels.unsqueeze(2).expand(M, groups, self.group_size, 63)
+        diff = target.unsqueeze(-1) - levels_exp
+        idx_lo = ((diff >= 0).sum(dim=-1) - 1).clamp(0, 61)
+        idx_hi = idx_lo + 1
+
+        val_lo = torch.gather(levels, 2, idx_lo)  # [M, groups, group_size]
+        val_hi = torch.gather(levels, 2, idx_hi)  # [M, groups, group_size]
+
+        denom = (val_hi - val_lo).clamp_min(1e-6)
+        frac = ((target - val_lo) / denom).clamp(1e-4, 1.0 - 1e-4)
 
         T_start, T_end = 20.0, 2.0
-        V_init = -torch.log((1.0 / target) - 1.0) * T_start
+        V_init = -torch.log((1.0 / frac) - 1.0) * T_start
         V = V_init.clone().detach().requires_grad_(True)
+
+        val_lo_flat = val_lo.view(M, N)
+        val_diff_flat = (val_hi - val_lo).view(M, N)
 
         # 3. Setup optimizer
         curr_lr = self.lr
@@ -178,8 +194,9 @@ class W6A8Converter(BaseLearnedConverter):
 
         # 4. Compute initial metrics for dynamic self-tuning regularization
         with torch.no_grad():
-            init_W_q_rounded = (unsigned_codes.to(COMPUTE_DTYPE) - 32.0)
-            init_W_rounded_dequant = init_W_q_rounded * eff_scale
+            init_idx = (unsigned_codes.long() - 1).view(M, groups, self.group_size)
+            init_grid = torch.gather(levels, 2, init_idx).view(M, N)
+            init_W_rounded_dequant = init_grid * s_channel_2d
             init_mse_rounded = torch.nn.functional.mse_loss(X_rot @ init_W_rounded_dequant.T, Y_ref)
             init_svd_rounded = torch.linalg.norm(U_k.T @ (init_W_rounded_dequant - W_rot) @ Vh_k.T)
 
@@ -221,9 +238,9 @@ class W6A8Converter(BaseLearnedConverter):
                 optimizer.zero_grad()
 
             temp = T_start + (T_end - T_start) * (i / self.num_iter)
-            h_V = torch.sigmoid(V / temp)
-            W_q = W_floor + h_V
-            W_dequant = W_q * eff_scale
+            h_V = torch.sigmoid(V / temp).view(M, N)
+            grid_soft = val_lo_flat + h_V * val_diff_flat
+            W_dequant = grid_soft * s_channel_2d
 
             converged_ratio = ((torch.sigmoid(V) < 0.05) | (torch.sigmoid(V) > 0.95)).float().mean().item()
 
@@ -290,71 +307,42 @@ class W6A8Converter(BaseLearnedConverter):
 
             prodigy_warmup = self.optimizer_choice == "prodigy" and i < 50
 
-            if schedule_name == "exponential":
-                if not prodigy_warmup:
-                    curr_lr = max(curr_lr * self.lr_gamma, self.lr_min)
-                    if optimizer is not None:
-                        for param_group in optimizer.param_groups:
-                            param_group["lr"] = curr_lr
-            elif schedule_name == "plateau":
-                if prodigy_warmup:
-                    plateau_counter = 0
-                elif cooldown_counter > 0:
-                    cooldown_counter -= 1
-                    debug(f"      [LR] Cooldown: {cooldown_counter} left")
-                elif plateau_counter >= effective_patience:
-                    debug(f"      [LR] Plateau {plateau_counter}/{effective_patience} reached. Decaying.")
-                    if curr_lr > self.lr_min:
+            if not prodigy_warmup:
+                if schedule_name == "cosine":
+                    curr_lr, improved_lr = self._adaptive_lr_update_cosine(
+                        curr_lr, improved, prev_worse_counter, i, (M, N), self.lr_min, decay_factor
+                    )
+                    if improved_lr and optimizer:
+                        for pg in optimizer.param_groups:
+                            pg["lr"] = curr_lr
+                elif schedule_name == "plateau":
+                    if plateau_counter > effective_patience and cooldown_counter == 0:
                         old_lr = curr_lr
                         curr_lr = max(curr_lr * effective_factor, self.lr_min)
-                        if optimizer is not None:
-                            for param_group in optimizer.param_groups:
-                                param_group["lr"] = curr_lr
+                        plateau_counter = 0
                         cooldown_counter = effective_cooldown
-                        debug(f"      [LR] Decay: {old_lr:.2e} -> {curr_lr:.2e} (Factor: {effective_factor:.4f})")
-                    plateau_counter = 0
-                else:
-                    if plateau_counter > 0:
-                        debug(f"      [LR] Waiting: {plateau_counter}/{effective_patience} (Loss: {current_loss_val:.3e})")
-            else:  # "adaptive"
-                counter_for_update = prev_worse_counter if improved else worse_loss_counter
-                new_lr, lr_updated = self._adaptive_lr_update_cosine(
-                    curr_lr, improved, counter_for_update, i, (M, N), self.early_stop_lr
-                )
-                if lr_updated:
-                    curr_lr = new_lr
-                    if optimizer is not None:
-                        for param_group in optimizer.param_groups:
-                            param_group["lr"] = curr_lr
-                if improved and self.lr_adaptive_mode == "no-reset":
-                    worse_loss_counter = 0
+                        debug(
+                            f"\n      - Shape-Aware Plateau: Reduced LR from {old_lr:.2e} to {curr_lr:.2e} (patience={effective_patience}, factor={effective_factor:.2f})"
+                        )
+                        if optimizer:
+                            for pg in optimizer.param_groups:
+                                pg["lr"] = curr_lr
 
-            if schedule_name == "plateau":
-                pbar.set_postfix(
-                    {
-                        "loss": f"{current_loss_val:.3e}",
-                        "best": f"{best_loss:.3e}",
-                        "lr": f"{curr_lr:.2e}",
-                        "plateau": f"{plateau_counter}/{effective_patience}",
-                    }
-                )
-            else:
-                pbar.set_postfix(
-                    {
-                        "loss": f"{current_loss_val:.3e}",
-                        "best": f"{best_loss:.3e}",
-                        "lr": f"{curr_lr:.2e}",
-                        "worse_count": f"{worse_loss_counter}",
-                    }
-                )
+                    if cooldown_counter > 0:
+                        cooldown_counter -= 1
 
-            if (
-                best_loss <= self.early_stop_loss
-                or curr_lr <= self.early_stop_lr
-                or worse_loss_counter > self.early_stop_stall
-            ):
+            pbar.set_postfix(
+                {
+                    "loss": f"{current_loss_val:.3e}",
+                    "best": f"{best_loss:.3e}",
+                    "lr": f"{curr_lr:.2e}",
+                    "plateau": f"{plateau_counter}/{effective_patience if effective_patience else self.lr_patience}",
+                }
+            )
+
+            if curr_lr <= self.early_stop_lr or worse_loss_counter > self.early_stop_stall or best_loss <= self.early_stop_loss:
                 if curr_lr <= self.early_stop_lr:
-                    info("\n      - Learning rate bottomed out. Stopping early.")
+                    info("\n      - Learning rate is below early stop threshold. Stopping early.")
                 elif worse_loss_counter > self.early_stop_stall:
                     info("\n      - Loss has stalled. Stopping early.")
                 elif best_loss <= self.early_stop_loss:
@@ -363,23 +351,17 @@ class W6A8Converter(BaseLearnedConverter):
 
         pbar.close()
 
-        # Discretize V strictly to W6A8 symmetric range [-31, 31] -> stored [1, 63]
+        # Discretize: choose between level idx_lo and idx_hi based on best_V
         with torch.no_grad():
-            final_h_V = torch.sigmoid(best_V)
-            final_round_up = (final_h_V >= 0.5).to(COMPUTE_DTYPE)
-            final_signed = (
-                (W_floor + final_round_up)
-                .clamp(-W6A8_LEVELS, W6A8_LEVELS)
-                .round()
-                .to(torch.int32)
-            )
-            final_unsigned = final_signed + 32
+            final_round_up = (best_V > 0).long()
+            final_idx = torch.where(final_round_up == 1, idx_hi, idx_lo)
+            final_unsigned = (final_idx + 1).view(M, N).to(torch.int32)
             verbose(
                 f"    - Discretization audit: {best_converged_ratio * 100:.2f}% of parameters converged to strict boundaries."
             )
 
-        self._cleanup_tensors(U_k, Vh_k, V, best_V, W_scaled, W_floor, eff_scale)
-        del U_k, Vh_k, V, best_V, W_scaled, W_floor, eff_scale
+        self._cleanup_tensors(U_k, Vh_k, V, best_V, levels, target, val_lo, val_hi, val_lo_flat, val_diff_flat)
+        del U_k, Vh_k, V, best_V, levels, target, val_lo, val_hi, val_lo_flat, val_diff_flat
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
