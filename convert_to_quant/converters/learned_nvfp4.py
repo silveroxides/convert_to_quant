@@ -160,7 +160,19 @@ class LearnedNVFP4Converter(BaseLearnedConverter):
 
         if self.no_learned_rounding:
             # Simple quantization without optimization
-            qdata = self._simple_quantize(W_float32, total_scale_safe, zero_scale_mask)
+            chunk_rows = self._compute_chunk_rows(M, N, step=self.block_size)
+            if chunk_rows < M:
+                verbose(f"    - Processing NVFP4 quantization in row chunks of {chunk_rows}/{M} (budget={self.chunk_budget})...")
+                qdata = torch.empty((M, N), dtype=torch.uint8, device=self.device)
+                for r0 in range(0, M, chunk_rows):
+                    r1 = min(r0 + chunk_rows, M)
+                    qdata[r0:r1] = self._simple_quantize(
+                        W_float32[r0:r1], total_scale_safe[r0:r1], zero_scale_mask[r0:r1]
+                    )
+                if self.device == "cuda" and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                qdata = self._simple_quantize(W_float32, total_scale_safe, zero_scale_mask)
             final_total_scale = total_scale
         else:
             # Apply learned rounding optimization (may update scales iteratively)

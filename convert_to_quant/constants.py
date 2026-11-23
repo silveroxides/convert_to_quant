@@ -366,6 +366,10 @@ W6A8_DEFAULT_GROUP_SIZE = 16  # Default per-group s_rel size (must be >= 16 and 
 W6A8_DEFAULT_CONVROT_GROUP_SIZE = 256  # Default ConvRot Hadamard rotation group size
 W6A8_SCALE_REL_DTYPE = torch.float8_e4m3fn  # Per-group relative scale dtype (required for fast CUDA paths)
 
+# Streaming chunk element budget (~4M elements, ~16 MB FP32 buffer per chunk)
+# Used to cap peak host/device working set across all converters on massive layers
+DEFAULT_CHUNK_ELEM_BUDGET = 1 << 22  # 4194304 elems
+
 # FP4 NVFP4 E2M1 constants
 TARGET_FP4_DTYPE = torch.uint8  # Packed format (2 values per byte)
 FP4_E2M1_MAX = 6.0

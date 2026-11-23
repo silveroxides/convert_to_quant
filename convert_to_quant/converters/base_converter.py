@@ -8,17 +8,13 @@ SVD computation, LR scheduling, and early stopping logic.
 
 import gc
 import math
-from abc import (
-    ABC,
-    abstractmethod,
-)
-from typing import (
-    Dict,
-    Optional,
-    Tuple,
-)
+from abc import ABC, abstractmethod
+from typing import Dict, Optional, Tuple
 
 import torch
+
+from ..constants import DEFAULT_CHUNK_ELEM_BUDGET
+from ..utils.logging import warning
 
 
 class BaseLearnedConverter(ABC):
@@ -66,6 +62,7 @@ class BaseLearnedConverter(ABC):
         lora_target: Optional[str] = None,
         lora_ar_threshold: float = 0.0,
         use_speed: bool = False,
+        chunk_budget: int = DEFAULT_CHUNK_ELEM_BUDGET,
         **kwargs,
     ):
         """
@@ -106,6 +103,8 @@ class BaseLearnedConverter(ABC):
         self.min_k = min_k
         self.max_k = max_k
         self.full_matrix = full_matrix
+
+        self.chunk_budget = chunk_budget
 
         # Optimizer configuration
         self.optimizer_choice = optimizer
@@ -151,9 +150,26 @@ class BaseLearnedConverter(ABC):
             try:
                 self.lora_target_regex = re.compile(lora_target)
             except re.error:
-                from ..utils.logging import warning
-
                 warning(f"      [LoRA] Invalid target regex '{lora_target}', ignoring.")
+
+    def _compute_chunk_rows(self, total_rows: int, in_features: int, step: int = 1) -> int:
+        """
+        Compute row chunk size bounded by self.chunk_budget and aligned to step.
+
+        Args:
+            total_rows: Total rows (M/N).
+            in_features: Columns (K).
+            step: Row alignment factor (e.g. block size or MMA requirement).
+
+        Returns:
+            Number of rows per chunk (>= step, <= total_rows).
+        """
+        if self.chunk_budget <= 0 or in_features <= 0:
+            return total_rows
+        rows_by_budget = max(1, self.chunk_budget // max(in_features, 1))
+        if step > 1:
+            rows_by_budget = max(step, (rows_by_budget // step) * step)
+        return min(total_rows, rows_by_budget)
 
     def _should_extract_lora(self, key: str, shape: torch.Size, depth: int = -1) -> bool:
         """
@@ -251,8 +267,6 @@ class BaseLearnedConverter(ABC):
                     "lora_down": V.t().to(torch.float32).cpu().contiguous()
                 }
             except Exception as e:
-                from ..utils.logging import warning
-
                 warning(f"      [LoRA] SVD failed for error extraction: {e}")
                 return None
 

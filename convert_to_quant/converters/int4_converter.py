@@ -459,7 +459,21 @@ class INT4Converter(BaseLearnedConverter):
             )
 
         # Baseline quantization (simple RTN)
-        qdata, scale = quantize_int4_rowwise(W_rot)
+        chunk_rows = self._compute_chunk_rows(rows, N, step=1)
+        if chunk_rows < rows:
+            verbose(f"    - Processing INT4 quantization in row chunks of {chunk_rows}/{rows} (budget={self.chunk_budget})...")
+            qdata = torch.empty((rows, N), dtype=torch.int8, device=self.device)
+            scale = torch.empty(rows, dtype=torch.float32, device=self.device)
+            for r0 in range(0, rows, chunk_rows):
+                r1 = min(r0 + chunk_rows, rows)
+                qc, sc = quantize_int4_rowwise(W_rot[r0:r1])
+                qdata[r0:r1] = qc
+                scale[r0:r1] = sc
+                del qc, sc
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        else:
+            qdata, scale = quantize_int4_rowwise(W_rot)
 
         # Learned AdaRound optimization path
         if not self.no_learned_rounding and self.num_iter > 0 and X_rot is not None:
@@ -472,7 +486,16 @@ class INT4Converter(BaseLearnedConverter):
                 dequant_opt = qdata.to(COMPUTE_DTYPE) * scale_broadcast
                 row_max_opt = dequant_opt.abs().amax(dim=-1)
                 scale_opt = (row_max_opt.clamp_min(1e-12) / float(INT4_SYMMETRIC_MAX)).to(SCALE_DTYPE)
-                qdata, _ = quantize_int4_rowwise(W_rot)
+                if chunk_rows < rows:
+                    for r0 in range(0, rows, chunk_rows):
+                        r1 = min(r0 + chunk_rows, rows)
+                        qc, _ = quantize_int4_rowwise(W_rot[r0:r1])
+                        qdata[r0:r1] = qc
+                        del qc
+                    if self.device == "cuda" and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                else:
+                    qdata, _ = quantize_int4_rowwise(W_rot)
                 scale = scale_opt
 
                 del dequant_opt, row_max_opt, scale_opt

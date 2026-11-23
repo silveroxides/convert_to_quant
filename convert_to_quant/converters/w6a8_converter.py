@@ -450,12 +450,33 @@ class W6A8Converter(BaseLearnedConverter):
             )
 
         # Baseline quantization (simple 2-pass ALS + grid-aware scale search)
-        unsigned_codes, s_rel, s_channel = quantize_w6a8_grouped(
-            W_rot,
-            group_size=self.group_size,
-            scale_dtype=self.scale_dtype,
-            scale_search=self.scale_search,
-        )
+        chunk_rows = self._compute_chunk_rows(rows, K, step=1)
+        if chunk_rows < rows:
+            verbose(f"    - Processing W6A8 quantization in row chunks of {chunk_rows}/{rows} (budget={self.chunk_budget})...")
+            unsigned_codes = torch.empty((rows, K), dtype=torch.int32, device=self.device)
+            s_rel = torch.empty((rows, K // self.group_size), dtype=self.scale_dtype, device=self.device)
+            s_channel = torch.empty(rows, dtype=torch.float32, device=self.device)
+            for r0 in range(0, rows, chunk_rows):
+                r1 = min(r0 + chunk_rows, rows)
+                u_chunk, s_rel_chunk, s_ch_chunk = quantize_w6a8_grouped(
+                    W_rot[r0:r1],
+                    group_size=self.group_size,
+                    scale_dtype=self.scale_dtype,
+                    scale_search=self.scale_search,
+                )
+                unsigned_codes[r0:r1] = u_chunk
+                s_rel[r0:r1] = s_rel_chunk
+                s_channel[r0:r1] = s_ch_chunk
+                del u_chunk, s_rel_chunk, s_ch_chunk
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        else:
+            unsigned_codes, s_rel, s_channel = quantize_w6a8_grouped(
+                W_rot,
+                group_size=self.group_size,
+                scale_dtype=self.scale_dtype,
+                scale_search=self.scale_search,
+            )
 
         # Learned AdaRound optimization path
         if not self.no_learned_rounding and self.num_iter > 0 and X_rot is not None:
@@ -476,12 +497,26 @@ class W6A8Converter(BaseLearnedConverter):
                 if self.scale_dtype != torch.float32:
                     s_rel = s_rel.to(self.scale_dtype)
                 s_rel = s_rel.contiguous()
-                unsigned_codes, _, _ = quantize_w6a8_grouped(
-                    W_rot,
-                    group_size=self.group_size,
-                    scale_dtype=self.scale_dtype,
-                    scale_search=self.scale_search,
-                )
+                if chunk_rows < rows:
+                    for r0 in range(0, rows, chunk_rows):
+                        r1 = min(r0 + chunk_rows, rows)
+                        u_chunk, _, _ = quantize_w6a8_grouped(
+                            W_rot[r0:r1],
+                            group_size=self.group_size,
+                            scale_dtype=self.scale_dtype,
+                            scale_search=self.scale_search,
+                        )
+                        unsigned_codes[r0:r1] = u_chunk
+                        del u_chunk
+                    if self.device == "cuda" and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                else:
+                    unsigned_codes, _, _ = quantize_w6a8_grouped(
+                        W_rot,
+                        group_size=self.group_size,
+                        scale_dtype=self.scale_dtype,
+                        scale_search=self.scale_search,
+                    )
 
                 del eff_scale_p1, dequant_opt, group_max_opt, group_scale_opt
                 gc.collect()
